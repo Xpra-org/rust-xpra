@@ -4,11 +4,9 @@ extern crate native_windows_gui as nwg;
 use std::env;
 use std::rc::Rc;
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use log::{trace, debug, error};
 use std::sync::{Arc, Mutex};
-use std::result::{Result};
 use std::net::{TcpStream};
 use std::{thread};
 use yaml_rust2::{Yaml};
@@ -31,28 +29,6 @@ fn start_read_loop(stream: TcpStream, sender: Sender<Vec<Yaml>>, notice_sender: 
             notice_sender.notice();
         }
     });    
-}
-
-
-// this is called by the UI thread:
-fn process_packet(client: Arc<Mutex<client::client::XpraClient>>, packet: &Vec<Yaml>) -> Result<(), Error> {
-    if packet.len() == 0 {
-        return Err(Error::new(ErrorKind::InvalidData, "empty packet!"));
-    }
-    match &packet[0] {
-        Yaml::String(packet_type) => {
-            let mut _client = client.lock().unwrap();
-            _client.process_packet(packet_type, packet);
-        },
-        /*Yaml::Integer(code) => {
-            error!("foo!");
-        },*/
-            _ => {
-            error!("unexpected packet type: {:?}", packet[0]);
-            return Err(Error::new(ErrorKind::InvalidData, "packet type is not a String!"));
-        }
-    }
-    return Ok(());
 }
 
 
@@ -138,7 +114,8 @@ fn main() {
             E::OnNotice => {
                 trace!("OnNotice");
                 let packet = rx.recv().unwrap();
-                process_packet(client, &packet).unwrap();
+                let mut client = client.lock().unwrap();
+                client.process_packet(&packet).unwrap();
             }
             _ => {
                 let mut _client = client.lock().unwrap();

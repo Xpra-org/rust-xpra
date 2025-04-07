@@ -7,6 +7,8 @@ use std::net::{TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime};
 
+use std::io::{Error, ErrorKind};
+
 
 //use winapi::um::winuser::DefWindowProcW;
 use serde_json::{json, Value};
@@ -66,7 +68,6 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-
     pub fn send_window_close(&self, wid: i64) {
         let packet = json!(["close-window", wid]);
         self.write_json(packet);
@@ -77,8 +78,9 @@ impl XpraClient {
         let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
         self.write_json(packet);
     }
+
     
-    pub fn write_json(&self, packet: Value) {
+    fn write_json(&self, packet: Value) {
         // should use yaml instead?
         let packet_str = packet.to_string();
         let packet_data = packet_str.as_bytes();
@@ -86,7 +88,23 @@ impl XpraClient {
     }
 
 
-    pub fn process_packet(&mut self, packet_type: &String, packet: &Vec<Yaml>) {
+    pub fn process_packet(&mut self, packet: &Vec<Yaml>) -> Result<(), Error> {
+        if packet.len() == 0 {
+            return Err(Error::new(ErrorKind::InvalidData, "empty packet!"));
+        }
+        match &packet[0] {
+            Yaml::String(packet_type) => {
+                self.do_process_packet(packet_type, packet);
+            },
+                _ => {
+                error!("unexpected packet type: {:?}", packet[0]);
+                return Err(Error::new(ErrorKind::InvalidData, "packet type is not a String!"));
+            }
+        }
+        return Ok(());
+    }
+
+    fn do_process_packet(&mut self, packet_type: &String, packet: &Vec<Yaml>) {
         if packet_type == "hello" {
             assert!(packet.len() > 1);
             self.process_hello(&packet[1]);
