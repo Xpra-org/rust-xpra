@@ -8,28 +8,11 @@ use std::sync::mpsc::{Sender, Receiver, channel};
 use log::{trace, debug, error};
 use std::sync::{Arc, Mutex};
 use std::net::{TcpStream};
-use std::{thread};
 use yaml_rust2::{Yaml};
 use simple_logger::SimpleLogger;
 
-use xpra::net::io::{read_packet};
-use xpra::net::serde::{ parse_payload };
-
 mod client;
 
-
-fn start_read_loop(stream: TcpStream, sender: Sender<Vec<Yaml>>, notice_sender: nwg::NoticeSender) {
-    thread::spawn(move || loop {
-        loop {
-            let payload = read_packet(&stream).unwrap();
-            let packet = parse_payload(payload).unwrap();
-            // send the packet to the UI thread:
-            sender.send(packet).unwrap();
-            // notify UI thread:
-            notice_sender.notice();
-        }
-    });    
-}
 
 
 fn create_event_window() -> nwg::Window {
@@ -65,14 +48,13 @@ fn main() {
         return;
     }
     let uri = args[1].clone();
-    let wstream = TcpStream::connect(uri).expect("connection failed");
-    let rstream = wstream.try_clone().unwrap();
+    let stream = TcpStream::connect(uri).expect("connection failed");
 
     let xpra_client = client::client::XpraClient {
         hello_sent: false,
         server_version: "".to_string(),
         windows: HashMap::new(),
-        stream: wstream,
+        stream: stream,
         lock: None,
     };
 
@@ -89,7 +71,6 @@ fn main() {
     let window = create_event_window();
     let window_handle = window.handle;
     let notice = create_notice(&window);
-    let notice_sender = notice.sender();
     let (tx, rx): (Sender<Vec<Yaml>>, Receiver<Vec<Yaml>>) = channel();
     let event_window = Rc::new(window);
     let event_handler_window = event_window.clone();
@@ -102,6 +83,9 @@ fn main() {
             E::OnInit => {
                 let mut xc = client.lock().unwrap();
                 if ! xc.hello_sent {
+                    let txc = tx.clone();
+                    let notice_sender = notice.sender();
+                    xc.start_read_loop(txc, notice_sender);
                     xc.hello_sent = true;
                     xc.send_hello();
                 }
@@ -125,8 +109,6 @@ fn main() {
             }
         }
     });
-
-    start_read_loop(rstream, tx, notice_sender);
 
     nwg::dispatch_thread_events();
 

@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::net::{TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime};
+use std::sync::mpsc::{Sender};
+use std::{thread};
 
 use std::io::{Error, ErrorKind};
 
@@ -20,7 +22,8 @@ use xpra::net::serde::{
 };
 
 use xpra::VERSION;
-use xpra::net::io::{write_packet};
+use xpra::net::io::{write_packet, read_packet};
+use xpra::net::serde::{ parse_payload };
 use super::draw_decoder;
 use super::window::{XpraWindow};
 
@@ -47,20 +50,20 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    pub fn send_pointer_position(&self, wid: i64, x: i32, y: i32) {
+    fn send_pointer_position(&self, wid: i64, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
         let packet = json!(["pointer", device_id, sequence, wid, [x, y], {}]);
         self.write_json(packet);
     }
 
-    pub fn send_pointer_button(&self, wid: i64, button: i8, pressed: bool, x: i32, y: i32) {
+    fn send_pointer_button(&self, wid: i64, button: i8, pressed: bool, x: i32, y: i32) {
         let device_id = 0;
         let packet = json!(["pointer-button", device_id, wid, button, pressed, [x, y], {}]);
         self.write_json(packet);
     }
 
-    pub fn send_key_event(&self, wid: i64, keycode: &u32, pressed: bool) {
+    fn send_key_event(&self, wid: i64, keycode: &u32, pressed: bool) {
         let keyname = "";
         let keystr = "";
         let group = 0;
@@ -68,18 +71,18 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    pub fn send_window_close(&self, wid: i64) {
+    fn send_window_close(&self, wid: i64) {
         let packet = json!(["close-window", wid]);
         self.write_json(packet);
     }
 
-    pub fn send_damage_sequence(&self, seq: i64, wid: i64, w: i32, h: i32, decode_time: i128, message: String) {
+    fn send_damage_sequence(&self, seq: i64, wid: i64, w: i32, h: i32, decode_time: i128, message: String) {
         // send ack:
         let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
         self.write_json(packet);
     }
 
-    
+
     fn write_json(&self, packet: Value) {
         // should use yaml instead?
         let packet_str = packet.to_string();
@@ -87,6 +90,20 @@ impl XpraClient {
         write_packet(&self.stream, packet_data);
     }
 
+
+    pub fn start_read_loop(&mut self, sender: Sender<Vec<Yaml>>, notice_sender: nwg::NoticeSender) {
+        let stream = self.stream.try_clone().unwrap();
+        thread::spawn(move || loop {
+            loop {
+                let payload = read_packet(&stream).unwrap();
+                let packet = parse_payload(payload).unwrap();
+                // send the packet to the UI thread:
+                sender.send(packet).unwrap();
+                // notify UI thread:
+                notice_sender.notice();
+            }
+        });
+    }
 
     pub fn process_packet(&mut self, packet: &Vec<Yaml>) -> Result<(), Error> {
         if packet.len() == 0 {
@@ -253,7 +270,7 @@ impl XpraClient {
     pub fn handle_window_event(&mut self, wid: i64, evt: nwg::Event, evt_data: &nwg::EventData, handle: nwg::ControlHandle) -> bool {
         use nwg::Event as E;
         use nwg::MousePressEvent as M;
-    
+
         match evt {
             E::OnInit => {
                 // todo: tell the server it is mapped from here instead
