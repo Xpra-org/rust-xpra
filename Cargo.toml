@@ -19,3 +19,5 @@ base64 = "0.22.1"
 [profile.release]
 strip = true
 opt-level = "z"
+lto = true
+
