@@ -95,7 +95,7 @@ impl XpraWindow {
             SelectObject(update_hdc, update_bitmap as _);
             SelectObject(hdc, bitmap as _);
 
-            let blit = BitBlt(hdc, x, y, w*9/10, h, update_hdc, 0, 0, SRCCOPY);
+            let blit = BitBlt(hdc, x, y, w, h, update_hdc, 0, 0, SRCCOPY);
             warn!("blit to offscreen: {:?}", blit);
 
             // free the temporary bitmap / hdc:
