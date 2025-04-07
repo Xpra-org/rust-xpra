@@ -3,7 +3,6 @@ extern crate native_windows_gui as nwg;
 
 use std::rc::Rc;
 use std::mem::size_of;
-use std::cmp::max;
 use log::{debug, warn, error};
 use winapi::shared::windef::{HDC, HBITMAP, RECT, HWND};
 use winapi::shared::ntdef::LONG;
@@ -12,11 +11,9 @@ use winapi::um::wingdi::{
     CreateCompatibleDC, CreateCompatibleBitmap,
     DeleteDC, DeleteObject,
     SelectObject,
-    BitBlt, StretchBlt,
+    BitBlt,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, RGBQUAD,
-    SetDIBits, DIB_RGB_COLORS,
-    // PAINTSTRUCT,
-    SRCCOPY,
+    SetDIBits, DIB_RGB_COLORS, SRCCOPY,
     // for painting the frame:
     CreateSolidBrush, RGB
 };
