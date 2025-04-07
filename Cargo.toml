@@ -1,0 +1,17 @@
+[package]
+name = "xpra"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mpsc = "0.2.5"
+serde_json = "1.0"
+yaml-rust2 = "0.9"
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
+simple_logger = "5.0"
+native-windows-gui = "1.0.12"
+zune-core = "0.4.12"
+zune-jpeg = "0.3.1"
+zune-png = "0.4.10"
+winapi = "0.3.9"
+base64 = "0.22.1"
