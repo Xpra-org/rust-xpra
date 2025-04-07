@@ -48,11 +48,6 @@ impl XpraWindow {
             return;
         }
 
-        if seq > 10 {
-            error!("skipped sequence {:?}", seq);
-            return;
-        }
-
         // for testing, draw rectangle:
         unsafe {
             // create bitmap from the pixel data:
