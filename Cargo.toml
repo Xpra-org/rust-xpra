@@ -20,4 +20,5 @@ base64 = "0.22.1"
 strip = true
 opt-level = "z"
 lto = true
+codegen-units = 1
 
