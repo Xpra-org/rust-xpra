@@ -1,6 +1,7 @@
 
 extern crate native_windows_gui as nwg;
 
+use machine_uid;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::net::{TcpStream};
@@ -52,6 +53,7 @@ impl XpraClient {
             "user": env::var("USER").unwrap_or("".into()),
             "username": env::var("USERNAME").unwrap_or("".into()),
             "hostname": env::var("HOSTNAME").unwrap_or("".into()),
+            "uuid": machine_uid::get().unwrap(),
         }]);
         self.write_json(packet);
     }
