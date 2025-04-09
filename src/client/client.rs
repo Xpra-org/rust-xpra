@@ -39,6 +39,7 @@ pub struct XpraClient {
 impl XpraClient {
 
     pub fn send_hello(&self) {
+
         let packet = json!(["hello", {
             "version": VERSION,
             "yaml": true,
@@ -46,6 +47,11 @@ impl XpraClient {
             "windows": true,
             "sharing": true,
             "encodings": ["png", "jpeg", ],
+            "client_type": "rust",
+            "platform": "win32",
+            "user": env::var("USER").unwrap_or("".into()),
+            "username": env::var("USERNAME").unwrap_or("".into()),
+            "hostname": env::var("HOSTNAME").unwrap_or("".into()),
         }]);
         self.write_json(packet);
     }

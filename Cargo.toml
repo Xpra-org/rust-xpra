@@ -15,10 +15,10 @@ zune-jpeg = "0.3.1"
 zune-png = "0.4.10"
 winapi = "0.3.9"
 base64 = "0.22.1"
+env = "1.0.1"
 
 [profile.release]
 strip = true
 opt-level = "z"
 lto = true
 codegen-units = 1
-
