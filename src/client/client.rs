@@ -59,7 +59,8 @@ impl XpraClient {
 
     fn send_pointer_button(&self, wid: i64, button: i8, pressed: bool, x: i32, y: i32) {
         let device_id = 0;
-        let packet = json!(["pointer-button", device_id, wid, button, pressed, [x, y], {}]);
+        let sequence = 0;
+        let packet = json!(["pointer-button", device_id, sequence, wid, button, pressed, [x, y], {}]);
         self.write_json(packet);
     }
 
