@@ -3,7 +3,7 @@ extern crate native_windows_gui as nwg;
 
 use std::rc::Rc;
 use std::mem::size_of;
-use log::{debug, warn, error};
+use log::{debug, error};
 use winapi::shared::windef::{HDC, HBITMAP, RECT, HWND};
 use winapi::shared::ntdef::LONG;
 use winapi::shared::minwindef::{DWORD};
@@ -91,7 +91,7 @@ impl XpraWindow {
             SelectObject(hdc, bitmap as _);
 
             let blit = BitBlt(hdc, x, y, w, h, update_hdc, 0, 0, SRCCOPY);
-            warn!("blit to offscreen: {:?}", blit);
+            debug!("blit to offscreen: {:?}", blit);
 
             // free the temporary bitmap / hdc:
             DeleteObject(update_bitmap as _);
@@ -108,15 +108,15 @@ impl XpraWindow {
 
 
     pub fn draw_screen(&self, paintstruct: PAINTSTRUCT) {
-        warn!("draw_screen");
+        debug!("draw_screen");
         if self.hdc.is_some() {
             unsafe {
                 let paint_hdc = paintstruct.hdc;
                 let hdc = self.hdc.unwrap();
-                warn!("hdc={:?}", hdc);
+                debug!("hdc={:?}", hdc);
                 SelectObject(hdc, self.bitmap.unwrap() as _);
                 let blit = BitBlt(paint_hdc, 0, 0, self.width, self.height, hdc, 0, 0, SRCCOPY);
-                warn!("screen blit={:?}", blit);
+                debug!("screen blit={:?}", blit);
             }
         }
     }

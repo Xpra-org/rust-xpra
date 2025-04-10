@@ -344,7 +344,7 @@ impl XpraClient {
             E::OnPaint => {
                 let wres = self.windows.get_mut(&wid);
                 if wres.is_none() {
-                    warn!("OnPaint: window {:?} not found", wid);
+                    debug!("OnPaint: window {:?} not found", wid);
                     return false;
                 }
                 let window = wres.unwrap();
