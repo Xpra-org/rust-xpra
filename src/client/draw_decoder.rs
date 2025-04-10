@@ -10,7 +10,7 @@ pub fn decode(coding: &String, data: Vec<u8>) -> Result<Vec<u8>, String>{
     info!("decode {:?}: {:?} bytes", coding, data.len());
     trace!("data={:?}", data);
     if coding == "jpeg" {
-        let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB);
+        let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::BGR);
         let mut decoder = zune_jpeg::JpegDecoder::new_with_options(&data, options);
         match decoder.decode() {
             Ok(data) => {
