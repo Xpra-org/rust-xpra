@@ -79,7 +79,7 @@ impl XpraClient {
         use winapi::um::winuser::{ MapVirtualKeyA, GetKeyNameTextA, VK_RETURN };
         let keystr;
         let scancode;
-        let mut buf = vec![0u8, 128];
+        let mut buf = vec![0u8; 128];
         unsafe {
             keystr = char::from_u32(MapVirtualKeyA(*keycode, 2));   // MAPVK_TO_CHAR = 2
             scancode = MapVirtualKeyA(*keycode, 0);                 // MAPVK_TO_VSC = 0
