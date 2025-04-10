@@ -353,7 +353,7 @@ impl XpraClient {
                     return true;
                 }
                 if let nwg::EventData::OnPaint(paintdata) = evt_data {
-                    warn!("OnPaint: {:?}", paintdata);
+                    debug!("OnPaint: {:?}", paintdata);
                     let paintstruct = paintdata.begin_paint();
                     window.draw_screen(paintstruct);
                     paintdata.end_paint(&paintstruct);
