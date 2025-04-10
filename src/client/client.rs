@@ -46,6 +46,8 @@ impl XpraClient {
             "yaml": true,
             "chunks": false,
             "windows": true,
+            "keyboard": true,
+            "mouse": true,
             "sharing": true,
             "encodings": ["png", "jpeg", ],
             "client_type": "rust",
@@ -73,8 +75,21 @@ impl XpraClient {
     }
 
     fn send_key_event(&self, wid: i64, keycode: &u32, pressed: bool) {
-        let keyname = "";
-        let keystr = "";
+        // use windows_sys::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyA;
+        use winapi::um::winuser::{ MapVirtualKeyA, GetKeyNameTextA, VK_RETURN };
+        let keystr;
+        let scancode;
+        let mut buf = vec![0u8, 128];
+        unsafe {
+            keystr = char::from_u32(MapVirtualKeyA(*keycode, 2));   // MAPVK_TO_CHAR = 2
+            scancode = MapVirtualKeyA(*keycode, 0);                 // MAPVK_TO_VSC = 0
+            GetKeyNameTextA((scancode << 16) as i32, buf.as_mut_ptr() as *mut i8, 127);
+        }
+        let mut keyname = String::from_utf8(buf).unwrap();
+        keyname = keyname.trim_matches(char::from(0)).to_string();
+        if *keycode == VK_RETURN as u32{
+            keyname = "Return".to_string();
+        }
         let group = 0;
         let packet = json!(["key-action", wid, keyname, pressed, [], 0, keystr, keycode, group]);
         self.write_json(packet);
@@ -301,16 +316,22 @@ impl XpraClient {
                 use winapi::shared::windef::{RECT};
                 use nwg::ControlHandle;
                 match handle {
-                    ControlHandle::Hwnd(hwnd) => unsafe {
+                    ControlHandle::Hwnd(hwnd) => {
                         window.new_backing();
-                        let mut r: RECT = mem::zeroed();
-                        GetWindowRect(hwnd, &mut r);
-                        info!("oninit rect: {:?},{:?},{:?},{:?}", r.top, r.left, r.right, r.bottom);
+                        let x;
+                        let y;
+                        let w;
+                        let h;
+                        unsafe {
+                            let mut r: RECT = mem::zeroed();
+                            GetWindowRect(hwnd, &mut r);
+                            x = r.left;
+                            y = r.top;
+                            w = r.right - x;
+                            h = r.bottom - y;
+                        }
+                        info!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
                         // self.send_window_map(wid, x, y, w, h);
-                        let x = r.left;
-                        let y = r.top;
-                        let w = r.right - x;
-                        let h = r.bottom - y;
                         let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
                         self.write_json(packet);
                         return true;
@@ -367,8 +388,9 @@ impl XpraClient {
                 }
                 return true;
             }
-            E::OnChar => {
-                info!("key {:?}", evt_data);
+            E::OnKeyEnter => {
+                let keycode = 0x0d;
+                self.send_key_event(wid, &keycode, true);
                 return true;
             }
             E::OnWindowClose => {
