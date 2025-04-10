@@ -42,7 +42,7 @@ impl XpraWindow {
         let hdc = self.hdc.unwrap();
         let bitmap = self.bitmap.unwrap();
 
-        let rgb_size = (w * h * 3) as u32;
+        let rgb_size = (w * h * 4) as u32;
         if pixels.len() < rgb_size as usize {
             error!("pixel data is too small!");
             return;
@@ -54,7 +54,7 @@ impl XpraWindow {
             biWidth: w as LONG,
             biHeight: -h as LONG,
             biPlanes: 1,
-            biBitCount: 24,
+            biBitCount: 32,
             biCompression: BI_RGB,
             biSizeImage: rgb_size,
             biXPelsPerMeter: 0,
