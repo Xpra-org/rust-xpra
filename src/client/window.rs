@@ -48,28 +48,27 @@ impl XpraWindow {
             return;
         }
 
-        // for testing, draw rectangle:
-        unsafe {
-            // create bitmap from the pixel data:
-            let header = BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as DWORD,
-                biWidth: w as LONG,
-                biHeight: -h as LONG,
-                biPlanes: 1,
-                biBitCount: 24,
-                biCompression: BI_RGB,
-                biSizeImage: rgb_size,
-                biXPelsPerMeter: 0,
-                biYPelsPerMeter: 0,
-                biClrUsed: 0,
-                biClrImportant: 0,
-            };
-            let quad = RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0};
-            let bitmapinfo = BITMAPINFO {
-                bmiHeader: header,
-                bmiColors: [quad],
-            };
+        // create bitmap from the pixel data:
+        let header = BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as DWORD,
+            biWidth: w as LONG,
+            biHeight: -h as LONG,
+            biPlanes: 1,
+            biBitCount: 24,
+            biCompression: BI_RGB,
+            biSizeImage: rgb_size,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
+        };
+        let quad = RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0};
+        let bitmapinfo = BITMAPINFO {
+            bmiHeader: header,
+            bmiColors: [quad],
+        };
 
+        unsafe {
             let window_hdc = hdc;   //GetDC(self.hwnd);
             let update_hdc = CreateCompatibleDC(window_hdc);
             let update_bitmap = CreateCompatibleBitmap(window_hdc, w, h);
