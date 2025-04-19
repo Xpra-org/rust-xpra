@@ -21,6 +21,7 @@ fn create_event_window() -> nwg::Window {
     // for now, use a real window:
     let mut window = Default::default();
     nwg::Window::builder()
+        .flags(nwg::WindowFlags::WINDOW)
         .size((300, 115))
         .position((300, 300))
         .title("Temporary Event Window")
