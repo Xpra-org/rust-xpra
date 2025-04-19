@@ -1,7 +1,7 @@
 use std::io::{Read, Error, Write, ErrorKind};
-use log::{trace};
 use std::result::{Result};
 use std::net::{TcpStream};
+use log::{trace};
 
 
 pub fn read_packet(mut stream: &TcpStream) -> Result<Vec<u8>, Error> {

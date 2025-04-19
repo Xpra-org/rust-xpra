@@ -1,6 +1,8 @@
 // #![windows_subsystem = "windows"]
 
 extern crate native_windows_gui as nwg;
+extern crate alloc;
+
 use std::env;
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -8,7 +10,7 @@ use std::sync::mpsc::{Sender, Receiver, channel};
 use log::{trace, debug, error};
 use std::sync::{Arc, Mutex};
 use std::net::{TcpStream};
-use yaml_rust2::{Yaml};
+use xpra::net::packet::Packet;
 use simple_logger::SimpleLogger;
 
 mod client;
@@ -50,13 +52,27 @@ fn main() {
     let uri = args[1].clone();
     let stream = TcpStream::connect(uri).expect("connection failed");
 
+    // the event window receives MS Windows events,
+    // and we also use it to notify the client that packets are available
+    let window = create_event_window();
+    let window_handle = window.handle;
+    let notice = create_notice(&window);
+    // this channel is used by I/O threads to send the actual packets to the UI thread:
+    let (packet_tx, packet_rx): (Sender<Packet>, Receiver<Packet>) = channel();
+    // and this channel is used for sending packets from the I/O thread to the decode thread:
+    let (decode_tx, decode_rx): (Sender<Packet>, Receiver<Packet>) = channel();
+
     let xpra_client = client::client::XpraClient {
         hello_sent: false,
         server_version: "".to_string(),
         windows: HashMap::new(),
         stream: stream,
         lock: None,
+        notice: notice,
+        packet_sender: packet_tx,
+        decode_sender: decode_tx,
     };
+    xpra_client.start_draw_decode_loop(decode_rx);
 
     // this is completely overkill
     // because the event handler is single threaded,
@@ -67,25 +83,19 @@ fn main() {
         xc.lock = Some(client_wrapper.clone());
     }
 
-    let client_clone = client_wrapper.clone();
-    let window = create_event_window();
-    let window_handle = window.handle;
-    let notice = create_notice(&window);
-    let (tx, rx): (Sender<Vec<Yaml>>, Receiver<Vec<Yaml>>) = channel();
     let event_window = Rc::new(window);
     let event_handler_window = event_window.clone();
+    let client_clone = client_wrapper.clone();
     let handler = nwg::full_bind_event_handler(&window_handle, move |evt, evt_data, handle| {
         use nwg::Event as E;
         debug!("event {:?}", evt);
         let client = client_clone.clone();
+        let mut xc = client.lock().unwrap();
 
         match evt {
             E::OnInit => {
-                let mut xc = client.lock().unwrap();
                 if ! xc.hello_sent {
-                    let txc = tx.clone();
-                    let notice_sender = notice.sender();
-                    xc.start_read_loop(txc, notice_sender);
+                    xc.start_read_loop();
                     xc.hello_sent = true;
                     xc.send_hello();
                 }
@@ -96,14 +106,14 @@ fn main() {
                 }
             },
             E::OnNotice => {
-                trace!("OnNotice");
-                let packet = rx.recv().unwrap();
-                let mut client = client.lock().unwrap();
-                client.process_packet(&packet).unwrap();
+                let packet = packet_rx.recv().unwrap();
+                trace!("OnNotice packet={:?}", packet.main[0]);
+                // let mut arc_packet = Arc::new(packet);
+                let boxed = Box::new(packet);
+                xc.process_packet(boxed).unwrap();
             }
             _ => {
-                let mut _client = client.lock().unwrap();
-                if ! _client.handle_window_event(0, evt, &evt_data, handle) {
+                if ! xc.handle_window_event(0, evt, &evt_data, handle) {
                     // DefWindowProcW();
                 }
             }

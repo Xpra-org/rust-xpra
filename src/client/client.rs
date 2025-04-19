@@ -1,14 +1,14 @@
-
 extern crate native_windows_gui as nwg;
 
+use alloc::string::ToString;
 use machine_uid;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::net::{TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime};
-use std::sync::mpsc::{Sender};
-use std::{thread};
+use std::sync::mpsc::{Sender, Receiver};
+use std::thread;
 
 use std::io::{Error, ErrorKind};
 
@@ -19,12 +19,12 @@ use yaml_rust2::{Yaml};
 use log::{debug, info, warn, error};
 use xpra::net::serde::{
     VERSION_KEY_STR,
-    yaml_str, yaml_i32, yaml_i64, yaml_hash_str, yaml_bytes,
 };
 
 use xpra::VERSION;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::{ parse_payload };
+use xpra::net::packet::Packet;
 use super::draw_decoder;
 use super::window::{XpraWindow};
 
@@ -35,6 +35,9 @@ pub struct XpraClient {
     pub windows: HashMap<i64, XpraWindow>,
     pub stream: TcpStream,
     pub lock: Option<Arc<Mutex<XpraClient>>>,
+    pub notice: nwg::Notice,
+    pub packet_sender: Sender<Packet>,
+    pub decode_sender: Sender<Packet>,
 }
 
 impl XpraClient {
@@ -115,52 +118,94 @@ impl XpraClient {
     }
 
 
-    pub fn start_read_loop(&mut self, sender: Sender<Vec<Yaml>>, notice_sender: nwg::NoticeSender) {
+    pub fn start_read_loop(&mut self) {
+        let packet_sender = self.packet_sender.clone();
+        let notice_sender = self.notice.sender();
         let stream = self.stream.try_clone().unwrap();
         thread::spawn(move || loop {
             loop {
                 let payload = read_packet(&stream).unwrap();
                 let packet = parse_payload(payload).unwrap();
                 // send the packet to the UI thread:
-                sender.send(packet).unwrap();
+                packet_sender.send(packet).unwrap();
                 // notify UI thread:
                 notice_sender.notice();
             }
         });
     }
 
-    pub fn process_packet(&mut self, packet: &Vec<Yaml>) -> Result<(), Error> {
+
+    pub fn start_draw_decode_loop(&self, receiver: Receiver<Packet>) {
+        let packet_sender = self.packet_sender.clone();
+        let notice_sender = self.notice.sender();
+        info!("draw loop starting");
+        thread::spawn(move || loop {
+            loop {
+                let mut packet = receiver.recv().unwrap();
+                let wid = packet.get_i64(1);
+                let w = packet.get_i32(4);
+                let h = packet.get_i32(5);
+                let coding = packet.get_str(6);
+                let data = packet.get_bytes(7);
+                let seq = packet.get_i64(8);
+                debug!("wid {:?} got {:?}x{:?} {:?} draw packet", wid, w, h, coding);
+
+                let result = draw_decoder::decode(&coding, data);
+                if result.is_err() {
+                    let message = result.unwrap_err();
+                    error!("draw decoding error for {:?} sequence {:?}: {:?}", coding, seq, message);
+                    // self.send_damage_sequence(seq, wid, w, h, -1, message);
+                    return;
+                }
+                let pixels = result.unwrap();
+                let mut raw = HashMap::new();
+                raw.insert(7, pixels);
+                let mut main = packet.main.to_vec();
+                main[0] = Yaml::String("decoded-draw".to_string());
+                let patched_packet = Packet { main, raw };
+                // send it back to the UI thread, but as 'decoded-draw'
+                packet_sender.send(patched_packet).unwrap();
+                notice_sender.notice();
+            }
+        });
+    }
+
+
+    pub fn process_packet(&mut self, packet: Box<Packet>) -> Result<(), Error> {
         if packet.len() == 0 {
             return Err(Error::new(ErrorKind::InvalidData, "empty packet!"));
         }
-        match &packet[0] {
-            Yaml::String(packet_type) => {
-                self.do_process_packet(packet_type, packet);
-            },
-                _ => {
-                error!("unexpected packet type: {:?}", packet[0]);
-                return Err(Error::new(ErrorKind::InvalidData, "packet type is not a String!"));
-            }
+        let packet_type = packet.get_str(0);
+        if packet_type != "" {
+            self.do_process_packet(&packet_type, packet);
+        }
+        else {
+            error!("malformed packet");
+            return Err(Error::new(ErrorKind::InvalidData, "missing packet type!"));
         }
         return Ok(());
     }
 
-    fn do_process_packet(&mut self, packet_type: &String, packet: &Vec<Yaml>) {
+    fn do_process_packet(&mut self, packet_type: &String, packet: Box<Packet>) {
+        let mut p = *packet;
         if packet_type == "hello" {
-            assert!(packet.len() > 1);
-            self.process_hello(&packet[1]);
+            assert!(p.len() > 1);
+            self.process_hello(&p.main[1]);
         } else if packet_type == "encodings" {
-            debug!("got server encodings: {:?}", packet[1]);
+            debug!("got server encodings: {:?}", p.main[1]);
         } else if packet_type == "startup-complete" {
             info!("startup complete!");
         } else if packet_type == "new-window" {
-            self.process_new_window(packet)
+            self.process_new_window(&p)
         } else if packet_type == "lost-window" {
-            self.process_lost_window(packet)
+            self.process_lost_window(&p)
         } else if packet_type == "window-metadata" {
-            self.process_window_metadata(packet)
+            self.process_window_metadata(&p)
         } else if packet_type == "draw" {
-            self.process_draw(packet)
+            // send the packet to the decode thread:
+            self.decode_sender.send(p).unwrap();
+        } else if packet_type == "decoded-draw" {
+            self.process_decoded_draw(&mut p)
         } else {
             warn!("unhandled packet type {:?}", packet_type);
         }
@@ -182,15 +227,14 @@ impl XpraClient {
         }
     }
 
-    fn process_new_window(&mut self, packet: &Vec<Yaml>) {
-        debug!("new-window {:?}", packet);
-        let wid = yaml_i64(&packet[1]);
-        let x = yaml_i32(&packet[2]);
-        let y = yaml_i32(&packet[3]);
-        let w = yaml_i32(&packet[4]);
-        let h = yaml_i32(&packet[5]);
-        let metadata = &packet[6];
-        let title = yaml_hash_str(metadata, "title".to_string());
+    fn process_new_window(&mut self, packet: &Packet) {
+        let wid = packet.get_i64(1);
+        debug!("new-window {:?}", wid);
+        let x = packet.get_i32(2);
+        let y = packet.get_i32(3);
+        let w = packet.get_i32(4);
+        let h = packet.get_i32(5);
+        let title = packet.get_hash_str(6, "title".to_string());
         // create the window:
         let mut window = Default::default();
         nwg::Window::builder()
@@ -240,28 +284,29 @@ impl XpraClient {
         }
     }
 
-    fn process_lost_window(&mut self, packet: &Vec<Yaml>) {
-        let wid = yaml_i64(&packet[1]);
+    fn process_lost_window(&mut self, packet: &Packet) {
+        let wid = packet.get_i64(1);
         if self.windows.remove(&wid).is_none() {
             warn!("window {:?} not found!", wid);
         }
     }
 
-    fn process_window_metadata(&mut self, packet: &Vec<Yaml>) {
-        let wid = yaml_i64(&packet[1]);
-        let metadata = &packet[2];
+    fn process_window_metadata(&mut self, packet: &Packet) {
+        let wid = packet.get_i64(1);
+        let metadata = &packet.main[2];
         info!("window-metadata for {:?}: {:?}", wid, metadata);
     }
 
-    fn process_draw(&mut self, packet: &Vec<Yaml>) {
-        let wid = yaml_i64(&packet[1]);
-        let x = yaml_i32(&packet[2]);
-        let y = yaml_i32(&packet[3]);
-        let w = yaml_i32(&packet[4]);
-        let h = yaml_i32(&packet[5]);
-        let coding = yaml_str(&packet[6]);
-        let data = yaml_bytes(&packet[7]);
-        let seq = yaml_i64(&packet[8]);
+    fn process_decoded_draw(&mut self, packet: &mut Packet) {
+        let p = packet;
+        let wid = p.get_i64(1);
+        let x = p.get_i32(2);
+        let y = p.get_i32(3);
+        let w = p.get_i32(4);
+        let h = p.get_i32(5);
+        let coding = p.get_str(6);
+        let pixels = p.get_bytes(7);
+        let seq = p.get_i64(8);
          //let options = yaml_dict...
 
         let wres = self.windows.get(&wid);
@@ -273,13 +318,6 @@ impl XpraClient {
         let window = wres.unwrap();
         info!("draw {:?} : {:?}", wid, coding);
         let start = SystemTime::now();
-        let result = draw_decoder::decode(&coding, data);
-        if result.is_err() {
-            let message = result.unwrap_err();
-            self.send_damage_sequence(seq, wid, w, h, -1, message);
-            return;
-        }
-        let pixels = result.unwrap();
         let end = SystemTime::now();
         let decode_time: i128 = end.duration_since(start).unwrap().as_millis() as i128;
 
@@ -289,7 +327,6 @@ impl XpraClient {
         let message = "".to_string();
         self.send_damage_sequence(seq, wid, w, h, decode_time, message);
     }
-
 
     pub fn handle_window_event(&mut self, wid: i64, evt: nwg::Event, evt_data: &nwg::EventData, handle: nwg::ControlHandle) -> bool {
         use nwg::Event as E;
