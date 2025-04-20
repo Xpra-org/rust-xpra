@@ -98,6 +98,11 @@ impl XpraClient {
         self.write_json(packet);
     }
 
+    fn send_window_map(&self, wid: i64, x: i32, y: i32, w: i32, h: i32) {
+        let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
+        self.write_json(packet);
+    }
+
     fn send_window_close(&self, wid: i64) {
         let packet = json!(["close-window", wid]);
         self.write_json(packet);
@@ -365,9 +370,7 @@ impl XpraClient {
                             h = r.bottom - y;
                         }
                         info!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
-                        // self.send_window_map(wid, x, y, w, h);
-                        let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
-                        self.write_json(packet);
+                        self.send_window_map(wid, x, y, w, h);
                         true
                     },
                     _ => {
