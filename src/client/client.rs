@@ -269,11 +269,11 @@ impl XpraClient {
                 let mut xc = client_wrapper.lock().unwrap();
                 xc.handle_window_event(wid, evt, &evt_data, handle);
             });
+            // create the model for this window:
             let xpra_window = XpraWindow {
                 wid: wid,
                 window: window,
                 hwnd: hwnd,
-                // canvas: canvas,
                 handler: handler,
                 mapped: false,
                 hdc: None,
@@ -285,7 +285,7 @@ impl XpraClient {
             self.windows.insert(wid, xpra_window);
         }
         else {
-            //heh!?
+            error!("handle does not match!?");
         }
     }
 
