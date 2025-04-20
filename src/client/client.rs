@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime};
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
+use std::cmp::max;
 
 use std::io::{Error, ErrorKind};
 
@@ -98,7 +99,7 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    fn send_window_map(&self, wid: i64, x: i32, y: i32, w: i32, h: i32) {
+    fn send_window_map(&self, wid: i64, x: i32, y: i32, w: u32, h: u32) {
         let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
         self.write_json(packet);
     }
@@ -237,8 +238,8 @@ impl XpraClient {
         debug!("new-window {:?}", wid);
         let x = packet.get_i32(2);
         let y = packet.get_i32(3);
-        let w = packet.get_i32(4);
-        let h = packet.get_i32(5);
+        let w = packet.get_u32(4);
+        let h = packet.get_u32(5);
         let title = packet.get_hash_str(6, "title".to_string());
         // create the window:
         let mut window = Default::default();
@@ -359,15 +360,15 @@ impl XpraClient {
                         window.new_backing();
                         let x;
                         let y;
-                        let w;
-                        let h;
+                        let w: u32;
+                        let h: u32;
                         unsafe {
                             let mut r: RECT = mem::zeroed();
                             GetWindowRect(hwnd, &mut r);
                             x = r.left;
                             y = r.top;
-                            w = r.right - x;
-                            h = r.bottom - y;
+                            w = max(1, r.right - x) as u32;
+                            h = max(1, r.bottom - y) as u32;
                         }
                         info!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
                         self.send_window_map(wid, x, y, w, h);

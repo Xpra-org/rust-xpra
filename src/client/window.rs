@@ -26,8 +26,8 @@ pub struct XpraWindow {
     pub hwnd: HWND,
     // pub canvas: nwg::ExternCanvas,
     pub handler: nwg::EventHandler,
-    pub width: i32,
-    pub height: i32,
+    pub width: u32,
+    pub height: u32,
     pub mapped: bool,
     pub hdc: Option<HDC>,
     pub bitmap: Option<HBITMAP>,
@@ -114,7 +114,7 @@ impl XpraWindow {
                 let hdc = self.hdc.unwrap();
                 debug!("hdc={:?}", hdc);
                 SelectObject(hdc, self.bitmap.unwrap() as _);
-                let blit = BitBlt(paint_hdc, 0, 0, self.width, self.height, hdc, 0, 0, SRCCOPY);
+                let blit = BitBlt(paint_hdc, 0, 0, self.width as i32, self.height as i32, hdc, 0, 0, SRCCOPY);
                 debug!("screen blit={:?}", blit);
             }
         }
@@ -127,7 +127,7 @@ impl XpraWindow {
             let window_hdc = GetDC(self.hwnd);
             let dc = CreateCompatibleDC(window_hdc);
             self.hdc = Some(dc);
-            let membm = CreateCompatibleBitmap(window_hdc, self.width, self.height);
+            let membm = CreateCompatibleBitmap(window_hdc, self.width as i32, self.height as i32);
             if membm != std::ptr::null_mut() {
                 self.bitmap = Some(membm);
                 debug!("bitmap {:?}", self.bitmap);

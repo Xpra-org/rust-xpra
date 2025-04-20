@@ -32,6 +32,8 @@ impl Packet {
         self.main.len()
     }
 
+    pub fn get_u32(&self, index: u8) -> u32 { yaml_u32(&self.main[index as usize]) }
+
     pub fn get_i32(&self, index: u8) -> i32 {
         yaml_i32(&self.main[index as usize])
     }
@@ -61,11 +63,20 @@ impl Packet {
     }
 }
 
+
+pub fn yaml_u32(value: &Yaml) -> u32 {
+    if let Yaml::Integer(ivalue) = value {
+        return *ivalue as u32;
+    }
+    0
+}
+
+
 pub fn yaml_i32(value: &Yaml) -> i32 {
     if let Yaml::Integer(ivalue) = value {
         return *ivalue as i32;
     }
-    return 0;
+    0
 }
 
 
@@ -73,7 +84,7 @@ pub fn yaml_i64(value: &Yaml) -> i64 {
     if let Yaml::Integer(ivalue) = value {
         return *ivalue as i64;
     }
-    return 0;
+    0
 }
 
 
@@ -81,7 +92,7 @@ pub fn yaml_str(value: &Yaml) -> String {
     if let Yaml::String(s) = value {
         return String::from(s);
     }
-    return "".to_string();
+    "".to_string()
 }
 
 
