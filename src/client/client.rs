@@ -183,7 +183,7 @@ impl XpraClient {
             error!("malformed packet");
             return Err(Error::new(ErrorKind::InvalidData, "missing packet type!"));
         }
-        return Ok(());
+        Ok(())
     }
 
     fn do_process_packet(&mut self, packet_type: &String, packet: Box<Packet>) {
@@ -371,10 +371,10 @@ impl XpraClient {
                         // self.send_window_map(wid, x, y, w, h);
                         let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
                         self.write_json(packet);
-                        return true;
+                        true
                     },
                     _ => {
-                        return false;
+                        false
                     }
                 }
             }
@@ -396,48 +396,48 @@ impl XpraClient {
                     paintdata.end_paint(&paintstruct);
                     return true;
                 }
-                return false;
+                false
             }
             E::OnMouseMove => {
                 let (x, y) = nwg::GlobalCursor::position();
                 self.send_pointer_position(wid, x, y);
-                return true;
+                true
             }
             E::OnMousePress(M::MousePressLeftDown) => {
                 let (x, y) = nwg::GlobalCursor::position();
                 self.send_pointer_button(wid, 1, true, x, y);
-                return true;
+                true
             }
             E::OnMousePress(M::MousePressLeftUp) => {
                 let (x, y) = nwg::GlobalCursor::position();
                 self.send_pointer_button(wid, 1, false, x, y);
-                return true;
+                true
             }
             E::OnKeyPress => {
                 if let nwg::EventData::OnKey(keycode) = evt_data {
                     self.send_key_event(wid, keycode, true);
                 }
-                return true;
+                true
             }
             E::OnKeyRelease => {
                 if let nwg::EventData::OnKey(keycode) = evt_data {
                     self.send_key_event(wid, keycode, false);
                 }
-                return true;
+                true
             }
             E::OnKeyEnter => {
                 let keycode = 0x0d;
                 self.send_key_event(wid, &keycode, true);
-                return true;
+                true
             }
             E::OnWindowClose => {
                 // client.send_close();
                 self.send_window_close(wid);
-                return true;
+                true
             },
             _ => {
                 debug!("event {:?} on wid={:?} handle={:?}", evt, wid, handle);
-                return false;
+                false
             }
         }
     }

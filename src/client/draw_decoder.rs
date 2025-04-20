@@ -29,5 +29,5 @@ pub fn decode(coding: &String, data: Vec<u8>) -> Result<Vec<u8>, String>{
             Err(e) => return Err(format!("png decoding error: {:?}", e))
         };
     }
-    return Err(format!("unsupported encoding {coding}"));
+    Err(format!("unsupported encoding {coding}"))
 }

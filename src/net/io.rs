@@ -46,7 +46,7 @@ pub fn make_header(data: &[u8]) -> Vec<u8>{
         let l8 = len >> (8*(3-i));
         buf.push((l8 & 0xff) as u8);
     }
-    return buf;
+    buf
 }
 
 

@@ -27,7 +27,7 @@ fn create_event_window() -> nwg::Window {
         .title("Temporary Event Window")
         .build(&mut window)
         .unwrap();
-    return window;
+    window
 }
 
 fn create_notice(window: &nwg::Window) -> nwg::Notice {
@@ -35,7 +35,7 @@ fn create_notice(window: &nwg::Window) -> nwg::Notice {
     nwg::Notice::builder()
         .parent(window)
         .build(&mut notice).expect("failed to create notice");
-    return notice;
+    notice
 }
 
 

@@ -26,11 +26,11 @@ pub fn parse_payload(mut payload: Vec<u8>) -> Result<Packet, Error> {
     // error!("packet = {:?}", packet);
     match packet {
         Yaml::Array(array) => {
-            return Ok(Packet{ main: array.to_vec(), raw: HashMap::new() });
+            Ok(Packet{ main: array.to_vec(), raw: HashMap::new() })
         },
         _ => {
             error!("packet is not an array: {:?}", packet);
-            return Err(Error::new(ErrorKind::InvalidData, "received invalid packet data type"));
+            Err(Error::new(ErrorKind::InvalidData, "received invalid packet data type"))
         },
     }
 }
