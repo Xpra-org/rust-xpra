@@ -3,6 +3,7 @@
 extern crate native_windows_gui as nwg;
 extern crate alloc;
 
+use core::ptr;
 use std::env;
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -12,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::net::{TcpStream};
 use xpra::net::packet::Packet;
 use simple_logger::SimpleLogger;
+use winapi::um::winnt::LONG;
+use winapi::shared::{ minwindef::DWORD, windef::{HWINEVENTHOOK, HWND} };
 
 mod client;
 
@@ -121,7 +124,34 @@ fn main() {
         }
     });
 
+    // hook global events:
+    use winapi::um::winuser::{ EVENT_MAX, EVENT_MIN, SetWinEventHook, UnhookWinEvent};
+    // if let nwg::ControlHandle::Hwnd(_handle) = window_handle {
+    // let mut process_id = MaybeUninit::uninit();
+    // let thread_id = unsafe { GetWindowThreadProcessId(handle, process_id.as_mut_ptr()) };
+    // let process_id = unsafe { process_id.assume_init() };
+    let hook: HWINEVENTHOOK = unsafe {
+        SetWinEventHook(EVENT_MIN, EVENT_MAX, ptr::null_mut(), Some(win_event_hook_callback), 0, 0, 0)
+    };
+
     nwg::dispatch_thread_events();
 
     nwg::unbind_event_handler(&handler);
+
+    unsafe {
+        UnhookWinEvent(hook);
+    }
+}
+
+extern "system" fn win_event_hook_callback(
+    hook: HWINEVENTHOOK,
+    event: DWORD,
+    hwnd: HWND,
+    id_object: LONG,
+    id_child: LONG,
+    event_thread: DWORD,
+    event_time: DWORD,
+) {
+    debug!("event: {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
+        hook, event, hwnd, id_object, id_child, event_thread, event_time);
 }
