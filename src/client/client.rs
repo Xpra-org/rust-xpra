@@ -334,9 +334,6 @@ impl XpraClient {
 
         match evt {
             E::OnInit => {
-                // todo: tell the server it is mapped from here instead
-                // let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
-                // xc.write_json(packet);
                 let wres = self.windows.get_mut(&wid);
                 if wres.is_none() {
                     warn!("OnInit: window {:?} not found", wid);
