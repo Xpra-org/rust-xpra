@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver, channel};
 use std::net::{TcpStream};
-use log::{trace, debug, info, error};
+use log::{trace, debug, info, error, LevelFilter};
 use xpra::net::packet::Packet;
 use simple_logger::SimpleLogger;
 use winapi::um::winnt::LONG;
@@ -42,7 +42,13 @@ fn create_notice(window: &nwg::Window) -> nwg::Notice {
 
 
 fn main() {
-    SimpleLogger::new().init().unwrap();
+    let level = if cfg!(debug_assertions) {
+        LevelFilter::Debug
+    }
+    else {
+        LevelFilter::Info
+    };
+    SimpleLogger::new().with_level(level).init().unwrap();
     #[allow(deprecated)]
     unsafe {
         nwg::set_dpi_awareness();
@@ -161,12 +167,12 @@ extern "system" fn win_event_hook_callback(
     }
     if event == EVENT_OBJECT_FOCUS {
         let focus = hwnd;
-        info!("keyboard focus is on {:#x}", focus as u32);
+        debug!("keyboard focus is on {:#x}", focus as u32);
         return;
     }
     if event == EVENT_SYSTEM_FOREGROUND {
         let focus = hwnd;
-        info!("foreground window is {:#x}", focus as u32);
+        debug!("foreground window is {:#x}", focus as u32);
         let client = client();
         let window = client.find_window(focus);
         if window.is_none() {

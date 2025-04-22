@@ -210,8 +210,8 @@ impl XpraClient {
     pub fn start_draw_decode_loop(&self, receiver: Receiver<Packet>) {
         let packet_sender = self.packet_sender.clone();
         let notice_sender = self.notice.sender();
-        info!("draw loop starting");
         thread::spawn(move || loop {
+            info!("decoding thread started");
             loop {
                 let mut packet = receiver.recv().unwrap();
                 let wid = packet.get_i64(1);
@@ -501,7 +501,7 @@ impl XpraClient {
                     ControlHandle::Hwnd(_hwnd) => {
                         window.new_backing();
                         let (x, y, w, h) = window.get_geometry();
-                        info!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
+                        debug!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
                         if ! window.override_redirect {
                             self.send_window_map(wid, x, y, w, h);
                         }
