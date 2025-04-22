@@ -11,7 +11,6 @@ use std::net::{TcpStream};
 use std::time::{SystemTime};
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
-use std::cmp::max;
 use std::io::{Error, ErrorKind};
 
 
@@ -132,6 +131,11 @@ impl XpraClient {
 
     fn send_window_map(&self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
         let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
+        self.write_json(packet);
+    }
+
+    fn send_window_configure(&self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
+        let packet = json!(["configure-window", wid, x, y, w, h, {}]);
         self.write_json(packet);
     }
 
@@ -405,25 +409,11 @@ impl XpraClient {
                     return true;
                 }
                 window.mapped = true;
-                use std::mem;
-                use winapi::um::winuser::{GetWindowRect};
-                use winapi::shared::windef::{RECT};
                 use nwg::ControlHandle;
                 match handle {
-                    ControlHandle::Hwnd(hwnd) => {
+                    ControlHandle::Hwnd(_hwnd) => {
                         window.new_backing();
-                        let x;
-                        let y;
-                        let w: u32;
-                        let h: u32;
-                        unsafe {
-                            let mut r: RECT = mem::zeroed();
-                            GetWindowRect(hwnd, &mut r);
-                            x = r.left;
-                            y = r.top;
-                            w = max(1, r.right - x) as u32;
-                            h = max(1, r.bottom - y) as u32;
-                        }
+                        let (x, y, w, h) = window.get_geometry();
                         info!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
                         self.send_window_map(wid, x, y, w, h);
                         true
@@ -432,6 +422,17 @@ impl XpraClient {
                         false
                     }
                 }
+            }
+            E::OnMove => {
+                let wres = self.windows.get_mut(&wid);
+                if wres.is_none() {
+                    debug!("OnPaint: window {:?} not found", wid);
+                    return false;
+                }
+                let window = wres.unwrap();
+                let (x, y, w, h) = window.get_geometry();
+                self.send_window_configure(wid, x, y, w, h);
+                true
             }
             E::OnPaint => {
                 let wres = self.windows.get_mut(&wid);

@@ -1,10 +1,12 @@
 
 extern crate native_windows_gui as nwg;
 
+use std::mem;
 use std::rc::Rc;
 use std::mem::size_of;
+use std::cmp::max;
 use log::{debug, error};
-use winapi::shared::windef::{HDC, HBITMAP, RECT, HWND};
+use winapi::shared::windef::{HDC, HBITMAP, RECT, POINT, HWND};
 use winapi::shared::ntdef::LONG;
 use winapi::shared::minwindef::{DWORD};
 use winapi::um::wingdi::{
@@ -14,10 +16,12 @@ use winapi::um::wingdi::{
     BitBlt,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, RGBQUAD,
     SetDIBits, DIB_RGB_COLORS, SRCCOPY,
-    // for painting the frame:
     CreateSolidBrush, RGB
 };
-use winapi::um::winuser::{GetDC, ReleaseDC, FrameRect, PAINTSTRUCT};
+use winapi::um::winuser::{
+    GetDC, ReleaseDC, FrameRect, PAINTSTRUCT,
+    GetClientRect, MapWindowPoints, HWND_DESKTOP
+};
 
 
 pub struct XpraWindow {
@@ -136,6 +140,24 @@ impl XpraWindow {
             }
             ReleaseDC(self.hwnd, window_hdc);
         }
+    }
+
+    pub fn get_geometry(&self) -> (i32, i32, u32, u32) {
+        let x: i32;
+        let y: i32;
+        let w: u32;
+        let h: u32;
+        unsafe {
+            let mut r: RECT = mem::zeroed();
+            GetClientRect(self.hwnd, &mut r);
+            w = max(1, r.right as u32);
+            h = max(1, r.bottom as u32);
+            let mut pos: POINT = mem::zeroed();
+            MapWindowPoints(self.hwnd, HWND_DESKTOP, &mut pos, 1);
+            x = pos.x;
+            y = pos.y;
+        }
+        (x, y, w, h)
     }
 }
 
