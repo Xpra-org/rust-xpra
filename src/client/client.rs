@@ -318,15 +318,16 @@ impl XpraClient {
             });
             // create the model for this window:
             let xpra_window = XpraWindow {
-                wid: wid,
-                window: window,
-                hwnd: hwnd,
-                handler: handler,
+                wid,
+                window,
+                hwnd,
+                handler,
                 mapped: false,
                 hdc: None,
                 bitmap: None,
                 width: w,
                 height: h,
+                override_redirect,
                 paint_debug: cfg!(debug_assertions),
             };
             self.windows.insert(wid, xpra_window);
@@ -398,14 +399,22 @@ impl XpraClient {
         self.send_damage_sequence(seq, wid, w, h, -1, message);
     }
 
-
+    #[allow(unused)]
     pub fn find_wid(&self, hwnd: HWND) -> u64 {
-        for (wid, window) in self.windows.iter() {
-            if window.hwnd == hwnd {
-                return *wid;
-            }
+        let window = self.find_window(hwnd);
+        if window.is_some() {
+            return window.unwrap().wid;
         }
         0
+    }
+
+    pub fn find_window(&self, hwnd: HWND) -> Option<&XpraWindow> {
+        for window in self.windows.values() {
+            if window.hwnd == hwnd {
+                return Some(&window);
+            }
+        }
+        None
     }
 
     pub fn handle_window_event(&mut self, wid: u64, evt: nwg::Event, evt_data: &nwg::EventData, handle: nwg::ControlHandle) -> bool {
