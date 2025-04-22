@@ -2,6 +2,7 @@ extern crate native_windows_gui as nwg;
 use winapi::shared::windef::HWND;
 
 use alloc::string::ToString;
+use alloc::vec::Vec;
 use core::cell::OnceCell;
 use machine_uid;
 
@@ -19,7 +20,12 @@ use std::io::{Error, ErrorKind};
 use serde_json::{json, Value};
 use yaml_rust2::{Yaml};
 use log::{trace, debug, info, warn, error};
-use winapi::um::winuser::{AdjustWindowRectEx, GetWindowLongA, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOZORDER};
+use winapi::um::winuser::{
+    AdjustWindowRectEx, GetKeyState, GetWindowLongA, SetWindowPos,
+    GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
+    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOZORDER,
+    VK_CONTROL, VK_SHIFT, VK_LMENU, VK_RMENU, VK_NUMLOCK,
+};
 use winapi::shared::windef::{RECT};
 use xpra::net::serde::{
     VERSION_KEY_STR,
@@ -128,9 +134,30 @@ impl XpraClient {
         if *keycode == VK_RETURN as u32{
             keyname = "Return".to_string();
         }
+        let modifiers: Vec<String> = self.get_modifier_state();
         let group = 0;
-        let packet = json!(["key-action", wid, keyname, pressed, [], 0, keystr, keycode, group]);
+        let packet = json!(["key-action", wid, keyname, pressed, modifiers, 0, keystr, keycode, group]);
         self.write_json(packet);
+    }
+
+    fn get_modifier_state(&self) -> Vec<String> {
+        let mut modifiers: Vec<String> = Vec::new();
+        unsafe {
+            if GetKeyState(VK_SHIFT) < 0{
+                modifiers.push("shift".to_string());
+            }
+            if GetKeyState(VK_CONTROL) < 0 {
+                modifiers.push("control".to_string());
+            }
+            // should send the matchin modifier map!
+            if GetKeyState(VK_LMENU) < 0 || GetKeyState(VK_RMENU) < 0 {
+                modifiers.push("mod1".to_string());
+            }
+            if GetKeyState(VK_NUMLOCK) < 0 {
+                modifiers.push("mod2".to_string());
+            }
+        }
+        modifiers
     }
 
     fn send_window_map(&self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
@@ -261,6 +288,8 @@ impl XpraClient {
             self.process_draw_decoded(&mut p)
         } else if packet_type == "draw-failed" {
             self.process_draw_failed(&mut p)
+        } else if packet_type == "disconnect" {
+            nwg::stop_thread_dispatch();
         } else {
             warn!("unhandled packet type {:?}", packet_type);
         }
