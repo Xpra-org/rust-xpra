@@ -15,7 +15,6 @@ use std::cmp::max;
 use std::io::{Error, ErrorKind};
 
 
-//use winapi::um::winuser::DefWindowProcW;
 use serde_json::{json, Value};
 use yaml_rust2::{Yaml};
 use log::{debug, info, warn, error};
@@ -188,20 +187,24 @@ impl XpraClient {
                 let seq = packet.get_i64(8);
                 debug!("wid {:?} got {:?}x{:?} {:?} draw packet", wid, w, h, coding);
 
+                let mut main = packet.main.to_vec();
+                let mut raw = HashMap::new();
                 let result = draw_decoder::decode(&coding, data);
                 if result.is_err() {
                     let message = result.unwrap_err();
                     error!("draw decoding error for {:?} sequence {:?}: {:?}", coding, seq, message);
-                    // self.send_damage_sequence(seq, wid, w, h, -1, message);
-                    return;
+                    // send back the failure:
+                    main[0] = Yaml::String("decoding-failed".to_string());
+                    main[7] = Yaml::String(message.to_string());
                 }
-                let pixels = result.unwrap();
-                let mut raw = HashMap::new();
-                raw.insert(7, pixels);
-                let mut main = packet.main.to_vec();
-                main[0] = Yaml::String("decoded-draw".to_string());
+                else {
+                    // send the pixels as a raw buffer:
+                    let pixels = result.unwrap();
+                    raw.insert(7, pixels);
+                    // send it back to the UI thread, but as 'decoded-draw'
+                    main[0] = Yaml::String("draw-decoded".to_string());
+                }
                 let patched_packet = Packet { main, raw };
-                // send it back to the UI thread, but as 'decoded-draw'
                 packet_sender.send(patched_packet).unwrap();
                 notice_sender.notice();
             }
@@ -242,8 +245,10 @@ impl XpraClient {
         } else if packet_type == "draw" {
             // send the packet to the decode thread:
             self.decode_sender.send(p).unwrap();
-        } else if packet_type == "decoded-draw" {
-            self.process_decoded_draw(&mut p)
+        } else if packet_type == "draw-decoded" {
+            self.process_draw_decoded(&mut p)
+        } else if packet_type == "draw-failed" {
+            self.process_draw_failed(&mut p)
         } else {
             warn!("unhandled packet type {:?}", packet_type);
         }
@@ -332,7 +337,7 @@ impl XpraClient {
         info!("window-metadata for {:?}: {:?}", wid, metadata);
     }
 
-    fn process_decoded_draw(&mut self, packet: &mut Packet) {
+    fn process_draw_decoded(&mut self, packet: &mut Packet) {
         let p = packet;
         let wid = p.get_u64(1);
         let x = p.get_i32(2);
@@ -361,6 +366,16 @@ impl XpraClient {
         // send ack:
         let message = "".to_string();
         self.send_damage_sequence(seq, wid, w, h, decode_time, message);
+    }
+
+    fn process_draw_failed(&mut self, packet: &Packet) {
+        let p = packet;
+        let wid = p.get_u64(1);
+        let w = p.get_u32(4);
+        let h = p.get_u32(5);
+        let message = p.get_str(7);
+        let seq = p.get_u64(8);
+        self.send_damage_sequence(seq, wid, w, h, -1, message);
     }
 
 
