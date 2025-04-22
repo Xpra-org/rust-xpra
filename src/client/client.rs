@@ -327,7 +327,7 @@ impl XpraClient {
                 bitmap: None,
                 width: w,
                 height: h,
-                paint_debug: true,
+                paint_debug: cfg!(debug_assertions),
             };
             self.windows.insert(wid, xpra_window);
         }
