@@ -8,16 +8,16 @@ use std::env;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver, channel};
-use log::{trace, debug, error};
-use std::sync::{Arc, Mutex};
 use std::net::{TcpStream};
+use log::{trace, debug, info, error};
 use xpra::net::packet::Packet;
 use simple_logger::SimpleLogger;
 use winapi::um::winnt::LONG;
 use winapi::shared::{ minwindef::DWORD, windef::{HWINEVENTHOOK, HWND} };
+use winapi::um::winuser::{EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_OBJECT_HIDE, EVENT_OBJECT_STATECHANGE, EVENT_OBJECT_VALUECHANGE, EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_DESTROY, EVENT_OBJECT_REORDER, EVENT_OBJECT_FOCUS, EVENT_OBJECT_CREATE, EVENT_OBJECT_NAMECHANGE};
 
 mod client;
-
+use client::client::{XpraClient, client, XPRA_CLIENT};
 
 
 fn create_event_window() -> nwg::Window {
@@ -65,45 +65,35 @@ fn main() {
     // and this channel is used for sending packets from the I/O thread to the decode thread:
     let (decode_tx, decode_rx): (Sender<Packet>, Receiver<Packet>) = channel();
 
-    let xpra_client = client::client::XpraClient {
+    let xpra_client = XpraClient {
         hello_sent: false,
         server_version: "".to_string(),
         windows: HashMap::new(),
         stream: stream,
-        lock: None,
         notice: notice,
         packet_sender: packet_tx,
         decode_sender: decode_tx,
     };
     xpra_client.start_draw_decode_loop(decode_rx);
-
-    // this is completely overkill
-    // because the event handler is single threaded,
-    // but the callbacks require some kind of explicit locking:
-    let client_wrapper = Arc::new(Mutex::new(xpra_client));
-    {
-        let mut xc = client_wrapper.lock().unwrap(); 
-        xc.lock = Some(client_wrapper.clone());
-    }
+    xpra_client.register();
 
     let event_window = Rc::new(window);
     let event_handler_window = event_window.clone();
-    let client_clone = client_wrapper.clone();
     let handler = nwg::full_bind_event_handler(&window_handle, move |evt, evt_data, handle| {
         use nwg::Event as E;
-        debug!("event {:?}", evt);
-        let client = client_clone.clone();
-        let mut xc = client.lock().unwrap();
 
         match evt {
             E::OnInit => {
-                if ! xc.hello_sent {
-                    xc.start_read_loop();
-                    xc.hello_sent = true;
-                    xc.send_hello();
+                debug!("OnInit()");
+                let client = client();
+                if !client.hello_sent {
+                    client.start_read_loop();
+                    client.hello_sent = true;
+                    client.send_hello();
                 }
             }
             E::OnWindowClose => {
+                debug!("OnWindowClose()");
                 if &handle == &event_handler_window as &nwg::Window {
                     nwg::stop_thread_dispatch();
                 }
@@ -111,12 +101,11 @@ fn main() {
             E::OnNotice => {
                 let packet = packet_rx.recv().unwrap();
                 trace!("OnNotice packet={:?}", packet.main[0]);
-                // let mut arc_packet = Arc::new(packet);
                 let boxed = Box::new(packet);
-                xc.process_packet(boxed).unwrap();
+                client().process_packet(boxed).unwrap();
             }
             _ => {
-                if ! xc.handle_window_event(0, evt, &evt_data, handle) {
+                if !client().handle_window_event(0, evt, &evt_data, handle) {
                     // DefWindowProcW();
                 }
             }
@@ -124,7 +113,7 @@ fn main() {
     });
 
     // hook global events:
-    use winapi::um::winuser::{ EVENT_MAX, EVENT_MIN, SetWinEventHook, UnhookWinEvent};
+    use winapi::um::winuser::{EVENT_MAX, EVENT_MIN, SetWinEventHook, UnhookWinEvent};
     // if let nwg::ControlHandle::Hwnd(_handle) = window_handle {
     // let mut process_id = MaybeUninit::uninit();
     // let thread_id = unsafe { GetWindowThreadProcessId(handle, process_id.as_mut_ptr()) };
@@ -142,8 +131,9 @@ fn main() {
     }
 }
 
+
 extern "system" fn win_event_hook_callback(
-    hook: HWINEVENTHOOK,
+    _hook: HWINEVENTHOOK,
     event: DWORD,
     hwnd: HWND,
     id_object: LONG,
@@ -151,6 +141,30 @@ extern "system" fn win_event_hook_callback(
     event_thread: DWORD,
     event_time: DWORD,
 ) {
-    debug!("event: {:?}, {:?}, {:?}, {:?}, {:?}, {:?}, {:?}",
-        hook, event, hwnd, id_object, id_child, event_thread, event_time);
+    if event == EVENT_OBJECT_LOCATIONCHANGE || event == EVENT_OBJECT_VALUECHANGE
+        || event == EVENT_OBJECT_STATECHANGE || event == EVENT_OBJECT_DESTROY
+        || event == EVENT_OBJECT_REORDER || event == EVENT_OBJECT_CREATE
+        || event == EVENT_OBJECT_NAMECHANGE {
+        // silence these
+        return;
+    }
+    if event == EVENT_OBJECT_SHOW || event == EVENT_OBJECT_HIDE {
+        // not sure what to do with this
+        return;
+    }
+    if event == EVENT_OBJECT_FOCUS {
+        let focus = hwnd;
+        info!("keyboard focus is on {:#x}", focus as u32);
+        return;
+    }
+    if event == EVENT_SYSTEM_FOREGROUND {
+        let focus = hwnd;
+        info!("foreground window is {:#x}", focus as u32);
+        let client = client();
+        let wid = client.find_wid(focus);
+        client.send_focus(wid);
+        return;
+    }
+    debug!("event: {:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}",
+            event, hwnd as u32, id_object, id_child, event_thread, event_time);
 }

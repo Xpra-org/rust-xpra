@@ -1,16 +1,17 @@
 extern crate native_windows_gui as nwg;
+use winapi::shared::windef::HWND;
 
 use alloc::string::ToString;
+use core::cell::OnceCell;
 use machine_uid;
+use std::fmt;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::net::{TcpStream};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime};
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
 use std::cmp::max;
-
 use std::io::{Error, ErrorKind};
 
 
@@ -30,18 +31,43 @@ use super::draw_decoder;
 use super::window::{XpraWindow};
 
 
+pub static mut XPRA_CLIENT: OnceCell<XpraClient> = OnceCell::new();
+
+
+pub fn client() -> &'static mut XpraClient {
+    #[allow(static_mut_refs)]
+    unsafe {
+        return crate::XPRA_CLIENT.get_mut().unwrap();
+    }
+}
+
+
 pub struct XpraClient {
     pub hello_sent: bool,
     pub server_version: String,
-    pub windows: HashMap<i64, XpraWindow>,
+    pub windows: HashMap<u64, XpraWindow>,
     pub stream: TcpStream,
-    pub lock: Option<Arc<Mutex<XpraClient>>>,
     pub notice: nwg::Notice,
     pub packet_sender: Sender<Packet>,
     pub decode_sender: Sender<Packet>,
 }
 
+impl fmt::Debug for XpraClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("XpraClient")
+            .field("server", &self.server_version)
+            .finish()
+    }
+}
+
 impl XpraClient {
+
+    pub fn register(self) {
+        #[allow(static_mut_refs)]
+        unsafe {
+            XPRA_CLIENT.set(self).unwrap();
+        }
+    }
 
     pub fn send_hello(&self) {
 
@@ -64,21 +90,27 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    fn send_pointer_position(&self, wid: i64, x: i32, y: i32) {
+    pub fn send_focus(&self, wid: u64) {
+        // let modifiers = ();
+        let packet = json!(["focus", wid, ()]);
+        self.write_json(packet);
+    }
+
+    fn send_pointer_position(&self, wid: u64, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
         let packet = json!(["pointer", device_id, sequence, wid, [x, y], {}]);
         self.write_json(packet);
     }
 
-    fn send_pointer_button(&self, wid: i64, button: i8, pressed: bool, x: i32, y: i32) {
+    fn send_pointer_button(&self, wid: u64, button: i8, pressed: bool, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
         let packet = json!(["pointer-button", device_id, sequence, wid, button, pressed, [x, y], {}]);
         self.write_json(packet);
     }
 
-    fn send_key_event(&self, wid: i64, keycode: &u32, pressed: bool) {
+    fn send_key_event(&self, wid: u64, keycode: &u32, pressed: bool) {
         // use windows_sys::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyA;
         use winapi::um::winuser::{ MapVirtualKeyA, GetKeyNameTextA, VK_RETURN };
         let keystr;
@@ -99,17 +131,17 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    fn send_window_map(&self, wid: i64, x: i32, y: i32, w: u32, h: u32) {
+    fn send_window_map(&self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
         let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
         self.write_json(packet);
     }
 
-    fn send_window_close(&self, wid: i64) {
+    fn send_window_close(&self, wid: u64) {
         let packet = json!(["close-window", wid]);
         self.write_json(packet);
     }
 
-    fn send_damage_sequence(&self, seq: i64, wid: i64, w: i32, h: i32, decode_time: i128, message: String) {
+    fn send_damage_sequence(&self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
         // send ack:
         let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
         self.write_json(packet);
@@ -234,7 +266,7 @@ impl XpraClient {
     }
 
     fn process_new_window(&mut self, packet: &Packet) {
-        let wid = packet.get_i64(1);
+        let wid = packet.get_u64(1);
         debug!("new-window {:?}", wid);
         let x = packet.get_i32(2);
         let y = packet.get_i32(3);
@@ -264,11 +296,8 @@ impl XpraClient {
             let window_handle = window.handle;
             let window = Rc::new(window);
 
-            let client_wrapper = self.lock.clone().expect("no client!");
             let handler = nwg::full_bind_event_handler(&window_handle, move |evt, evt_data, handle| {
-                info!("event {:?} wid={:?} window_handle={:?} handle={:?}", evt, wid, window_handle, handle);
-                let mut xc = client_wrapper.lock().unwrap();
-                xc.handle_window_event(wid, evt, &evt_data, handle);
+                client().handle_window_event(wid, evt, &evt_data, handle);
             });
             // create the model for this window:
             let xpra_window = XpraWindow {
@@ -291,28 +320,28 @@ impl XpraClient {
     }
 
     fn process_lost_window(&mut self, packet: &Packet) {
-        let wid = packet.get_i64(1);
+        let wid = packet.get_u64(1);
         if self.windows.remove(&wid).is_none() {
             warn!("window {:?} not found!", wid);
         }
     }
 
     fn process_window_metadata(&mut self, packet: &Packet) {
-        let wid = packet.get_i64(1);
+        let wid = packet.get_u64(1);
         let metadata = &packet.main[2];
         info!("window-metadata for {:?}: {:?}", wid, metadata);
     }
 
     fn process_decoded_draw(&mut self, packet: &mut Packet) {
         let p = packet;
-        let wid = p.get_i64(1);
+        let wid = p.get_u64(1);
         let x = p.get_i32(2);
         let y = p.get_i32(3);
-        let w = p.get_i32(4);
-        let h = p.get_i32(5);
+        let w = p.get_u32(4);
+        let h = p.get_u32(5);
         let coding = p.get_str(6);
         let pixels = p.get_bytes(7);
-        let seq = p.get_i64(8);
+        let seq = p.get_u64(8);
          //let options = yaml_dict...
 
         let wres = self.windows.get(&wid);
@@ -334,7 +363,17 @@ impl XpraClient {
         self.send_damage_sequence(seq, wid, w, h, decode_time, message);
     }
 
-    pub fn handle_window_event(&mut self, wid: i64, evt: nwg::Event, evt_data: &nwg::EventData, handle: nwg::ControlHandle) -> bool {
+
+    pub fn find_wid(&self, hwnd: HWND) -> u64 {
+        for (wid, window) in self.windows.iter() {
+            if window.hwnd == hwnd {
+                return *wid;
+            }
+        }
+        0
+    }
+
+    pub fn handle_window_event(&mut self, wid: u64, evt: nwg::Event, evt_data: &nwg::EventData, handle: nwg::ControlHandle) -> bool {
         use nwg::Event as E;
         use nwg::MousePressEvent as M;
 

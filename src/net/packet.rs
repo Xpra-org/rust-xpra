@@ -38,6 +38,10 @@ impl Packet {
         yaml_i32(&self.main[index as usize])
     }
 
+    pub fn get_u64(&self, index: u8) -> u64 {
+        yaml_u64(&self.main[index as usize])
+    }
+
     pub fn get_i64(&self, index: u8) -> i64 {
         yaml_i64(&self.main[index as usize])
     }
@@ -75,6 +79,14 @@ pub fn yaml_u32(value: &Yaml) -> u32 {
 pub fn yaml_i32(value: &Yaml) -> i32 {
     if let Yaml::Integer(ivalue) = value {
         return *ivalue as i32;
+    }
+    0
+}
+
+
+pub fn yaml_u64(value: &Yaml) -> u64 {
+    if let Yaml::Integer(ivalue) = value {
+        return *ivalue as u64;
     }
     0
 }

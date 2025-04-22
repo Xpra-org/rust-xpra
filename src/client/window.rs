@@ -21,7 +21,7 @@ use winapi::um::winuser::{GetDC, ReleaseDC, FrameRect, PAINTSTRUCT};
 
 
 pub struct XpraWindow {
-    pub wid: i64,
+    pub wid: u64,
     pub window: Rc<nwg::Window>,
     pub hwnd: HWND,
     // pub canvas: nwg::ExternCanvas,
@@ -37,11 +37,13 @@ pub struct XpraWindow {
 
 impl XpraWindow {
 
-    pub fn paint(&self, seq: i64, x: i32, y: i32, w: i32, h: i32, coding: &String, pixels: &Vec<u8>) {
+    pub fn paint(&self, seq: u64, x: i32, y: i32, w: u32, h: u32, coding: &String, pixels: &Vec<u8>) {
         debug!("paint({seq}, {x}, {y}, {w}, {h}, {coding}, {:?} bytes)", pixels.len());
         let hdc = self.hdc.unwrap();
         let bitmap = self.bitmap.unwrap();
 
+        let w = w as i32;
+        let h = h as i32;
         let rgb_size = (w * h * 4) as u32;
         if pixels.len() < rgb_size as usize {
             error!("pixel data is too small!");
