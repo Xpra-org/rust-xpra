@@ -1,9 +1,8 @@
 
 extern crate native_windows_gui as nwg;
 
-use std::mem;
 use std::rc::Rc;
-use std::mem::size_of;
+use std::mem::{size_of, zeroed};
 use std::cmp::max;
 use log::{trace, debug, error};
 use winapi::shared::windef::{HDC, HBITMAP, RECT, POINT, HWND};
@@ -149,11 +148,11 @@ impl XpraWindow {
         let w: u32;
         let h: u32;
         unsafe {
-            let mut r: RECT = mem::zeroed();
+            let mut r: RECT = zeroed();
             GetClientRect(self.hwnd, &mut r);
             w = max(1, r.right as u32);
             h = max(1, r.bottom as u32);
-            let mut pos: POINT = mem::zeroed();
+            let mut pos: POINT = zeroed();
             MapWindowPoints(self.hwnd, HWND_DESKTOP, &mut pos, 1);
             x = pos.x;
             y = pos.y;

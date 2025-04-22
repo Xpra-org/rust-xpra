@@ -4,8 +4,10 @@ use winapi::shared::windef::HWND;
 use alloc::string::ToString;
 use core::cell::OnceCell;
 use machine_uid;
+
 use std::fmt;
 use std::rc::Rc;
+use std::mem::zeroed;
 use std::collections::HashMap;
 use std::net::{TcpStream};
 use std::time::{SystemTime};
@@ -17,6 +19,8 @@ use std::io::{Error, ErrorKind};
 use serde_json::{json, Value};
 use yaml_rust2::{Yaml};
 use log::{trace, debug, info, warn, error};
+use winapi::um::winuser::{AdjustWindowRectEx, GetWindowLongA, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOP, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOZORDER};
+use winapi::shared::windef::{RECT};
 use xpra::net::serde::{
     VERSION_KEY_STR,
 };
@@ -244,6 +248,8 @@ impl XpraClient {
             self.process_new_window(&p)
         } else if packet_type == "new-override-redirect" {
             self.process_new_override_redirect(&p)
+        } else if packet_type == "window-move-resize" {
+            self.process_window_move_resize(&p)
         } else if packet_type == "lost-window" {
             self.process_lost_window(&p)
         } else if packet_type == "window-metadata" {
@@ -343,6 +349,33 @@ impl XpraClient {
 
     fn process_new_override_redirect(&mut self, packet: &Packet) {
         self.process_new_common(packet, true);
+    }
+
+    fn process_window_move_resize(&mut self, packet: &Packet) {
+        let wid = packet.get_u64(1);
+        let wres = self.windows.get(&wid);
+        if wres.is_none() {
+            error!("cannot move-resize: window {:?} not found", wid);
+            return;
+        }
+        let window = wres.unwrap();
+        let x = packet.get_i32(2);
+        let y = packet.get_i32(3);
+        let w = packet.get_u32(4);
+        let h = packet.get_u32(5);
+
+        unsafe {
+            let mut rect: RECT = zeroed();
+            rect.left = x;
+            rect.top = y;
+            rect.right = x + (w as i32);
+            rect.bottom = y + (h as i32);
+            let style: i32 = GetWindowLongA(window.hwnd, GWL_STYLE);
+            let style_ex: i32 = GetWindowLongA(window.hwnd, GWL_EXSTYLE);
+            AdjustWindowRectEx(&mut rect, style as _, false as _, style_ex as _);
+            let flags = SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_NOZORDER;
+            SetWindowPos(window.hwnd, HWND_TOP, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
+        }
     }
 
     fn process_lost_window(&mut self, packet: &Packet) {
