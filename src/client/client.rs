@@ -296,7 +296,7 @@ impl XpraClient {
             nwg::WindowFlags::POPUP | nwg::WindowFlags::VISIBLE
         }
         else {
-            nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE
+            nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::RESIZABLE
         };
         nwg::Window::builder()
             .flags(flags)
@@ -473,7 +473,9 @@ impl XpraClient {
                         window.new_backing();
                         let (x, y, w, h) = window.get_geometry();
                         info!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
-                        self.send_window_map(wid, x, y, w, h);
+                        if ! window.override_redirect {
+                            self.send_window_map(wid, x, y, w, h);
+                        }
                         true
                     },
                     _ => {
@@ -481,7 +483,7 @@ impl XpraClient {
                     }
                 }
             }
-            E::OnMove => {
+            E::OnMove | E::OnResize | E::OnResizeEnd => {
                 let wres = self.windows.get_mut(&wid);
                 if wres.is_none() {
                     debug!("OnMove: window {:?} not found", wid);
@@ -489,6 +491,7 @@ impl XpraClient {
                 }
                 let window = wres.unwrap();
                 let (x, y, w, h) = window.get_geometry();
+                debug!("updated window geometry: {:?},{:?},{:?},{:?}", x, y, w, h);
                 self.send_window_configure(wid, x, y, w, h);
                 true
             }
