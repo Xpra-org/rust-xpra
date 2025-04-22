@@ -59,6 +59,9 @@ fn main() {
     let uri = args[1].clone();
     let stream = TcpStream::connect(uri).expect("connection failed");
 
+    unsafe {
+        info!("DPI is {:?}", nwg::dpi());
+    }
     // the event window receives MS Windows events,
     // and we also use it to notify the client that packets are available
     let window = create_event_window();
