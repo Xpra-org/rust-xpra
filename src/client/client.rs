@@ -16,7 +16,7 @@ use std::io::{Error, ErrorKind};
 
 use serde_json::{json, Value};
 use yaml_rust2::{Yaml};
-use log::{debug, info, warn, error};
+use log::{trace, debug, info, warn, error};
 use xpra::net::serde::{
     VERSION_KEY_STR,
 };
@@ -360,7 +360,7 @@ impl XpraClient {
             return;
         }
         let window = wres.unwrap();
-        info!("draw {:?} : {:?}", wid, coding);
+        trace!("drawing {:?} on {:?}", coding, wid);
         let start = SystemTime::now();
         let end = SystemTime::now();
         let decode_time: i128 = end.duration_since(start).unwrap().as_millis() as i128;
@@ -426,7 +426,7 @@ impl XpraClient {
             E::OnMove => {
                 let wres = self.windows.get_mut(&wid);
                 if wres.is_none() {
-                    debug!("OnPaint: window {:?} not found", wid);
+                    debug!("OnMove: window {:?} not found", wid);
                     return false;
                 }
                 let window = wres.unwrap();
@@ -446,7 +446,7 @@ impl XpraClient {
                     return true;
                 }
                 if let nwg::EventData::OnPaint(paintdata) = evt_data {
-                    debug!("OnPaint: {:?}", paintdata);
+                    trace!("OnPaint: {:?}", paintdata);
                     let paintstruct = paintdata.begin_paint();
                     window.draw_screen(paintstruct);
                     paintdata.end_paint(&paintstruct);

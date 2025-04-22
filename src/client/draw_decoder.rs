@@ -1,4 +1,4 @@
-use log::{info, trace};
+use log::{trace, debug};
 
 use zune_core::colorspace::ColorSpace;
 use zune_core::options::DecoderOptions;
@@ -7,7 +7,7 @@ use zune_png;
 
 
 pub fn decode(coding: &String, data: Vec<u8>) -> Result<Vec<u8>, String>{
-    info!("decode {:?}: {:?} bytes", coding, data.len());
+    debug!("decode {:?}: {:?} bytes", coding, data.len());
     trace!("data={:?}", data);
     if coding == "jpeg" {
         let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::BGRA);
@@ -15,7 +15,7 @@ pub fn decode(coding: &String, data: Vec<u8>) -> Result<Vec<u8>, String>{
         match decoder.decode() {
             Ok(data) => {
                 let info = decoder.info().unwrap();
-                info!("size: {:?}x{:?}", info.width, info.height);
+                trace!("size: {:?}x{:?}", info.width, info.height);
                 return Ok(data);
             },
             Err(e) => return Err(format!("jpeg decoding error: {:?}", e))

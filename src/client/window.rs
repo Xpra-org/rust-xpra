@@ -5,7 +5,7 @@ use std::mem;
 use std::rc::Rc;
 use std::mem::size_of;
 use std::cmp::max;
-use log::{debug, error};
+use log::{trace, debug, error};
 use winapi::shared::windef::{HDC, HBITMAP, RECT, POINT, HWND};
 use winapi::shared::ntdef::LONG;
 use winapi::shared::minwindef::{DWORD};
@@ -84,7 +84,7 @@ impl XpraWindow {
                 return;
             }
             let data_ptr = pixels.as_ptr();
-            debug!("update bitmap {:?} with data at {:?}", update_bitmap, data_ptr);
+            trace!("update bitmap {:?} with data at {:?}", update_bitmap, data_ptr);
             let colors = DIB_RGB_COLORS;    //DIB_PAL_COLORS
             if SetDIBits(update_hdc, update_bitmap, 0, h as u32, data_ptr as _, &bitmapinfo, colors) == 0 {
                 error!("SetDIBits failed!");
@@ -96,7 +96,7 @@ impl XpraWindow {
             SelectObject(hdc, bitmap as _);
 
             let blit = BitBlt(hdc, x, y, w, h, update_hdc, 0, 0, SRCCOPY);
-            debug!("blit to offscreen: {:?}", blit);
+            trace!("blit to offscreen: {:?}", blit);
 
             // free the temporary bitmap / hdc:
             DeleteObject(update_bitmap as _);
@@ -113,15 +113,15 @@ impl XpraWindow {
 
 
     pub fn draw_screen(&self, paintstruct: PAINTSTRUCT) {
-        debug!("draw_screen");
+        trace!("draw_screen");
         if self.hdc.is_some() {
             unsafe {
                 let paint_hdc = paintstruct.hdc;
                 let hdc = self.hdc.unwrap();
-                debug!("hdc={:?}", hdc);
+                trace!("hdc={:?}", hdc);
                 SelectObject(hdc, self.bitmap.unwrap() as _);
                 let blit = BitBlt(paint_hdc, 0, 0, self.width as i32, self.height as i32, hdc, 0, 0, SRCCOPY);
-                debug!("screen blit={:?}", blit);
+                trace!("screen blit={:?}", blit);
             }
         }
     }
