@@ -242,6 +242,8 @@ impl XpraClient {
             info!("startup complete!");
         } else if packet_type == "new-window" {
             self.process_new_window(&p)
+        } else if packet_type == "new-override-redirect" {
+            self.process_new_override_redirect(&p)
         } else if packet_type == "lost-window" {
             self.process_lost_window(&p)
         } else if packet_type == "window-metadata" {
@@ -274,9 +276,9 @@ impl XpraClient {
         }
     }
 
-    fn process_new_window(&mut self, packet: &Packet) {
+    fn process_new_common(&mut self, packet: &Packet, override_redirect: bool) {
         let wid = packet.get_u64(1);
-        debug!("new-window {:?}", wid);
+        debug!("new-window {:?}, override-redirect={:?}", wid, override_redirect);
         let x = packet.get_i32(2);
         let y = packet.get_i32(3);
         let w = packet.get_u32(4);
@@ -284,10 +286,16 @@ impl XpraClient {
         let title = packet.get_hash_str(6, "title".to_string());
         // create the window:
         let mut window = Default::default();
+        let flags = if override_redirect {
+            nwg::WindowFlags::POPUP | nwg::WindowFlags::VISIBLE
+        }
+        else {
+            nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE
+        };
         nwg::Window::builder()
-            .flags(nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE)
+            .flags(flags)
             .position((x, y))
-            //.size((w, h))
+            .size((w as i32, h as i32))
             .title(&title)
             .build(&mut window)
             .unwrap();
@@ -326,6 +334,14 @@ impl XpraClient {
         else {
             error!("handle does not match!?");
         }
+    }
+
+    fn process_new_window(&mut self, packet: &Packet) {
+        self.process_new_common(packet, false);
+    }
+
+    fn process_new_override_redirect(&mut self, packet: &Packet) {
+        self.process_new_common(packet, true);
     }
 
     fn process_lost_window(&mut self, packet: &Packet) {
