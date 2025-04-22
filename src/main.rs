@@ -43,6 +43,10 @@ fn create_notice(window: &nwg::Window) -> nwg::Notice {
 
 fn main() {
     SimpleLogger::new().init().unwrap();
+    #[allow(deprecated)]
+    unsafe {
+        nwg::set_dpi_awareness();
+    }
     nwg::init().expect("Failed to init Native Windows GUI");
     nwg::Font::set_global_family("Segoe UI").expect("Failed to set default font");
 
