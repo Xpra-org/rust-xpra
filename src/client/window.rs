@@ -35,6 +35,7 @@ pub struct XpraWindow {
     pub mapped: bool,
     pub hdc: Option<HDC>,
     pub bitmap: Option<HBITMAP>,
+    pub override_redirect: bool,
     pub paint_debug: bool,
 }
 
@@ -75,7 +76,7 @@ impl XpraWindow {
         };
 
         unsafe {
-            let window_hdc = hdc;   //GetDC(self.hwnd);
+            let window_hdc = hdc;
             let update_hdc = CreateCompatibleDC(window_hdc);
             let update_bitmap = CreateCompatibleBitmap(window_hdc, w, h);
             ReleaseDC(self.hwnd, window_hdc);
@@ -85,7 +86,7 @@ impl XpraWindow {
             }
             let data_ptr = pixels.as_ptr();
             trace!("update bitmap {:?} with data at {:?}", update_bitmap, data_ptr);
-            let colors = DIB_RGB_COLORS;    //DIB_PAL_COLORS
+            let colors = DIB_RGB_COLORS;
             if SetDIBits(update_hdc, update_bitmap, 0, h as u32, data_ptr as _, &bitmapinfo, colors) == 0 {
                 error!("SetDIBits failed!");
                 DeleteObject(update_bitmap as _);

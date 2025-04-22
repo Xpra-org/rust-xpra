@@ -168,8 +168,14 @@ extern "system" fn win_event_hook_callback(
         let focus = hwnd;
         info!("foreground window is {:#x}", focus as u32);
         let client = client();
-        let wid = client.find_wid(focus);
-        client.send_focus(wid);
+        let window = client.find_window(focus);
+        if window.is_none() {
+            debug!("window {:#x} not found", hwnd as u32);
+            return;
+        }
+        if ! window.unwrap().override_redirect {
+            client.send_focus(window.unwrap().wid);
+        }
         return;
     }
     debug!("event: {:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x}",
