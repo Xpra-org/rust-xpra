@@ -1,33 +1,34 @@
 use log::{trace, debug};
 
-use zune_core::colorspace::ColorSpace;
-use zune_core::options::DecoderOptions;
-use zune_jpeg;
-use zune_png;
-
 
 pub fn decode(coding: &String, data: Vec<u8>) -> Result<Vec<u8>, String>{
     debug!("decode {:?}: {:?} bytes", coding, data.len());
     trace!("data={:?}", data);
     if coding == "jpeg" {
-        let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::BGRA);
-        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(&data, options);
-        match decoder.decode() {
-            Ok(data) => {
-                let info = decoder.info().unwrap();
-                trace!("size: {:?}x{:?}", info.width, info.height);
-                return Ok(data);
-            },
-            Err(e) => return Err(format!("jpeg decoding error: {:?}", e))
+        use turbojpeg::{Decompressor, Image, PixelFormat};
+        let mut decompressor = Decompressor::new().unwrap();
+
+        let header = decompressor.read_header(&data).unwrap();
+        let (width, height) = (header.width, header.height);
+        let mut image = Image {
+            pixels: vec![0; 4 * width * height],
+            width,
+            pitch: 4 * width,
+            height,
+            format: PixelFormat::BGRA,
         };
+        decompressor.decompress(&data, image.as_deref_mut()).unwrap();
+        return Ok(image.pixels);
     }
-    else if coding == "png" {
-        let options = DecoderOptions::default().png_set_add_alpha_channel(true);
-        let mut decoder = zune_png::PngDecoder::new_with_options(&data, options);
-        match decoder.decode() {
-            Ok(data) => return Ok(data.u8().unwrap()),
-            Err(e) => return Err(format!("png decoding error: {:?}", e))
-        };
+    if coding == "png" {
+        use spng;
+        let out_format = spng::Format::Rgba8;
+        let mut ctx = spng::raw::RawContext::new().unwrap();
+        ctx.set_png_buffer(&data).unwrap();
+        let size = ctx.decoded_image_size(out_format).unwrap();
+        let mut data: Vec<u8> = vec![0; size];
+        ctx.decode_image(&mut data, out_format, spng::DecodeFlags::empty()).unwrap();
+        return Ok(data);
     }
     Err(format!("unsupported encoding {coding}"))
 }

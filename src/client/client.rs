@@ -87,7 +87,7 @@ impl XpraClient {
             "keyboard": true,
             "mouse": true,
             "sharing": true,
-            "encodings": ["png", "jpeg", ],
+            "encodings": ["jpeg", "png", ],
             "client_type": "rust",
             "platform": "win32",
             "user": env::var("USER").unwrap_or("".into()),
@@ -100,7 +100,7 @@ impl XpraClient {
 
     pub fn send_focus(&self, wid: u64) {
         // let modifiers = ();
-        let packet = json!(["focus", wid, ()]);
+        let packet = json!(["focus", wid]);
         self.write_json(packet);
     }
 
@@ -194,7 +194,7 @@ impl XpraClient {
         let packet_sender = self.packet_sender.clone();
         let notice_sender = self.notice.sender();
         let stream = self.stream.try_clone().unwrap();
-        thread::spawn(move || loop {
+        thread::Builder::new().name("reader".to_string()).spawn(move || loop {
             loop {
                 let payload = read_packet(&stream).unwrap();
                 let packet = parse_payload(payload).unwrap();
@@ -203,14 +203,14 @@ impl XpraClient {
                 // notify UI thread:
                 notice_sender.notice();
             }
-        });
+        }).unwrap();
     }
 
 
     pub fn start_draw_decode_loop(&self, receiver: Receiver<Packet>) {
         let packet_sender = self.packet_sender.clone();
         let notice_sender = self.notice.sender();
-        thread::spawn(move || loop {
+        thread::Builder::new().name("decode".to_string()).spawn(move || loop {
             info!("decoding thread started");
             loop {
                 let mut packet = receiver.recv().unwrap();
@@ -243,7 +243,7 @@ impl XpraClient {
                 packet_sender.send(patched_packet).unwrap();
                 notice_sender.notice();
             }
-        });
+        }).unwrap();
     }
 
 
