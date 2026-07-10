@@ -34,6 +34,9 @@ Running under XWayland (the X11 backend) instead of native Wayland avoids all of
 cargo build
 ./target/debug/xpra HOST:PORT
 ./target/debug/xpra tcp://HOST:PORT/
+./target/debug/xpra ws://HOST:PORT/
 ```
 
-Only the `tcp` protocol is supported; any other protocol in the URI is rejected.
+Only the `tcp` and `ws` protocols are supported; any other protocol in the URI is rejected. `ws` support (HTTP
+upgrade handshake and frame framing) is hand-rolled against `std` only, to avoid pulling in a websocket crate and
+its dependencies.

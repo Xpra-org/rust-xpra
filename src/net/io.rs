@@ -1,10 +1,11 @@
 use std::io::{Read, Error, Write, ErrorKind};
 use std::result::{Result};
-use std::net::{TcpStream};
 use log::{trace};
 
+use super::connection::Connection;
 
-pub fn read_packet(mut stream: &TcpStream) -> Result<Vec<u8>, Error> {
+
+pub fn read_packet(stream: &mut Connection) -> Result<Vec<u8>, Error> {
     let mut header = [0; 8];
     stream.read_exact(&mut header)?;
     trace!("read_packet header={:?}", header);
@@ -50,10 +51,9 @@ pub fn make_header(data: &[u8]) -> Vec<u8>{
 }
 
 
-pub fn write_packet(mut stream: &TcpStream, data: &[u8]) {
-    let header = make_header(&data);
-    // debug!("header={:?}", header);
-    stream.write_all(&header).expect("write header failed");
-    stream.write_all(&data).expect("write packet failed");
+pub fn write_packet(stream: &mut Connection, data: &[u8]) {
+    let mut packet = make_header(data);
+    packet.extend_from_slice(data);
+    stream.write_all(&packet).expect("write packet failed");
     stream.flush().expect("flush failed");
 }

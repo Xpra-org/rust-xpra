@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project status
 
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
-Not usable yet: unauthenticated TCP connections only, no server/audio/clipboard/notifications support. See
+Not usable yet: unauthenticated `tcp`/`ws` connections only, no server/audio/clipboard/notifications support. See
 `README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock — all downstream
 of Wayland not letting clients query/set absolute desktop position or create truly unmanaged windows).
 
@@ -18,22 +18,38 @@ both (see `.github/workflows/rust.yml`). On Linux, building needs X11/Wayland/xk
 ```shell
 cargo build
 ./target/debug/xpra HOST:PORT     # xpra.exe on Windows
+./target/debug/xpra ws://HOST:PORT/
 ```
 
 `config.toml` sets `TURBOJPEG_SOURCE=pkg-config` and `TURBOJPEG_STATIC=1`, required for the `turbojpeg` crate to
 build against a local libjpeg-turbo.
 
-There are no automated tests in this repo currently — verify changes manually against a real Xpra server
-(`xpra start :100 --bind-tcp=127.0.0.1:PORT --auth=none --tcp-auth=none` works well for local testing).
+There are no automated tests for the GUI/protocol dispatch layer — verify changes manually against a real Xpra
+server (`xpra start :100 --bind-tcp=127.0.0.1:PORT --auth=none --tcp-auth=none` works well for local testing).
+The only automated tests are `net::sha1`'s unit tests (`cargo test --lib`).
 
 ## Architecture
 
 The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main.rs`).
 
 - `src/lib.rs` / `src/net/`: the Xpra wire-protocol layer, platform-independent.
-  - `net/io.rs`: packet framing over `TcpStream` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
-    `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload. Only
-    YAML encoding, no compression, no chunking are currently supported (anything else is a hard error).
+  - `net/uri.rs`: `parse_target` turns the command-line argument into a `Target` (`Tcp` or `WebSocket`), accepting
+    either a bare `host:port` (assumed `tcp`) or a `protocol://host:port/path` URI. Any protocol other than `tcp`
+    or `ws` is rejected.
+  - `net/connection.rs`: `Connection` is an enum (`Tcp(TcpStream)` / `WebSocket(WebSocketStream)`) implementing
+    `Read`/`Write` by dispatching to whichever transport is active, so the rest of the codebase (`io.rs`,
+    `XpraClient`) doesn't need to know which one it's talking to. `try_clone()` gives the reader thread its own
+    independent instance, mirroring how `TcpStream::try_clone` is used elsewhere.
+  - `net/websocket.rs`: a minimal hand-rolled RFC 6455 client (HTTP upgrade handshake + frame masking/framing) —
+    deliberately not using a websocket crate, since the protocol needed here is small; see `README.md`. Requires a
+    `Sec-WebSocket-Protocol: binary` header for the xpra server to accept the upgrade. `WebSocketStream` buffers
+    one reassembled (defragmented) message at a time and serves it through `Read`, transparently answering pings.
+  - `net/sha1.rs`: a self-contained SHA1 (only used for the websocket accept-hash, not security-sensitive) — has
+    unit tests with the standard RFC 3174 test vectors, run via `cargo test --lib`.
+  - `net/io.rs`: packet framing over a `Connection` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
+    `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload, written
+    as a single `write_all` call. Only YAML encoding, no compression, no chunking are currently supported
+    (anything else is a hard error).
   - `net/serde.rs`: parses the YAML payload into a `Packet`.
   - `net/packet.rs`: `Packet { main: Vec<Yaml>, raw: HashMap<u8, Vec<u8>> }` — `main` holds the positional fields
     of an Xpra packet (`main[0]` is always the packet type string); `raw` holds binary payloads that get spliced
@@ -45,7 +61,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
   client, built on `winit` (cross-platform windowing/event loop) + `softbuffer` (cross-platform CPU pixel
   presentation) — one implementation for both Windows and Linux.
   - `client.rs`: `XpraClient` implements `winit::application::ApplicationHandler<Packet>` directly and is the
-    central state machine — owns the `TcpStream`, a `HashMap<u64, XpraWindow>` keyed by Xpra window id (`wid`),
+    central state machine — owns the `Connection`, a `HashMap<u64, XpraWindow>` keyed by Xpra window id (`wid`),
     a reverse `HashMap<WindowId, u64>` (`id_map`) for looking up `wid` from winit's `WindowId` in
     `window_event`, the shared `softbuffer::Context`, and the `EventLoopProxy<Packet>`/`mpsc::Sender<Packet>`
     used to move packets between threads. Unlike the old Win32 version there's no global singleton — winit hands

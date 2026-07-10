@@ -5,7 +5,6 @@ use std::env;
 use std::fmt;
 use std::rc::Rc;
 use std::collections::HashMap;
-use std::net::TcpStream;
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
 
@@ -23,6 +22,7 @@ use winit::window::{Window, WindowId};
 
 use xpra::net::serde::VERSION_KEY_STR;
 use xpra::VERSION;
+use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_payload;
 use xpra::net::packet::Packet;
@@ -35,7 +35,7 @@ pub struct XpraClient {
     pub server_version: String,
     pub windows: HashMap<u64, XpraWindow>,
     pub id_map: HashMap<WindowId, u64>,
-    pub stream: TcpStream,
+    pub stream: Connection,
     pub proxy: EventLoopProxy<Packet>,
     pub decode_sender: Sender<Packet>,
     pub softbuffer_ctx: Option<Context<OwnedDisplayHandle>>,
@@ -52,7 +52,7 @@ impl fmt::Debug for XpraClient {
 
 impl XpraClient {
 
-    pub fn new(stream: TcpStream, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>) -> Self {
+    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>) -> Self {
         XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
@@ -66,7 +66,7 @@ impl XpraClient {
         }
     }
 
-    pub fn send_hello(&self) {
+    pub fn send_hello(&mut self) {
         let platform = match std::env::consts::OS {
             "windows" => "win32",
             "macos" => "darwin",
@@ -93,26 +93,26 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    pub fn send_focus(&self, wid: u64) {
+    pub fn send_focus(&mut self, wid: u64) {
         let packet = json!(["focus", wid]);
         self.write_json(packet);
     }
 
-    fn send_pointer_position(&self, wid: u64, x: i32, y: i32) {
+    fn send_pointer_position(&mut self, wid: u64, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
         let packet = json!(["pointer", device_id, sequence, wid, [x, y], {}]);
         self.write_json(packet);
     }
 
-    fn send_pointer_button(&self, wid: u64, button: i8, pressed: bool, x: i32, y: i32) {
+    fn send_pointer_button(&mut self, wid: u64, button: i8, pressed: bool, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
         let packet = json!(["pointer-button", device_id, sequence, wid, button, pressed, [x, y], {}]);
         self.write_json(packet);
     }
 
-    fn send_key_event(&self, wid: u64, keycode: u32, keyname: &str, keystr: &str, pressed: bool) {
+    fn send_key_event(&mut self, wid: u64, keycode: u32, keyname: &str, keystr: &str, pressed: bool) {
         let modifiers = self.get_modifier_state();
         let group = 0;
         let packet = json!(["key-action", wid, keyname, pressed, modifiers, 0, keystr, keycode, group]);
@@ -133,44 +133,44 @@ impl XpraClient {
         modifiers
     }
 
-    fn send_window_map(&self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
+    fn send_window_map(&mut self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
         let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
         self.write_json(packet);
     }
 
-    fn send_window_configure(&self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
+    fn send_window_configure(&mut self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
         let packet = json!(["configure-window", wid, x, y, w, h, {}]);
         self.write_json(packet);
     }
 
-    fn send_window_close(&self, wid: u64) {
+    fn send_window_close(&mut self, wid: u64) {
         let packet = json!(["close-window", wid]);
         self.write_json(packet);
     }
 
-    fn send_damage_sequence(&self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
+    fn send_damage_sequence(&mut self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
         let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
         self.write_json(packet);
     }
 
-    fn send_ping_echo(&self, echotime: u64, sid: String) {
+    fn send_ping_echo(&mut self, echotime: u64, sid: String) {
         // no load average or client-side ping latency tracked (we don't send our own pings):
         let packet = json!(["ping_echo", echotime, 0, 0, 0, -1, sid]);
         self.write_json(packet);
     }
 
-    fn write_json(&self, packet: Value) {
+    fn write_json(&mut self, packet: Value) {
         let packet_str = packet.to_string();
         let packet_data = packet_str.as_bytes();
-        write_packet(&self.stream, packet_data);
+        write_packet(&mut self.stream, packet_data);
     }
 
 
     pub fn start_read_loop(&mut self) {
         let proxy = self.proxy.clone();
-        let stream = self.stream.try_clone().unwrap();
+        let mut stream = self.stream.try_clone().unwrap();
         thread::Builder::new().name("reader".to_string()).spawn(move || loop {
-            let payload = read_packet(&stream).unwrap();
+            let payload = read_packet(&mut stream).unwrap();
             let packet = parse_payload(payload).unwrap();
             if proxy.send_event(packet).is_err() {
                 break;
@@ -366,7 +366,7 @@ impl XpraClient {
         self.send_damage_sequence(seq, wid, w, h, -1, message);
     }
 
-    fn process_ping(&self, packet: &Packet) {
+    fn process_ping(&mut self, packet: &Packet) {
         let echotime = packet.get_u64(1);
         let sid = if packet.len() >= 4 { packet.get_str(3) } else { "".to_string() };
         debug!("got ping, sending echo time={:?}", echotime);
