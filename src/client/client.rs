@@ -81,6 +81,7 @@ impl XpraClient {
             "keyboard": true,
             "mouse": true,
             "sharing": true,
+            "ping": true,
             "encodings": ["jpeg", "png", ],
             "client_type": "rust",
             "platform": platform,
@@ -149,6 +150,12 @@ impl XpraClient {
 
     fn send_damage_sequence(&self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
         let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
+        self.write_json(packet);
+    }
+
+    fn send_ping_echo(&self, echotime: u64, sid: String) {
+        // no load average or client-side ping latency tracked (we don't send our own pings):
+        let packet = json!(["ping_echo", echotime, 0, 0, 0, -1, sid]);
         self.write_json(packet);
     }
 
@@ -225,6 +232,7 @@ impl XpraClient {
             "draw" => { self.decode_sender.send(p).unwrap(); }
             "draw-decoded" => self.process_draw_decoded(&mut p),
             "draw-failed" => self.process_draw_failed(&p),
+            "ping" => self.process_ping(&p),
             "disconnect" => event_loop.exit(),
             other => warn!("unhandled packet type {:?}", other),
         }
@@ -356,6 +364,13 @@ impl XpraClient {
         let message = p.get_str(7);
         let seq = p.get_u64(8);
         self.send_damage_sequence(seq, wid, w, h, -1, message);
+    }
+
+    fn process_ping(&self, packet: &Packet) {
+        let echotime = packet.get_u64(1);
+        let sid = if packet.len() >= 4 { packet.get_str(3) } else { "".to_string() };
+        debug!("got ping, sending echo time={:?}", echotime);
+        self.send_ping_echo(echotime, sid);
     }
 
     fn handle_window_event(&mut self, wid: u64, event: WindowEvent) {
