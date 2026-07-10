@@ -33,4 +33,7 @@ Running under XWayland (the X11 backend) instead of native Wayland avoids all of
 ```shell
 cargo build
 ./target/debug/xpra HOST:PORT
+./target/debug/xpra tcp://HOST:PORT/
 ```
+
+Only the `tcp` protocol is supported; any other protocol in the URI is rejected.

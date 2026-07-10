@@ -7,6 +7,7 @@ use log::{error, LevelFilter};
 use simple_logger::SimpleLogger;
 use winit::event_loop::EventLoop;
 use xpra::net::packet::Packet;
+use xpra::net::uri::parse_target;
 
 mod client;
 use client::client::XpraClient;
@@ -24,11 +25,17 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         error!("invalid number of arguments: {:?}", args.len());
-        error!("usage: {:?} HOST:IP", args[0]);
+        error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/", args[0]);
         return;
     }
-    let uri = args[1].clone();
-    let stream = TcpStream::connect(uri).expect("connection failed");
+    let address = match parse_target(&args[1]) {
+        Ok(address) => address,
+        Err(message) => {
+            error!("{}", message);
+            return;
+        }
+    };
+    let stream = TcpStream::connect(address).expect("connection failed");
 
     let event_loop = EventLoop::<Packet>::with_user_event().build().expect("failed to create event loop");
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
