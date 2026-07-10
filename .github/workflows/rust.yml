@@ -10,11 +10,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  build-windows:
 
     runs-on: windows-latest
 
     steps:
     - uses: actions/checkout@v4
+    - name: Build
+      run: cargo build --verbose
+
+  build-linux:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          pkg-config \
+          libjpeg-turbo8-dev \
+          libx11-dev \
+          libxrandr-dev \
+          libxi-dev \
+          libxcursor-dev \
+          libxkbcommon-dev \
+          libwayland-dev
     - name: Build
       run: cargo build --verbose

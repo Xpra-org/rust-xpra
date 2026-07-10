@@ -1,39 +1,21 @@
-
-extern crate native_windows_gui as nwg;
-
+use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::mem::{size_of, zeroed};
-use std::cmp::max;
-use log::{trace, debug, error};
-use winapi::shared::windef::{HDC, HBITMAP, RECT, POINT, HWND};
-use winapi::shared::ntdef::LONG;
-use winapi::shared::minwindef::{DWORD};
-use winapi::um::wingdi::{
-    CreateCompatibleDC, CreateCompatibleBitmap,
-    DeleteDC, DeleteObject,
-    SelectObject,
-    BitBlt,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, RGBQUAD,
-    SetDIBits, DIB_RGB_COLORS, SRCCOPY,
-    CreateSolidBrush, RGB
-};
-use winapi::um::winuser::{
-    GetDC, ReleaseDC, FrameRect, PAINTSTRUCT,
-    GetClientRect, MapWindowPoints, HWND_DESKTOP
-};
+
+use log::{debug, error, trace};
+use softbuffer::{Context, Surface};
+use winit::dpi::PhysicalPosition;
+use winit::event_loop::OwnedDisplayHandle;
+use winit::window::Window;
 
 
 pub struct XpraWindow {
     pub wid: u64,
-    pub window: Rc<nwg::Window>,
-    pub hwnd: HWND,
-    // pub canvas: nwg::ExternCanvas,
-    pub handler: nwg::EventHandler,
+    pub window: Rc<Window>,
+    pub surface: Surface<OwnedDisplayHandle, Rc<Window>>,
+    pub framebuffer: Vec<u32>,
     pub width: u32,
     pub height: u32,
     pub mapped: bool,
-    pub hdc: Option<HDC>,
-    pub bitmap: Option<HBITMAP>,
     pub override_redirect: bool,
     pub paint_debug: bool,
 }
@@ -41,146 +23,142 @@ pub struct XpraWindow {
 
 impl XpraWindow {
 
-    pub fn paint(&self, seq: u64, x: i32, y: i32, w: u32, h: u32, coding: &String, pixels: &Vec<u8>) {
-        debug!("paint({seq}, {x}, {y}, {w}, {h}, {coding}, {:?} bytes)", pixels.len());
-        let hdc = self.hdc.unwrap();
-        let bitmap = self.bitmap.unwrap();
+    pub fn new(wid: u64, window: Rc<Window>, context: &Context<OwnedDisplayHandle>, width: u32, height: u32, override_redirect: bool) -> Self {
+        let mut surface = Surface::new(context, window.clone()).expect("failed to create softbuffer surface");
+        let rw = width.max(1);
+        let rh = height.max(1);
+        surface.resize(NonZeroU32::new(rw).unwrap(), NonZeroU32::new(rh).unwrap())
+            .expect("failed to size softbuffer surface");
+        XpraWindow {
+            wid,
+            window,
+            surface,
+            framebuffer: vec![0u32; (rw * rh) as usize],
+            width: rw,
+            height: rh,
+            mapped: false,
+            override_redirect,
+            paint_debug: cfg!(debug_assertions),
+        }
+    }
 
-        let w = w as i32;
-        let h = h as i32;
-        let rgb_size = (w * h * 4) as u32;
-        if pixels.len() < rgb_size as usize {
-            error!("pixel data is too small!");
+    pub fn paint(&mut self, seq: u64, x: i32, y: i32, w: u32, h: u32, coding: &String, pixels: &Vec<u8>) {
+        debug!("paint({seq}, {x}, {y}, {w}, {h}, {coding}, {:?} bytes)", pixels.len());
+        let expected = (w as usize) * (h as usize) * 4;
+        if pixels.len() < expected {
+            error!("pixel data is too small! got {:?} bytes, expected {:?}", pixels.len(), expected);
             return;
         }
-
-        // create bitmap from the pixel data:
-        let header = BITMAPINFOHEADER {
-            biSize: size_of::<BITMAPINFOHEADER>() as DWORD,
-            biWidth: w as LONG,
-            biHeight: -h as LONG,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            biSizeImage: rgb_size,
-            biXPelsPerMeter: 0,
-            biYPelsPerMeter: 0,
-            biClrUsed: 0,
-            biClrImportant: 0,
+        // convert the decoded bytes into softbuffer's 0x00RRGGBB u32 pixels,
+        // and composite them into our persistent framebuffer at (x,y):
+        let to_pixel: fn(&[u8]) -> u32 = if coding == "jpeg" {
+            // turbojpeg outputs BGRA:
+            |px: &[u8]| (px[2] as u32) << 16 | (px[1] as u32) << 8 | (px[0] as u32)
+        } else {
+            // spng outputs RGBA8:
+            |px: &[u8]| (px[0] as u32) << 16 | (px[1] as u32) << 8 | (px[2] as u32)
         };
-        let quad = RGBQUAD { rgbBlue: 0, rgbGreen: 0, rgbRed: 0, rgbReserved: 0};
-        let bitmapinfo = BITMAPINFO {
-            bmiHeader: header,
-            bmiColors: [quad],
-        };
-
-        unsafe {
-            let window_hdc = hdc;
-            let update_hdc = CreateCompatibleDC(window_hdc);
-            let update_bitmap = CreateCompatibleBitmap(window_hdc, w, h);
-            ReleaseDC(self.hwnd, window_hdc);
-            if update_bitmap == std::ptr::null_mut() {
-                error!("failed to create update bitmap");
-                return;
+        for row in 0..h {
+            let dst_y = y + row as i32;
+            if dst_y < 0 || dst_y as u32 >= self.height {
+                continue;
             }
-            let data_ptr = pixels.as_ptr();
-            trace!("update bitmap {:?} with data at {:?}", update_bitmap, data_ptr);
-            let colors = DIB_RGB_COLORS;
-            if SetDIBits(update_hdc, update_bitmap, 0, h as u32, data_ptr as _, &bitmapinfo, colors) == 0 {
-                error!("SetDIBits failed!");
-                DeleteObject(update_bitmap as _);
-                DeleteDC(update_hdc);
-                return;
-            }
-            SelectObject(update_hdc, update_bitmap as _);
-            SelectObject(hdc, bitmap as _);
-
-            let blit = BitBlt(hdc, x, y, w, h, update_hdc, 0, 0, SRCCOPY);
-            trace!("blit to offscreen: {:?}", blit);
-
-            // free the temporary bitmap / hdc:
-            DeleteObject(update_bitmap as _);
-            DeleteDC(update_hdc);
-
-            if self.paint_debug {
-                let border = CreateSolidBrush(RGB(255, 0, 0));
-                let rect = RECT {left: x, top: y, right: x + w, bottom: y + h};
-                FrameRect(hdc, &rect, border as _);
+            let src_row_start = (row as usize) * (w as usize) * 4;
+            for col in 0..w {
+                let dst_x = x + col as i32;
+                if dst_x < 0 || dst_x as u32 >= self.width {
+                    continue;
+                }
+                let src_off = src_row_start + (col as usize) * 4;
+                let px = to_pixel(&pixels[src_off..src_off + 4]);
+                let dst_off = (dst_y as u32) as usize * self.width as usize + dst_x as usize;
+                self.framebuffer[dst_off] = px;
             }
         }
-        self.window.invalidate();
+        if self.paint_debug {
+            self.draw_debug_border(x, y, w, h);
+        }
+        self.window.request_redraw();
     }
 
-
-    pub fn draw_screen(&self, paintstruct: PAINTSTRUCT) {
-        trace!("draw_screen");
-        if self.hdc.is_some() {
-            unsafe {
-                let paint_hdc = paintstruct.hdc;
-                let hdc = self.hdc.unwrap();
-                trace!("hdc={:?}", hdc);
-                SelectObject(hdc, self.bitmap.unwrap() as _);
-                let blit = BitBlt(paint_hdc, 0, 0, self.width as i32, self.height as i32, hdc, 0, 0, SRCCOPY);
-                trace!("screen blit={:?}", blit);
-            }
+    fn draw_debug_border(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        let color: u32 = 0x00FF0000;
+        let x0 = x.max(0) as u32;
+        let y0 = y.max(0) as u32;
+        let x1 = ((x + w as i32).max(0) as u32).min(self.width);
+        let y1 = ((y + h as i32).max(0) as u32).min(self.height);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
+        for col in x0..x1 {
+            self.set_pixel(col, y0, color);
+            self.set_pixel(col, y1 - 1, color);
+        }
+        for row in y0..y1 {
+            self.set_pixel(x0, row, color);
+            self.set_pixel(x1 - 1, row, color);
         }
     }
 
-    pub fn new_backing(&mut self) {
-        debug!("new_backing");
-        unsafe {
-            //let screen_hdc = GetDC(0 as _);
-            let window_hdc = GetDC(self.hwnd);
-            let dc = CreateCompatibleDC(window_hdc);
-            self.hdc = Some(dc);
-            let membm = CreateCompatibleBitmap(window_hdc, self.width as i32, self.height as i32);
-            if membm != std::ptr::null_mut() {
-                self.bitmap = Some(membm);
-                debug!("bitmap {:?}", self.bitmap);
-            }
-            ReleaseDC(self.hwnd, window_hdc);
+    fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
+        if x < self.width && y < self.height {
+            let off = y as usize * self.width as usize + x as usize;
+            self.framebuffer[off] = color;
         }
+    }
+
+    pub fn draw_screen(&mut self) {
+        trace!("draw_screen wid={:?}", self.wid);
+        let mut buffer = match self.surface.buffer_mut() {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                error!("failed to get softbuffer buffer: {:?}", e);
+                return;
+            }
+        };
+        if buffer.len() != self.framebuffer.len() {
+            // surface hasn't been resized to match our framebuffer yet, skip this present:
+            return;
+        }
+        buffer.copy_from_slice(&self.framebuffer);
+        if let Err(e) = buffer.present() {
+            error!("failed to present softbuffer buffer: {:?}", e);
+        }
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        let rw = width.max(1);
+        let rh = height.max(1);
+        if rw == self.width && rh == self.height {
+            return;
+        }
+        debug!("resize wid={:?} to {:?}x{:?}", self.wid, rw, rh);
+        if let (Some(w), Some(h)) = (NonZeroU32::new(rw), NonZeroU32::new(rh)) {
+            if let Err(e) = self.surface.resize(w, h) {
+                error!("failed to resize softbuffer surface: {:?}", e);
+                return;
+            }
+        }
+        self.width = rw;
+        self.height = rh;
+        self.framebuffer = vec![0u32; (rw * rh) as usize];
+        self.window.request_redraw();
     }
 
     pub fn get_geometry(&self) -> (i32, i32, u32, u32) {
-        let x: i32;
-        let y: i32;
-        let w: u32;
-        let h: u32;
-        unsafe {
-            let mut r: RECT = zeroed();
-            GetClientRect(self.hwnd, &mut r);
-            w = max(1, r.right as u32);
-            h = max(1, r.bottom as u32);
-            let mut pos: POINT = zeroed();
-            MapWindowPoints(self.hwnd, HWND_DESKTOP, &mut pos, 1);
-            x = pos.x;
-            y = pos.y;
-        }
-        (x, y, w, h)
+        let size = self.window.inner_size();
+        let w = size.width.max(1);
+        let h = size.height.max(1);
+        let pos = self.window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
+        (pos.x, pos.y, w, h)
     }
-}
 
-impl Drop for XpraWindow {
-    fn drop(&mut self) {
-        debug!("Drop XpraWindow {:?}", self.wid);
-        if self.bitmap.is_some() {
-            let bitmap = self.bitmap.unwrap();
-            unsafe {
-                // Here is the long winded version of the same code:
-                // use winapi::ctypes::c_void;
-                // DeleteObject(bitmap as *mut c_void);
-                DeleteObject(bitmap as _);
-            }
-        }
-        if self.hdc.is_some() {
-            let dc = self.hdc.unwrap();
-            unsafe {
-                DeleteDC(dc);
-            }
-        }
-
-        nwg::unbind_event_handler(&self.handler);
-        self.window.close();
+    // convert an inner (client-area) position into the outer position winit's
+    // set_outer_position() expects, so we can honour the server's window-move-resize
+    // "place the client area at (x,y)" semantics. Not supported on Wayland (returns None).
+    pub fn to_outer_position(&self, inner_x: i32, inner_y: i32) -> Option<PhysicalPosition<i32>> {
+        let outer = self.window.outer_position().ok()?;
+        let inner = self.window.inner_position().ok()?;
+        Some(PhysicalPosition::new(inner_x + (outer.x - inner.x), inner_y + (outer.y - inner.y)))
     }
 }

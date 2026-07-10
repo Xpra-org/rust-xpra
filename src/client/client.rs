@@ -1,63 +1,45 @@
-extern crate native_windows_gui as nwg;
-use winapi::shared::windef::HWND;
-
 use alloc::string::ToString;
-use alloc::vec::Vec;
-use core::cell::OnceCell;
 use machine_uid;
 
+use std::env;
 use std::fmt;
 use std::rc::Rc;
-use std::mem::zeroed;
 use std::collections::HashMap;
-use std::net::{TcpStream};
-use std::time::{SystemTime};
+use std::net::TcpStream;
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
-use std::io::{Error, ErrorKind};
-
 
 use serde_json::{json, Value};
-use yaml_rust2::{Yaml};
+use yaml_rust2::Yaml;
 use log::{trace, debug, info, warn, error};
-use winapi::um::winuser::{
-    AdjustWindowRectEx, GetKeyState, GetWindowLongA, SetWindowPos,
-    GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
-    SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOZORDER,
-    VK_CONTROL, VK_SHIFT, VK_LMENU, VK_RMENU, VK_NUMLOCK,
-};
-use winapi::shared::windef::{RECT};
-use xpra::net::serde::{
-    VERSION_KEY_STR,
-};
+use softbuffer::Context;
+use winit::application::ApplicationHandler;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+use winit::platform::scancode::PhysicalKeyExtScancode;
+use winit::window::{Window, WindowId};
 
+use xpra::net::serde::VERSION_KEY_STR;
 use xpra::VERSION;
 use xpra::net::io::{write_packet, read_packet};
-use xpra::net::serde::{ parse_payload };
+use xpra::net::serde::parse_payload;
 use xpra::net::packet::Packet;
 use super::draw_decoder;
-use super::window::{XpraWindow};
-
-
-pub static mut XPRA_CLIENT: OnceCell<XpraClient> = OnceCell::new();
-
-
-pub fn client() -> &'static mut XpraClient {
-    #[allow(static_mut_refs)]
-    unsafe {
-        return crate::XPRA_CLIENT.get_mut().unwrap();
-    }
-}
+use super::window::XpraWindow;
 
 
 pub struct XpraClient {
     pub hello_sent: bool,
     pub server_version: String,
     pub windows: HashMap<u64, XpraWindow>,
+    pub id_map: HashMap<WindowId, u64>,
     pub stream: TcpStream,
-    pub notice: nwg::Notice,
-    pub packet_sender: Sender<Packet>,
+    pub proxy: EventLoopProxy<Packet>,
     pub decode_sender: Sender<Packet>,
+    pub softbuffer_ctx: Option<Context<OwnedDisplayHandle>>,
+    pub modifiers: ModifiersState,
 }
 
 impl fmt::Debug for XpraClient {
@@ -70,15 +52,27 @@ impl fmt::Debug for XpraClient {
 
 impl XpraClient {
 
-    pub fn register(self) {
-        #[allow(static_mut_refs)]
-        unsafe {
-            XPRA_CLIENT.set(self).unwrap();
+    pub fn new(stream: TcpStream, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>) -> Self {
+        XpraClient {
+            hello_sent: false,
+            server_version: "".to_string(),
+            windows: HashMap::new(),
+            id_map: HashMap::new(),
+            stream,
+            proxy,
+            decode_sender,
+            softbuffer_ctx: None,
+            modifiers: ModifiersState::empty(),
         }
     }
 
     pub fn send_hello(&self) {
-
+        let platform = match std::env::consts::OS {
+            "windows" => "win32",
+            "macos" => "darwin",
+            other => other,
+        };
+        let username = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_default();
         let packet = json!(["hello", {
             "version": VERSION,
             "yaml": true,
@@ -89,9 +83,9 @@ impl XpraClient {
             "sharing": true,
             "encodings": ["jpeg", "png", ],
             "client_type": "rust",
-            "platform": "win32",
+            "platform": platform,
             "user": env::var("USER").unwrap_or("".into()),
-            "username": env::var("USERNAME").unwrap_or("".into()),
+            "username": username,
             "hostname": env::var("HOSTNAME").unwrap_or("".into()),
             "uuid": machine_uid::get().unwrap(),
         }]);
@@ -99,7 +93,6 @@ impl XpraClient {
     }
 
     pub fn send_focus(&self, wid: u64) {
-        // let modifiers = ();
         let packet = json!(["focus", wid]);
         self.write_json(packet);
     }
@@ -118,23 +111,8 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    fn send_key_event(&self, wid: u64, keycode: &u32, pressed: bool) {
-        // use windows_sys::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyA;
-        use winapi::um::winuser::{ MapVirtualKeyA, GetKeyNameTextA, VK_RETURN };
-        let keystr;
-        let scancode;
-        let mut buf = vec![0u8; 128];
-        unsafe {
-            keystr = char::from_u32(MapVirtualKeyA(*keycode, 2));   // MAPVK_TO_CHAR = 2
-            scancode = MapVirtualKeyA(*keycode, 0);                 // MAPVK_TO_VSC = 0
-            GetKeyNameTextA((scancode << 16) as i32, buf.as_mut_ptr() as *mut i8, 127);
-        }
-        let mut keyname = String::from_utf8(buf).unwrap();
-        keyname = keyname.trim_matches(char::from(0)).to_string();
-        if *keycode == VK_RETURN as u32{
-            keyname = "Return".to_string();
-        }
-        let modifiers: Vec<String> = self.get_modifier_state();
+    fn send_key_event(&self, wid: u64, keycode: u32, keyname: &str, keystr: &str, pressed: bool) {
+        let modifiers = self.get_modifier_state();
         let group = 0;
         let packet = json!(["key-action", wid, keyname, pressed, modifiers, 0, keystr, keycode, group]);
         self.write_json(packet);
@@ -142,20 +120,14 @@ impl XpraClient {
 
     fn get_modifier_state(&self) -> Vec<String> {
         let mut modifiers: Vec<String> = Vec::new();
-        unsafe {
-            if GetKeyState(VK_SHIFT) < 0{
-                modifiers.push("shift".to_string());
-            }
-            if GetKeyState(VK_CONTROL) < 0 {
-                modifiers.push("control".to_string());
-            }
-            // should send the matchin modifier map!
-            if GetKeyState(VK_LMENU) < 0 || GetKeyState(VK_RMENU) < 0 {
-                modifiers.push("mod1".to_string());
-            }
-            if GetKeyState(VK_NUMLOCK) < 0 {
-                modifiers.push("mod2".to_string());
-            }
+        if self.modifiers.shift_key() {
+            modifiers.push("shift".to_string());
+        }
+        if self.modifiers.control_key() {
+            modifiers.push("control".to_string());
+        }
+        if self.modifiers.alt_key() {
+            modifiers.push("mod1".to_string());
         }
         modifiers
     }
@@ -176,14 +148,11 @@ impl XpraClient {
     }
 
     fn send_damage_sequence(&self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
-        // send ack:
         let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
         self.write_json(packet);
     }
 
-
     fn write_json(&self, packet: Value) {
-        // should use yaml instead?
         let packet_str = packet.to_string();
         let packet_data = packet_str.as_bytes();
         write_packet(&self.stream, packet_data);
@@ -191,26 +160,20 @@ impl XpraClient {
 
 
     pub fn start_read_loop(&mut self) {
-        let packet_sender = self.packet_sender.clone();
-        let notice_sender = self.notice.sender();
+        let proxy = self.proxy.clone();
         let stream = self.stream.try_clone().unwrap();
         thread::Builder::new().name("reader".to_string()).spawn(move || loop {
-            loop {
-                let payload = read_packet(&stream).unwrap();
-                let packet = parse_payload(payload).unwrap();
-                // send the packet to the UI thread:
-                packet_sender.send(packet).unwrap();
-                // notify UI thread:
-                notice_sender.notice();
+            let payload = read_packet(&stream).unwrap();
+            let packet = parse_payload(payload).unwrap();
+            if proxy.send_event(packet).is_err() {
+                break;
             }
         }).unwrap();
     }
 
 
-    pub fn start_draw_decode_loop(&self, receiver: Receiver<Packet>) {
-        let packet_sender = self.packet_sender.clone();
-        let notice_sender = self.notice.sender();
-        thread::Builder::new().name("decode".to_string()).spawn(move || loop {
+    pub fn start_draw_decode_loop(proxy: EventLoopProxy<Packet>, receiver: Receiver<Packet>) {
+        thread::Builder::new().name("decode".to_string()).spawn(move || {
             info!("decoding thread started");
             loop {
                 let mut packet = receiver.recv().unwrap();
@@ -228,78 +191,48 @@ impl XpraClient {
                 if result.is_err() {
                     let message = result.unwrap_err();
                     error!("draw decoding error for {:?} sequence {:?}: {:?}", coding, seq, message);
-                    // send back the failure:
                     main[0] = Yaml::String("decoding-failed".to_string());
                     main[7] = Yaml::String(message.to_string());
                 }
                 else {
-                    // send the pixels as a raw buffer:
                     let pixels = result.unwrap();
                     raw.insert(7, pixels);
-                    // send it back to the UI thread, but as 'decoded-draw'
                     main[0] = Yaml::String("draw-decoded".to_string());
                 }
                 let patched_packet = Packet { main, raw };
-                packet_sender.send(patched_packet).unwrap();
-                notice_sender.notice();
+                if proxy.send_event(patched_packet).is_err() {
+                    break;
+                }
             }
         }).unwrap();
     }
 
 
-    pub fn process_packet(&mut self, packet: Box<Packet>) -> Result<(), Error> {
-        if packet.len() == 0 {
-            return Err(Error::new(ErrorKind::InvalidData, "empty packet!"));
-        }
-        let packet_type = packet.get_str(0);
-        if packet_type != "" {
-            self.do_process_packet(&packet_type, packet);
-        }
-        else {
-            error!("malformed packet");
-            return Err(Error::new(ErrorKind::InvalidData, "missing packet type!"));
-        }
-        Ok(())
-    }
-
-    fn do_process_packet(&mut self, packet_type: &String, packet: Box<Packet>) {
-        let mut p = *packet;
-        if packet_type == "hello" {
-            assert!(p.len() > 1);
-            self.process_hello(&p.main[1]);
-        } else if packet_type == "encodings" {
-            debug!("got server encodings: {:?}", p.main[1]);
-        } else if packet_type == "startup-complete" {
-            info!("startup complete!");
-        } else if packet_type == "new-window" {
-            self.process_new_window(&p)
-        } else if packet_type == "new-override-redirect" {
-            self.process_new_override_redirect(&p)
-        } else if packet_type == "window-move-resize" {
-            self.process_window_move_resize(&p)
-        } else if packet_type == "lost-window" {
-            self.process_lost_window(&p)
-        } else if packet_type == "window-metadata" {
-            self.process_window_metadata(&p)
-        } else if packet_type == "draw" {
-            // send the packet to the decode thread:
-            self.decode_sender.send(p).unwrap();
-        } else if packet_type == "draw-decoded" {
-            self.process_draw_decoded(&mut p)
-        } else if packet_type == "draw-failed" {
-            self.process_draw_failed(&mut p)
-        } else if packet_type == "disconnect" {
-            nwg::stop_thread_dispatch();
-        } else {
-            warn!("unhandled packet type {:?}", packet_type);
+    fn do_process_packet(&mut self, event_loop: &ActiveEventLoop, packet_type: &str, packet: Packet) {
+        let mut p = packet;
+        match packet_type {
+            "hello" => {
+                assert!(p.len() > 1);
+                self.process_hello(&p.main[1]);
+            }
+            "encodings" => debug!("got server encodings: {:?}", p.main[1]),
+            "startup-complete" => info!("startup complete!"),
+            "new-window" => self.process_new_common(event_loop, &p, false),
+            "new-override-redirect" => self.process_new_common(event_loop, &p, true),
+            "window-move-resize" => self.process_window_move_resize(&p),
+            "lost-window" => self.process_lost_window(&p),
+            "window-metadata" => self.process_window_metadata(&p),
+            "draw" => { self.decode_sender.send(p).unwrap(); }
+            "draw-decoded" => self.process_draw_decoded(&mut p),
+            "draw-failed" => self.process_draw_failed(&p),
+            "disconnect" => event_loop.exit(),
+            other => warn!("unhandled packet type {:?}", other),
         }
     }
-
 
     fn process_hello(&mut self, hello: &Yaml) {
         match &hello {
             Yaml::Hash(hash) => {
-                //hash
                 let version_key: Yaml = Yaml::String(VERSION_KEY_STR.to_string());
                 let version = &hash[&version_key];
                 if let Yaml::String(version_str) = version {
@@ -311,7 +244,7 @@ impl XpraClient {
         }
     }
 
-    fn process_new_common(&mut self, packet: &Packet, override_redirect: bool) {
+    fn process_new_common(&mut self, event_loop: &ActiveEventLoop, packet: &Packet, override_redirect: bool) {
         let wid = packet.get_u64(1);
         debug!("new-window {:?}, override-redirect={:?}", wid, override_redirect);
         let x = packet.get_i32(2);
@@ -319,97 +252,66 @@ impl XpraClient {
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
         let title = packet.get_hash_str(6, "title".to_string());
-        // create the window:
-        let mut window = Default::default();
-        let flags = if override_redirect {
-            nwg::WindowFlags::POPUP | nwg::WindowFlags::VISIBLE
+
+        let mut attrs = Window::default_attributes()
+            .with_title(&title)
+            .with_position(PhysicalPosition::new(x, y))
+            .with_inner_size(PhysicalSize::new(w.max(1), h.max(1)))
+            .with_decorations(!override_redirect)
+            .with_resizable(!override_redirect);
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::WindowAttributesExtX11;
+            attrs = attrs.with_override_redirect(override_redirect);
         }
-        else {
-            nwg::WindowFlags::WINDOW | nwg::WindowFlags::VISIBLE | nwg::WindowFlags::RESIZABLE
+
+        let window = match event_loop.create_window(attrs) {
+            Ok(window) => Rc::new(window),
+            Err(e) => {
+                error!("failed to create window: {:?}", e);
+                return;
+            }
         };
-        nwg::Window::builder()
-            .flags(flags)
-            .position((x, y))
-            .size((w as i32, h as i32))
-            .title(&title)
-            .build(&mut window)
-            .unwrap();
-        /*
-        let mut canvas = Default::default();
-        nwg::ExternCanvas::builder()
-            .position((0, 0))
-            .size((w, 10))
-            .parent(Some(&window))
-            .build(&mut canvas)
-            .unwrap(); */
         info!("new-window {:?} : {:?}", wid, title);
-        if let nwg::ControlHandle::Hwnd(handle) = window.handle {
-            let hwnd = handle;
-            let window_handle = window.handle;
-            let window = Rc::new(window);
 
-            let handler = nwg::full_bind_event_handler(&window_handle, move |evt, evt_data, handle| {
-                client().handle_window_event(wid, evt, &evt_data, handle);
-            });
-            // create the model for this window:
-            let xpra_window = XpraWindow {
-                wid,
-                window,
-                hwnd,
-                handler,
-                mapped: false,
-                hdc: None,
-                bitmap: None,
-                width: w,
-                height: h,
-                override_redirect,
-                paint_debug: cfg!(debug_assertions),
-            };
-            self.windows.insert(wid, xpra_window);
+        let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
+        let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
+        xpra_window.mapped = true;
+        self.id_map.insert(window.id(), wid);
+        self.windows.insert(wid, xpra_window);
+
+        if !override_redirect {
+            self.send_window_map(wid, x, y, w, h);
         }
-        else {
-            error!("handle does not match!?");
-        }
-    }
-
-    fn process_new_window(&mut self, packet: &Packet) {
-        self.process_new_common(packet, false);
-    }
-
-    fn process_new_override_redirect(&mut self, packet: &Packet) {
-        self.process_new_common(packet, true);
     }
 
     fn process_window_move_resize(&mut self, packet: &Packet) {
         let wid = packet.get_u64(1);
-        let wres = self.windows.get(&wid);
-        if wres.is_none() {
-            error!("cannot move-resize: window {:?} not found", wid);
-            return;
-        }
-        let window = wres.unwrap();
+        let window = match self.windows.get_mut(&wid) {
+            Some(window) => window,
+            None => {
+                error!("cannot move-resize: window {:?} not found", wid);
+                return;
+            }
+        };
         let x = packet.get_i32(2);
         let y = packet.get_i32(3);
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
 
-        unsafe {
-            let mut rect: RECT = zeroed();
-            rect.left = x;
-            rect.top = y;
-            rect.right = x + (w as i32);
-            rect.bottom = y + (h as i32);
-            let style: i32 = GetWindowLongA(window.hwnd, GWL_STYLE);
-            let style_ex: i32 = GetWindowLongA(window.hwnd, GWL_EXSTYLE);
-            AdjustWindowRectEx(&mut rect, style as _, false as _, style_ex as _);
-            let flags = SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING | SWP_NOZORDER;
-            SetWindowPos(window.hwnd, HWND_TOP, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, flags);
+        if let Some(outer) = window.to_outer_position(x, y) {
+            window.window.set_outer_position(outer);
+        } else {
+            debug!("window {:?}: absolute positioning is not supported on this platform (Wayland)", wid);
         }
+        let _ = window.window.request_inner_size(PhysicalSize::new(w.max(1), h.max(1)));
     }
 
     fn process_lost_window(&mut self, packet: &Packet) {
         let wid = packet.get_u64(1);
-        if self.windows.remove(&wid).is_none() {
+        if let Some(window) = self.windows.remove(&wid) {
+            self.id_map.remove(&window.window.id());
+        } else {
             warn!("window {:?} not found!", wid);
         }
     }
@@ -430,25 +332,20 @@ impl XpraClient {
         let coding = p.get_str(6);
         let pixels = p.get_bytes(7);
         let seq = p.get_u64(8);
-         //let options = yaml_dict...
 
-        let wres = self.windows.get(&wid);
-        if wres.is_none() {
-            let message = "window not found!".to_string();
-            self.send_damage_sequence(seq, wid, w, h, -1, message);
-            return;
-        }
-        let window = wres.unwrap();
+        let window = match self.windows.get_mut(&wid) {
+            Some(window) => window,
+            None => {
+                let message = "window not found!".to_string();
+                self.send_damage_sequence(seq, wid, w, h, -1, message);
+                return;
+            }
+        };
         trace!("drawing {:?} on {:?}", coding, wid);
-        let start = SystemTime::now();
-        let end = SystemTime::now();
-        let decode_time: i128 = end.duration_since(start).unwrap().as_millis() as i128;
-
         window.paint(seq, x, y, w, h, &coding, &pixels);
 
-        // send ack:
         let message = "".to_string();
-        self.send_damage_sequence(seq, wid, w, h, decode_time, message);
+        self.send_damage_sequence(seq, wid, w, h, 0, message);
     }
 
     fn process_draw_failed(&mut self, packet: &Packet) {
@@ -461,130 +358,205 @@ impl XpraClient {
         self.send_damage_sequence(seq, wid, w, h, -1, message);
     }
 
-    #[allow(unused)]
-    pub fn find_wid(&self, hwnd: HWND) -> u64 {
-        let window = self.find_window(hwnd);
-        if window.is_some() {
-            return window.unwrap().wid;
-        }
-        0
-    }
-
-    pub fn find_window(&self, hwnd: HWND) -> Option<&XpraWindow> {
-        for window in self.windows.values() {
-            if window.hwnd == hwnd {
-                return Some(&window);
+    fn handle_window_event(&mut self, wid: u64, event: WindowEvent) {
+        match event {
+            WindowEvent::Focused(is_focused) => {
+                let override_redirect = self.windows.get(&wid).map(|w| w.override_redirect).unwrap_or(true);
+                if is_focused && !override_redirect {
+                    self.send_focus(wid);
+                }
             }
-        }
-        None
-    }
-
-    pub fn handle_window_event(&mut self, wid: u64, evt: nwg::Event, evt_data: &nwg::EventData, handle: nwg::ControlHandle) -> bool {
-        use nwg::Event as E;
-        use nwg::MousePressEvent as M;
-
-        match evt {
-            E::OnInit => {
-                let wres = self.windows.get_mut(&wid);
-                if wres.is_none() {
-                    warn!("OnInit: window {:?} not found", wid);
-                    return false;
+            WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                if let Some(window) = self.windows.get_mut(&wid) {
+                    let size = window.window.inner_size();
+                    window.resize(size.width, size.height);
+                    let (x, y, w, h) = window.get_geometry();
+                    debug!("updated window geometry: {:?},{:?},{:?},{:?}", x, y, w, h);
+                    self.send_window_configure(wid, x, y, w, h);
                 }
-                let window = wres.unwrap();
-                if window.mapped {
-                    debug!("OnInit: window {:?} is already mapped", wid);
-                    return true;
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(window) = self.windows.get_mut(&wid) {
+                    window.draw_screen();
                 }
-                window.mapped = true;
-                use nwg::ControlHandle;
-                match handle {
-                    ControlHandle::Hwnd(_hwnd) => {
-                        window.new_backing();
-                        let (x, y, w, h) = window.get_geometry();
-                        debug!("oninit rect: {:?},{:?},{:?},{:?}", x, y, w, h);
-                        if ! window.override_redirect {
-                            self.send_window_map(wid, x, y, w, h);
-                        }
-                        true
-                    },
-                    _ => {
-                        false
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(window) = self.windows.get(&wid) {
+                    let (x, y) = self.absolute_cursor_position(window, position);
+                    self.send_pointer_position(wid, x, y);
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let xpra_button = match button {
+                    MouseButton::Left => Some(1),
+                    MouseButton::Middle => Some(2),
+                    MouseButton::Right => Some(3),
+                    MouseButton::Back => Some(8),
+                    MouseButton::Forward => Some(9),
+                    MouseButton::Other(n) => Some(n as i8),
+                };
+                if let (Some(button), Some(window)) = (xpra_button, self.windows.get(&wid)) {
+                    let pressed = state == ElementState::Pressed;
+                    let (x, y) = self.last_cursor_position(window);
+                    self.send_pointer_button(wid, button, pressed, x, y);
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x, y),
+                    MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
+                };
+                if let Some(window) = self.windows.get(&wid) {
+                    let (x, y) = self.last_cursor_position(window);
+                    if dy != 0.0 {
+                        let button = if dy > 0.0 { 4 } else { 5 };
+                        self.send_pointer_button(wid, button, true, x, y);
+                        self.send_pointer_button(wid, button, false, x, y);
+                    }
+                    if dx != 0.0 {
+                        let button = if dx > 0.0 { 6 } else { 7 };
+                        self.send_pointer_button(wid, button, true, x, y);
+                        self.send_pointer_button(wid, button, false, x, y);
                     }
                 }
             }
-            E::OnMove | E::OnResize | E::OnResizeEnd => {
-                let wres = self.windows.get_mut(&wid);
-                if wres.is_none() {
-                    debug!("OnMove: window {:?} not found", wid);
-                    return false;
-                }
-                let window = wres.unwrap();
-                let (x, y, w, h) = window.get_geometry();
-                debug!("updated window geometry: {:?},{:?},{:?},{:?}", x, y, w, h);
-                self.send_window_configure(wid, x, y, w, h);
-                true
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
             }
-            E::OnPaint => {
-                let wres = self.windows.get_mut(&wid);
-                if wres.is_none() {
-                    debug!("OnPaint: window {:?} not found", wid);
-                    return false;
-                }
-                let window = wres.unwrap();
-                if ! window.mapped {
-                    debug!("OnPaint: window {:?} is not mapped", wid);
-                    return true;
-                }
-                if let nwg::EventData::OnPaint(paintdata) = evt_data {
-                    trace!("OnPaint: {:?}", paintdata);
-                    let paintstruct = paintdata.begin_paint();
-                    window.draw_screen(paintstruct);
-                    paintdata.end_paint(&paintstruct);
-                    return true;
-                }
-                false
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                let pressed = key_event.state == ElementState::Pressed;
+                let keycode = physical_key_to_xpra_keycode(key_event.physical_key);
+                let keyname = key_to_xpra_keyname(&key_event.logical_key);
+                let keystr = match &key_event.logical_key {
+                    Key::Character(s) => s.to_string(),
+                    _ => "".to_string(),
+                };
+                self.send_key_event(wid, keycode, &keyname, &keystr, pressed);
             }
-            E::OnMouseMove => {
-                let (x, y) = nwg::GlobalCursor::position();
-                self.send_pointer_position(wid, x, y);
-                true
-            }
-            E::OnMousePress(M::MousePressLeftDown) => {
-                let (x, y) = nwg::GlobalCursor::position();
-                self.send_pointer_button(wid, 1, true, x, y);
-                true
-            }
-            E::OnMousePress(M::MousePressLeftUp) => {
-                let (x, y) = nwg::GlobalCursor::position();
-                self.send_pointer_button(wid, 1, false, x, y);
-                true
-            }
-            E::OnKeyPress => {
-                if let nwg::EventData::OnKey(keycode) = evt_data {
-                    self.send_key_event(wid, keycode, true);
-                }
-                true
-            }
-            E::OnKeyRelease => {
-                if let nwg::EventData::OnKey(keycode) = evt_data {
-                    self.send_key_event(wid, keycode, false);
-                }
-                true
-            }
-            E::OnKeyEnter => {
-                let keycode = 0x0d;
-                self.send_key_event(wid, &keycode, true);
-                true
-            }
-            E::OnWindowClose => {
-                // client.send_close();
+            WindowEvent::CloseRequested => {
                 self.send_window_close(wid);
-                true
-            },
+            }
             _ => {
-                debug!("event {:?} on wid={:?} handle={:?}", evt, wid, handle);
-                false
+                trace!("unhandled window event {:?} on wid={:?}", event, wid);
             }
         }
+    }
+
+    fn absolute_cursor_position(&self, window: &XpraWindow, position: PhysicalPosition<f64>) -> (i32, i32) {
+        match window.window.inner_position() {
+            Ok(origin) => (origin.x + position.x as i32, origin.y + position.y as i32),
+            // not available on Wayland: fall back to window-relative coordinates.
+            Err(_) => (position.x as i32, position.y as i32),
+        }
+    }
+
+    fn last_cursor_position(&self, window: &XpraWindow) -> (i32, i32) {
+        match window.window.inner_position() {
+            Ok(origin) => (origin.x, origin.y),
+            Err(_) => (0, 0),
+        }
+    }
+}
+
+
+impl ApplicationHandler<Packet> for XpraClient {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.softbuffer_ctx.is_none() {
+            let context = Context::new(event_loop.owned_display_handle())
+                .expect("failed to create softbuffer context");
+            self.softbuffer_ctx = Some(context);
+        }
+        if !self.hello_sent {
+            self.start_read_loop();
+            self.hello_sent = true;
+            self.send_hello();
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, packet: Packet) {
+        if packet.len() == 0 {
+            error!("empty packet!");
+            return;
+        }
+        let packet_type = packet.get_str(0);
+        if packet_type.is_empty() {
+            error!("malformed packet");
+            return;
+        }
+        self.do_process_packet(event_loop, &packet_type, packet);
+    }
+
+    fn window_event(&mut self, _event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        let Some(&wid) = self.id_map.get(&window_id) else {
+            trace!("window event for unknown window {:?}", window_id);
+            return;
+        };
+        self.handle_window_event(wid, event);
+    }
+}
+
+
+fn physical_key_to_xpra_keycode(physical_key: PhysicalKey) -> u32 {
+    match physical_key.to_scancode() {
+        // X11/Wayland: linux scancode -> X11/XKB keycode is scancode + 8.
+        #[cfg(target_os = "linux")]
+        Some(scancode) => scancode + 8,
+        #[cfg(not(target_os = "linux"))]
+        Some(scancode) => scancode,
+        None => 0,
+    }
+}
+
+fn key_to_xpra_keyname(key: &Key) -> String {
+    match key {
+        // most printable characters (letters, digits) are their own X11 keysym name,
+        // but punctuation has dedicated symbolic keysym names:
+        Key::Character(s) => match s.as_str() {
+            "-" => "minus",
+            "=" => "equal",
+            "," => "comma",
+            "." => "period",
+            "/" => "slash",
+            ";" => "semicolon",
+            "'" => "apostrophe",
+            "`" => "grave",
+            "[" => "bracketleft",
+            "]" => "bracketright",
+            "\\" => "backslash",
+            other => other,
+        }.to_string(),
+        Key::Named(named) => match named {
+            NamedKey::Enter => "Return",
+            NamedKey::Tab => "Tab",
+            NamedKey::Space => "space",
+            NamedKey::Backspace => "BackSpace",
+            NamedKey::Delete => "Delete",
+            NamedKey::Escape => "Escape",
+            NamedKey::ArrowUp => "Up",
+            NamedKey::ArrowDown => "Down",
+            NamedKey::ArrowLeft => "Left",
+            NamedKey::ArrowRight => "Right",
+            NamedKey::Home => "Home",
+            NamedKey::End => "End",
+            NamedKey::PageUp => "Prior",
+            NamedKey::PageDown => "Next",
+            NamedKey::Insert => "Insert",
+            NamedKey::Shift => "shift",
+            NamedKey::Control => "control",
+            NamedKey::Alt => "mod1",
+            NamedKey::AltGraph => "mod5",
+            NamedKey::Super => "super",
+            NamedKey::CapsLock => "Caps_Lock",
+            NamedKey::NumLock => "Num_Lock",
+            NamedKey::ScrollLock => "Scroll_Lock",
+            NamedKey::F1 => "F1", NamedKey::F2 => "F2", NamedKey::F3 => "F3", NamedKey::F4 => "F4",
+            NamedKey::F5 => "F5", NamedKey::F6 => "F6", NamedKey::F7 => "F7", NamedKey::F8 => "F8",
+            NamedKey::F9 => "F9", NamedKey::F10 => "F10", NamedKey::F11 => "F11", NamedKey::F12 => "F12",
+            NamedKey::ContextMenu => "Menu",
+            NamedKey::PrintScreen => "Print",
+            NamedKey::Pause => "Pause",
+            _ => "",
+        }.to_string(),
+        _ => "".to_string(),
     }
 }
