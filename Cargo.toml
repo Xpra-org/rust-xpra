@@ -10,7 +10,7 @@ log = { version = "0.4.27", features = ["max_level_debug", "release_max_level_in
 simple_logger = "5.0.0"
 winit = "0.30"
 softbuffer = "0.4"
-turbojpeg = { version = "1.3.2", features = ["image"] }
+turbojpeg = { version = "1.3.2" }
 spng = { version = "0.2.0-alpha.3" }
 base64 = "0.22.1"
 machine-uid = "0.5.3"
@@ -20,3 +20,4 @@ strip = true
 opt-level = "z"
 lto = true
 codegen-units = 1
+panic = "abort"
