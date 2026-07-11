@@ -12,8 +12,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install upx
+      run: choco install upx -y
     - name: Build
       run: cargo build --release --verbose
+    - name: Compress
+      run: upx --best --lzma target\release\xpra.exe
     - name: Package
       run: |
         mkdir dist
@@ -41,9 +45,12 @@ jobs:
           libxi-dev \
           libxcursor-dev \
           libxkbcommon-dev \
-          libwayland-dev
+          libwayland-dev \
+          upx-ucl
     - name: Build
       run: cargo build --release --verbose
+    - name: Compress
+      run: upx --best --lzma ./target/release/xpra
     - name: Package
       run: |
         mkdir dist
@@ -60,9 +67,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install system dependencies
-      run: brew install pkg-config jpeg-turbo
+      run: brew install pkg-config jpeg-turbo upx
     - name: Build
       run: cargo build --release --verbose
+    - name: Compress
+      run: upx --best --lzma ./target/release/xpra
     - name: Package
       run: |
         mkdir dist
