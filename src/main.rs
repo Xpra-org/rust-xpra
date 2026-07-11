@@ -9,7 +9,7 @@ use winit::event_loop::EventLoop;
 use xpra::net::connection::Connection;
 use xpra::net::packet::Packet;
 use xpra::net::uri::{host_only, parse_target, Scheme};
-use xpra::net::{tls, websocket};
+use xpra::net::{ssh, tls, websocket};
 
 mod client;
 use client::client::XpraClient;
@@ -27,7 +27,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         error!("invalid number of arguments: {:?}", args.len());
-        error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/", args[0]);
+        error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/ | ssh://[USER@]HOST[:PORT]/[DISPLAY]", args[0]);
         return;
     }
     let target = match parse_target(&args[1]) {
@@ -57,6 +57,10 @@ fn main() {
             let tls_stream = tls::connect(stream, host_only(&target.address)).expect("tls handshake failed");
             let ws = websocket::connect(tls_stream, &target.address, &target.path).expect("websocket handshake failed");
             Connection::WebSocketTls(ws)
+        }
+        Scheme::Ssh => {
+            let ssh_stream = ssh::connect(&target.address, target.username.as_deref(), &target.path).expect("ssh connection failed");
+            Connection::Ssh(ssh_stream)
         }
     };
 

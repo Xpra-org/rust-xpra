@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
 Not usable yet: unauthenticated `tcp`/`ssl`/`ws`/`wss` connections only (and `ssl`/`wss` don't verify certificates
-yet — see `README.md`), no server/audio/clipboard/notifications support. See `README.md` for known Linux/Wayland
-limitations (window positioning, override-redirect, NumLock — all downstream of Wayland not letting clients
-query/set absolute desktop position or create truly unmanaged windows).
+yet — see `README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard/notifications support. See
+`README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock — all downstream
+of Wayland not letting clients query/set absolute desktop position or create truly unmanaged windows).
 
 ## Build / run
 
@@ -34,15 +34,18 @@ The only automated tests are `net::sha1`'s unit tests (`cargo test --lib`).
 The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main.rs`).
 
 - `src/lib.rs` / `src/net/`: the Xpra wire-protocol layer, platform-independent.
-  - `net/uri.rs`: `parse_target` turns the command-line argument into a `Target { scheme, address, path }`,
+  - `net/uri.rs`: `parse_target` turns the command-line argument into a `Target { scheme, address, path, username }`,
     accepting either a bare `host:port` (assumed `tcp`) or a `protocol://host:port/path` URI. `Scheme` is one of
-    `Tcp`/`Tls`/`WebSocket`/`WebSocketTls` (`tcp`/`ssl`/`ws`/`wss`); anything else is rejected. `host_only` strips
-    the port for use as the TLS SNI/hostname argument (handles bracketed IPv6 correctly).
-  - `net/connection.rs`: `Connection` is an enum (`Tcp`/`Tls`/`WebSocket`/`WebSocketTls`) implementing `Read`/
-    `Write` by dispatching to whichever transport is active, so the rest of the codebase (`io.rs`, `XpraClient`)
-    doesn't need to know which one it's talking to. `try_clone()` gives the reader thread its own independent
-    instance. `Connection::write_all` special-cases `Tls` to call `SharedTlsStream::write_all` (see below) rather
-    than the generic `Write::write_all`.
+    `Tcp`/`Tls`/`WebSocket`/`WebSocketTls`/`Ssh` (`tcp`/`ssl`/`ws`/`wss`/`ssh`); anything else is rejected.
+    `host_only` strips the port for use as the TLS SNI/hostname argument (handles bracketed IPv6 correctly).
+    `Ssh` alone allows a `user@` authority prefix (→ `username`) and defaults the port to 22 if omitted (the other
+    schemes always require an explicit port); its `path` is stripped of the leading `/` since it's passed through
+    as a bare xpra display number, not a URI path.
+  - `net/connection.rs`: `Connection` is an enum (`Tcp`/`Tls`/`WebSocket`/`WebSocketTls`/`Ssh`) implementing
+    `Read`/`Write` by dispatching to whichever transport is active, so the rest of the codebase (`io.rs`,
+    `XpraClient`) doesn't need to know which one it's talking to. `try_clone()` gives the reader thread its own
+    independent instance. `Connection::write_all` special-cases `Tls` to call `SharedTlsStream::write_all` (see
+    below) rather than the generic `Write::write_all`.
   - `net/tls.rs`: `ssl://`/`wss://`, via `native-tls` (OpenSSL/Schannel/Security.framework) rather than a
     hand-rolled implementation — unlike WebSocket masking, TLS encryption is a real security boundary.
     **Certificate verification is currently disabled** (`danger_accept_invalid_certs`/`danger_accept_invalid_hostnames`)
@@ -64,6 +67,20 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     transparently answering pings.
   - `net/sha1.rs`: a self-contained SHA1 (only used for the websocket accept-hash, not security-sensitive) — has
     unit tests with the standard RFC 3174 test vectors, run via `cargo test --lib`.
+  - `net/ssh.rs`: `ssh://`, implemented by shelling out to the system `ssh` binary (`std::process::Command`) and
+    treating its stdin/stdout pipes as the byte stream — no SSH library dependency, mirroring the `tcp`/`ws`
+    hand-rolled-over-a-library preference here (a full client like `russh` costs ~2MB and needs `tokio`; see the
+    dependency-cost notes in git history). The remote command is `sh -c 'if command -v "xpra" ...; then xpra
+    _proxy [DISPLAY]; else ...; fi'`, matching what xpra's own client runs over ssh (see
+    `xpra/net/ssh/exec_client.py:get_ssh_command` upstream) — `xpra _proxy` bridges stdin/stdout on the remote end
+    to the target display's existing unix-domain socket. `SshStream` wraps `ChildStdin`/`ChildStdout` each in
+    their own `Arc<Mutex<_>>` purely so `try_clone()` can hand the reader thread its own handle; unlike
+    `SharedTlsStream` these two mutexes are never actually contended, since stdin and stdout are independent pipes
+    (only the UI thread ever locks `stdin`, only the reader thread ever locks `stdout`). The spawned `Child` is
+    moved into a dedicated reaper thread that blocks on `child.wait()`, since `Child::drop` neither kills nor
+    waits on the process and would otherwise leave a zombie once ssh exits. Authentication must not require
+    interactive stdin (it carries the xpra protocol); host-key/password prompts still work since OpenSSH reads
+    those from the controlling terminal, not stdin — ssh's stderr is inherited so such prompts/errors are visible.
   - `net/io.rs`: packet framing over a `Connection` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
     `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload, written
     as a single `Connection::write_all` call. Only YAML encoding, no compression, no chunking are currently
