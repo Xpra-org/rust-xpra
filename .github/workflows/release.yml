@@ -53,9 +53,28 @@ jobs:
         name: xpra-linux-x86_64
         path: dist/xpra-linux-x86_64
 
+  build-macos:
+
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: brew install pkg-config jpeg-turbo
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Package
+      run: |
+        mkdir dist
+        cp target/release/xpra dist/xpra-macos-arm64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: xpra-macos-arm64
+        path: dist/xpra-macos-arm64
+
   release:
 
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,6 +90,7 @@ jobs:
         gh release create "${{ github.ref_name }}" \
           dist/xpra-windows-x86_64/xpra-windows-x86_64.exe \
           dist/xpra-linux-x86_64/xpra-linux-x86_64 \
+          dist/xpra-macos-arm64/xpra-macos-arm64 \
           --repo "${{ github.repository }}" \
           --title "${{ github.ref_name }}" \
           --generate-notes
