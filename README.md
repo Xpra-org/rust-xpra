@@ -34,9 +34,15 @@ Running under XWayland (the X11 backend) instead of native Wayland avoids all of
 cargo build
 ./target/debug/xpra HOST:PORT
 ./target/debug/xpra tcp://HOST:PORT/
+./target/debug/xpra ssl://HOST:PORT/
 ./target/debug/xpra ws://HOST:PORT/
+./target/debug/xpra wss://HOST:PORT/
 ```
 
-Only the `tcp` and `ws` protocols are supported; any other protocol in the URI is rejected. `ws` support (HTTP
-upgrade handshake and frame framing) is hand-rolled against `std` only, to avoid pulling in a websocket crate and
-its dependencies.
+Only the `tcp`, `ssl`, `ws` and `wss` protocols are supported; any other protocol in the URI is rejected. `ws`
+support (HTTP upgrade handshake and frame framing) is hand-rolled against `std` only, to avoid pulling in a
+websocket crate and its dependencies. `ssl`/`wss` use [`native-tls`](https://docs.rs/native-tls) (OpenSSL on
+Linux, Schannel on Windows, Security.framework on macOS) rather than a hand-rolled implementation, since TLS
+encryption (unlike WebSocket masking) is a real security boundary. **Certificate verification is currently
+disabled** (self-signed/invalid certificates are accepted) since this client has no way to configure a custom CA
+yet; `ssl`/`wss` connections are not authenticated against a trusted CA and are vulnerable to interception.

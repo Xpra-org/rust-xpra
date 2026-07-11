@@ -3,7 +3,8 @@
 // that a plain `tcp://` connection would carry. Deliberately hand-rolled
 // (instead of pulling in a websocket crate) since the actual protocol needed
 // here is small: an HTTP upgrade request/response, a SHA1+base64 accept
-// check, and frame masking.
+// check, and frame masking. Generic over the underlying stream so it can wrap
+// either a plain `TcpStream` (`ws://`) or a TLS session (`wss://`).
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +15,7 @@ use base64::engine::general_purpose;
 use log::trace;
 
 use super::sha1::sha1;
+use super::tls::SharedTlsStream;
 
 const ACCEPT_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -24,13 +26,45 @@ const OPCODE_CLOSE: u8 = 0x8;
 const OPCODE_PING: u8 = 0x9;
 const OPCODE_PONG: u8 = 0xA;
 
-pub struct WebSocketStream {
-    stream: TcpStream,
+// bridges std's fallible `TcpStream::try_clone` and `SharedTlsStream`'s cheap
+// `Arc` clone under one interface, so `WebSocketStream<S>` can be cloned for
+// the reader thread regardless of which transport it wraps. `write_frame` is
+// its own method (rather than relying on `Write::write_all`) so that a TLS
+// connection can hold its lock for one whole frame instead of once per
+// underlying short write, which would let a concurrent writer (the reader
+// thread's automatic pong reply to a ping) interleave into the middle of it.
+pub trait CloneableStream: Read + Write + Sized {
+    fn try_clone(&self) -> io::Result<Self>;
+    fn write_frame(&mut self, data: &[u8]) -> io::Result<()>;
+}
+
+impl CloneableStream for TcpStream {
+    fn try_clone(&self) -> io::Result<Self> {
+        TcpStream::try_clone(self)
+    }
+
+    fn write_frame(&mut self, data: &[u8]) -> io::Result<()> {
+        self.write_all(data)
+    }
+}
+
+impl CloneableStream for SharedTlsStream {
+    fn try_clone(&self) -> io::Result<Self> {
+        SharedTlsStream::try_clone(self)
+    }
+
+    fn write_frame(&mut self, data: &[u8]) -> io::Result<()> {
+        SharedTlsStream::write_all(self, data)
+    }
+}
+
+pub struct WebSocketStream<S: CloneableStream> {
+    stream: S,
     read_buf: Vec<u8>,
     read_pos: usize,
 }
 
-impl WebSocketStream {
+impl<S: CloneableStream> WebSocketStream<S> {
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(WebSocketStream {
             stream: self.stream.try_clone()?,
@@ -59,8 +93,7 @@ impl WebSocketStream {
         for (i, b) in frame[start..].iter_mut().enumerate() {
             *b ^= mask_key[i % 4];
         }
-        self.stream.write_all(&frame)?;
-        self.stream.flush()
+        self.stream.write_frame(&frame)
     }
 
     // reads one full (possibly reassembled from fragments) data message into `read_buf`,
@@ -122,7 +155,7 @@ impl WebSocketStream {
     }
 }
 
-impl Read for WebSocketStream {
+impl<S: CloneableStream> Read for WebSocketStream<S> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.read_pos >= self.read_buf.len() {
             self.fill_buffer()?;
@@ -135,7 +168,7 @@ impl Read for WebSocketStream {
     }
 }
 
-impl Write for WebSocketStream {
+impl<S: CloneableStream> Write for WebSocketStream<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.send_frame(OPCODE_BINARY, buf)?;
         Ok(buf.len())
@@ -146,8 +179,8 @@ impl Write for WebSocketStream {
     }
 }
 
-// performs the client-side HTTP upgrade handshake on an already-connected TCP stream.
-pub fn connect(mut stream: TcpStream, host: &str, path: &str) -> Result<WebSocketStream, String> {
+// performs the client-side HTTP upgrade handshake on an already-connected stream.
+pub fn connect<S: CloneableStream>(mut stream: S, host: &str, path: &str) -> Result<WebSocketStream<S>, String> {
     let request_path = if path.is_empty() { "/" } else { path };
     let key = general_purpose::STANDARD.encode(random_bytes16());
     let request = format!(
@@ -175,6 +208,7 @@ pub fn connect(mut stream: TcpStream, host: &str, path: &str) -> Result<WebSocke
         }
     }
     let response_str = String::from_utf8_lossy(&response);
+    trace!("websocket handshake response: {:?}", response_str);
     let mut lines = response_str.split("\r\n");
     let status_line = lines.next().unwrap_or("");
     if !status_line.contains(" 101 ") {

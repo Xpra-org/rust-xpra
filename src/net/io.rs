@@ -1,4 +1,4 @@
-use std::io::{Read, Error, Write, ErrorKind};
+use std::io::{Read, Error, ErrorKind};
 use std::result::{Result};
 use log::{trace};
 
@@ -55,5 +55,4 @@ pub fn write_packet(stream: &mut Connection, data: &[u8]) {
     let mut packet = make_header(data);
     packet.extend_from_slice(data);
     stream.write_all(&packet).expect("write packet failed");
-    stream.flush().expect("flush failed");
 }

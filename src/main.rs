@@ -8,8 +8,8 @@ use simple_logger::SimpleLogger;
 use winit::event_loop::EventLoop;
 use xpra::net::connection::Connection;
 use xpra::net::packet::Packet;
-use xpra::net::uri::{parse_target, Target};
-use xpra::net::websocket;
+use xpra::net::uri::{host_only, parse_target, Scheme};
+use xpra::net::{tls, websocket};
 
 mod client;
 use client::client::XpraClient;
@@ -27,7 +27,7 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         error!("invalid number of arguments: {:?}", args.len());
-        error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/ | ws://HOST:PORT/", args[0]);
+        error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/", args[0]);
         return;
     }
     let target = match parse_target(&args[1]) {
@@ -37,15 +37,26 @@ fn main() {
             return;
         }
     };
-    let connection = match target {
-        Target::Tcp { address } => {
-            let stream = TcpStream::connect(address).expect("connection failed");
+    let connection = match target.scheme {
+        Scheme::Tcp => {
+            let stream = TcpStream::connect(&target.address).expect("connection failed");
             Connection::Tcp(stream)
         }
-        Target::WebSocket { address, path } => {
-            let stream = TcpStream::connect(&address).expect("connection failed");
-            let ws = websocket::connect(stream, &address, &path).expect("websocket handshake failed");
+        Scheme::Tls => {
+            let stream = TcpStream::connect(&target.address).expect("connection failed");
+            let tls_stream = tls::connect(stream, host_only(&target.address)).expect("tls handshake failed");
+            Connection::Tls(tls_stream)
+        }
+        Scheme::WebSocket => {
+            let stream = TcpStream::connect(&target.address).expect("connection failed");
+            let ws = websocket::connect(stream, &target.address, &target.path).expect("websocket handshake failed");
             Connection::WebSocket(ws)
+        }
+        Scheme::WebSocketTls => {
+            let stream = TcpStream::connect(&target.address).expect("connection failed");
+            let tls_stream = tls::connect(stream, host_only(&target.address)).expect("tls handshake failed");
+            let ws = websocket::connect(tls_stream, &target.address, &target.path).expect("websocket handshake failed");
+            Connection::WebSocketTls(ws)
         }
     };
 

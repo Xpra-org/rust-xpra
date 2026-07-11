@@ -5,9 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project status
 
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
-Not usable yet: unauthenticated `tcp`/`ws` connections only, no server/audio/clipboard/notifications support. See
-`README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock — all downstream
-of Wayland not letting clients query/set absolute desktop position or create truly unmanaged windows).
+Not usable yet: unauthenticated `tcp`/`ssl`/`ws`/`wss` connections only (and `ssl`/`wss` don't verify certificates
+yet — see `README.md`), no server/audio/clipboard/notifications support. See `README.md` for known Linux/Wayland
+limitations (window positioning, override-redirect, NumLock — all downstream of Wayland not letting clients
+query/set absolute desktop position or create truly unmanaged windows).
 
 ## Build / run
 
@@ -18,7 +19,7 @@ both (see `.github/workflows/rust.yml`). On Linux, building needs X11/Wayland/xk
 ```shell
 cargo build
 ./target/debug/xpra HOST:PORT     # xpra.exe on Windows
-./target/debug/xpra ws://HOST:PORT/
+./target/debug/xpra wss://HOST:PORT/
 ```
 
 `config.toml` sets `TURBOJPEG_SOURCE=pkg-config` and `TURBOJPEG_STATIC=1`, required for the `turbojpeg` crate to
@@ -33,23 +34,40 @@ The only automated tests are `net::sha1`'s unit tests (`cargo test --lib`).
 The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main.rs`).
 
 - `src/lib.rs` / `src/net/`: the Xpra wire-protocol layer, platform-independent.
-  - `net/uri.rs`: `parse_target` turns the command-line argument into a `Target` (`Tcp` or `WebSocket`), accepting
-    either a bare `host:port` (assumed `tcp`) or a `protocol://host:port/path` URI. Any protocol other than `tcp`
-    or `ws` is rejected.
-  - `net/connection.rs`: `Connection` is an enum (`Tcp(TcpStream)` / `WebSocket(WebSocketStream)`) implementing
-    `Read`/`Write` by dispatching to whichever transport is active, so the rest of the codebase (`io.rs`,
-    `XpraClient`) doesn't need to know which one it's talking to. `try_clone()` gives the reader thread its own
-    independent instance, mirroring how `TcpStream::try_clone` is used elsewhere.
+  - `net/uri.rs`: `parse_target` turns the command-line argument into a `Target { scheme, address, path }`,
+    accepting either a bare `host:port` (assumed `tcp`) or a `protocol://host:port/path` URI. `Scheme` is one of
+    `Tcp`/`Tls`/`WebSocket`/`WebSocketTls` (`tcp`/`ssl`/`ws`/`wss`); anything else is rejected. `host_only` strips
+    the port for use as the TLS SNI/hostname argument (handles bracketed IPv6 correctly).
+  - `net/connection.rs`: `Connection` is an enum (`Tcp`/`Tls`/`WebSocket`/`WebSocketTls`) implementing `Read`/
+    `Write` by dispatching to whichever transport is active, so the rest of the codebase (`io.rs`, `XpraClient`)
+    doesn't need to know which one it's talking to. `try_clone()` gives the reader thread its own independent
+    instance. `Connection::write_all` special-cases `Tls` to call `SharedTlsStream::write_all` (see below) rather
+    than the generic `Write::write_all`.
+  - `net/tls.rs`: `ssl://`/`wss://`, via `native-tls` (OpenSSL/Schannel/Security.framework) rather than a
+    hand-rolled implementation — unlike WebSocket masking, TLS encryption is a real security boundary.
+    **Certificate verification is currently disabled** (`danger_accept_invalid_certs`/`danger_accept_invalid_hostnames`)
+    since there's no way to configure a custom CA yet; see `README.md`. `SharedTlsStream` wraps the single
+    `TlsStream` in an `Arc<Mutex<_>>` so the reader thread and the UI thread (writer) can share it — a single TLS
+    session isn't safe for concurrent use by two threads (see xpra's own `SSLSocketConnection`, which hits the
+    same OpenSSL issue). The socket is put in **true non-blocking mode**, not a read *timeout* on an otherwise-
+    blocking socket: OpenSSL only guarantees a safe retry after `WouldBlock` for a genuinely non-blocking
+    transport. `SharedTlsStream::write_all` holds the lock for the *whole* write (including across `WouldBlock`
+    retries), so a concurrent writer (the reader thread's automatic pong reply to a WebSocket ping, over `wss://`)
+    can never interleave its bytes into the middle of another writer's frame — this was a real, reproducible bug
+    (moving the mouse/typing while `wss://`-connected corrupted the packet stream) before both fixes landed.
   - `net/websocket.rs`: a minimal hand-rolled RFC 6455 client (HTTP upgrade handshake + frame masking/framing) —
-    deliberately not using a websocket crate, since the protocol needed here is small; see `README.md`. Requires a
-    `Sec-WebSocket-Protocol: binary` header for the xpra server to accept the upgrade. `WebSocketStream` buffers
-    one reassembled (defragmented) message at a time and serves it through `Read`, transparently answering pings.
+    deliberately not using a websocket crate, since the protocol needed here is small; see `README.md`. Generic
+    over the underlying stream (`TcpStream` for `ws://`, `SharedTlsStream` for `wss://`) via the `CloneableStream`
+    trait, whose `write_frame` is what routes TLS writes through the atomic `SharedTlsStream::write_all` above.
+    Requires a `Sec-WebSocket-Protocol: binary` header for the xpra server to accept the upgrade.
+    `WebSocketStream` buffers one reassembled (defragmented) message at a time and serves it through `Read`,
+    transparently answering pings.
   - `net/sha1.rs`: a self-contained SHA1 (only used for the websocket accept-hash, not security-sensitive) — has
     unit tests with the standard RFC 3174 test vectors, run via `cargo test --lib`.
   - `net/io.rs`: packet framing over a `Connection` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
     `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload, written
-    as a single `write_all` call. Only YAML encoding, no compression, no chunking are currently supported
-    (anything else is a hard error).
+    as a single `Connection::write_all` call. Only YAML encoding, no compression, no chunking are currently
+    supported (anything else is a hard error).
   - `net/serde.rs`: parses the YAML payload into a `Packet`.
   - `net/packet.rs`: `Packet { main: Vec<Yaml>, raw: HashMap<u8, Vec<u8>> }` — `main` holds the positional fields
     of an Xpra packet (`main[0]` is always the packet type string); `raw` holds binary payloads that get spliced
