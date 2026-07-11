@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
+use std::time::Instant;
 
 use serde_json::{json, Value};
 use yaml_rust2::Yaml;
@@ -170,8 +171,14 @@ impl XpraClient {
         let proxy = self.proxy.clone();
         let mut stream = self.stream.try_clone().unwrap();
         thread::Builder::new().name("reader".to_string()).spawn(move || loop {
+            let t0 = Instant::now();
             let payload = read_packet(&mut stream).unwrap();
+            let read_elapsed = t0.elapsed();
+            let payload_len = payload.len();
             let packet = parse_payload(payload).unwrap();
+            if packet.get_str(0) == "draw" {
+                trace!("perf: draw packet: {:?} bytes read (network) in {:?}", payload_len, read_elapsed);
+            }
             if proxy.send_event(packet).is_err() {
                 break;
             }
@@ -194,7 +201,11 @@ impl XpraClient {
 
                 let mut main = packet.main.to_vec();
                 let mut raw = HashMap::new();
+                let t0 = Instant::now();
                 let result = draw_decoder::decode(&coding, data);
+                let decode_elapsed = t0.elapsed();
+                trace!("perf: draw packet: {:?}x{:?} {:?} decoded in {:?}", w, h, coding, decode_elapsed);
+                let mut decode_time_us = None;
                 if result.is_err() {
                     let message = result.unwrap_err();
                     error!("draw decoding error for {:?} sequence {:?}: {:?}", coding, seq, message);
@@ -205,8 +216,9 @@ impl XpraClient {
                     let pixels = result.unwrap();
                     raw.insert(7, pixels);
                     main[0] = Yaml::String("draw-decoded".to_string());
+                    decode_time_us = Some(decode_elapsed.as_micros() as i64);
                 }
-                let patched_packet = Packet { main, raw };
+                let patched_packet = Packet { main, raw, decode_time_us };
                 if proxy.send_event(patched_packet).is_err() {
                     break;
                 }
@@ -341,6 +353,7 @@ impl XpraClient {
         let coding = p.get_str(6);
         let pixels = p.get_bytes(7);
         let seq = p.get_u64(8);
+        let decode_time_us = p.decode_time_us.unwrap_or(0) as i128;
 
         let window = match self.windows.get_mut(&wid) {
             Some(window) => window,
@@ -354,7 +367,7 @@ impl XpraClient {
         window.paint(seq, x, y, w, h, &coding, &pixels);
 
         let message = "".to_string();
-        self.send_damage_sequence(seq, wid, w, h, 0, message);
+        self.send_damage_sequence(seq, wid, w, h, decode_time_us, message);
     }
 
     fn process_draw_failed(&mut self, packet: &Packet) {

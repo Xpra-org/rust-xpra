@@ -11,6 +11,9 @@ use yaml_rust2::Yaml;
 pub struct Packet {
     pub main: Vec<Yaml>,
     pub raw: HashMap<u8, Vec<u8>>,
+    // measured locally by the decode thread for "draw-decoded" packets (microseconds);
+    // not part of the xpra wire format, only used to fill in `damage-sequence`'s decode_time.
+    pub decode_time_us: Option<i64>,
 }
 
 impl fmt::Debug for Packet {
@@ -25,7 +28,7 @@ impl fmt::Debug for Packet {
 impl Packet {
 
     pub fn new() -> Self {
-        Packet{ main: Vec::new(), raw: HashMap::new() }
+        Packet{ main: Vec::new(), raw: HashMap::new(), decode_time_us: None }
     }
 
     pub fn len(&self) -> usize {

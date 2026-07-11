@@ -26,7 +26,7 @@ pub fn parse_payload(mut payload: Vec<u8>) -> Result<Packet, Error> {
     // error!("packet = {:?}", packet);
     match packet {
         Yaml::Array(array) => {
-            Ok(Packet{ main: array.to_vec(), raw: HashMap::new() })
+            Ok(Packet{ main: array.to_vec(), raw: HashMap::new(), decode_time_us: None })
         },
         _ => {
             error!("packet is not an array: {:?}", packet);

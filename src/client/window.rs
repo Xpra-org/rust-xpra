@@ -1,5 +1,6 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::time::Instant;
 
 use log::{debug, error, trace};
 use softbuffer::{Context, Surface};
@@ -58,6 +59,7 @@ impl XpraWindow {
             // spng outputs RGBA8:
             |px: &[u8]| (px[0] as u32) << 16 | (px[1] as u32) << 8 | (px[2] as u32)
         };
+        let t0 = Instant::now();
         for row in 0..h {
             let dst_y = y + row as i32;
             if dst_y < 0 || dst_y as u32 >= self.height {
@@ -75,6 +77,7 @@ impl XpraWindow {
                 self.framebuffer[dst_off] = px;
             }
         }
+        trace!("perf: paint wid={:?} {:?}x{:?} converted in {:?}", self.wid, w, h, t0.elapsed());
         if self.paint_debug {
             self.draw_debug_border(x, y, w, h);
         }
@@ -120,8 +123,13 @@ impl XpraWindow {
             // surface hasn't been resized to match our framebuffer yet, skip this present:
             return;
         }
+        let t0 = Instant::now();
         buffer.copy_from_slice(&self.framebuffer);
-        if let Err(e) = buffer.present() {
+        let copy_elapsed = t0.elapsed();
+        let t1 = Instant::now();
+        let result = buffer.present();
+        trace!("perf: draw_screen wid={:?} copy={:?} present={:?}", self.wid, copy_elapsed, t1.elapsed());
+        if let Err(e) = result {
             error!("failed to present softbuffer buffer: {:?}", e);
         }
     }
