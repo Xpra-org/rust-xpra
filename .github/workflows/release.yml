@@ -27,6 +27,27 @@ jobs:
         name: xpra-windows-x86_64
         path: dist/xpra-windows-x86_64.exe
 
+  build-windows-arm64:
+
+    runs-on: windows-11-arm
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install upx
+      run: choco install upx -y
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Compress
+      run: upx --best --lzma target\release\xpra.exe
+    - name: Package
+      run: |
+        mkdir dist
+        copy target\release\xpra.exe dist\xpra-windows-arm64.exe
+    - uses: actions/upload-artifact@v4
+      with:
+        name: xpra-windows-arm64
+        path: dist/xpra-windows-arm64.exe
+
   build-linux:
 
     runs-on: ubuntu-latest
@@ -60,6 +81,39 @@ jobs:
         name: xpra-linux-x86_64
         path: dist/xpra-linux-x86_64
 
+  build-linux-arm64:
+
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          nasm \
+          pkg-config \
+          libjpeg-turbo8-dev \
+          libx11-dev \
+          libxrandr-dev \
+          libxi-dev \
+          libxcursor-dev \
+          libxkbcommon-dev \
+          libwayland-dev \
+          upx-ucl
+    - name: Build
+      run: cargo build --release --verbose
+    - name: Compress
+      run: upx --best --lzma ./target/release/xpra
+    - name: Package
+      run: |
+        mkdir dist
+        cp target/release/xpra dist/xpra-linux-arm64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: xpra-linux-arm64
+        path: dist/xpra-linux-arm64
+
   build-macos:
 
     runs-on: macos-latest
@@ -83,7 +137,7 @@ jobs:
 
   release:
 
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-windows-arm64, build-linux, build-linux-arm64, build-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -98,7 +152,9 @@ jobs:
       run: |
         gh release create "${{ github.ref_name }}" \
           dist/xpra-windows-x86_64/xpra-windows-x86_64.exe \
+          dist/xpra-windows-arm64/xpra-windows-arm64.exe \
           dist/xpra-linux-x86_64/xpra-linux-x86_64 \
+          dist/xpra-linux-arm64/xpra-linux-arm64 \
           dist/xpra-macos-arm64/xpra-macos-arm64 \
           --repo "${{ github.repository }}" \
           --title "${{ github.ref_name }}" \
