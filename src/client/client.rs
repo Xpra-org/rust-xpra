@@ -261,6 +261,7 @@ impl XpraClient {
         let h = packet.get_u32(5);
         let title = packet.get_hash_str(6, "title".to_string());
 
+        #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title(&title)
             .with_position(PhysicalPosition::new(x, y))
