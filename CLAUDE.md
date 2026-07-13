@@ -29,6 +29,13 @@ copy. Cargo's `[env]` does not override variables already set in the process env
 have no libjpeg-turbo 3.x (and the Windows ones no `pkg-config`). Same escape hatch locally: set
 `TURBOJPEG_SOURCE=vendor` in the environment (requires `cmake` + `nasm`) if the system libjpeg-turbo is too old.
 
+`libwebp-sys` is the opposite default: it builds its **vendored** libwebp C sources with `cc` and links them
+statically, which is what the all-in-one CI release binaries want and needs no extra tooling (no `cmake`/`nasm`/
+`bindgen` — the bindings are pre-generated). Downstream packagers who must link the distro's shared libwebp
+instead build with `--features webp-dylib` (see `Cargo.toml`), which turns on `libwebp-sys/system-dylib` and makes
+its `build.rs` `pkg-config`-probe the system library rather than compiling the vendored copy. The two modes are
+interchangeable: the FFI surface is identical, so no code outside `Cargo.toml` is conditional on the feature.
+
 There are no automated tests for the GUI/protocol dispatch layer — verify changes manually against a real Xpra
 server (`xpra start :100 --bind-tcp=127.0.0.1:PORT --auth=none --tcp-auth=none` works well for local testing).
 The only automated tests are `net::sha1`'s unit tests (`cargo test --lib`).
@@ -120,8 +127,11 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `draw_screen()` (on `WindowEvent::RedrawRequested`) copies the whole `framebuffer` into the surface buffer
     and presents it; `resize()` reallocates `framebuffer` (zero-filled — relies on the server re-sending damage
     after a `configure-window` round-trip rather than preserving old contents).
-  - `draw_decoder.rs`: decodes `jpeg` (via `turbojpeg`) and `png` (via `spng`) payloads into raw pixel buffers —
-    platform-independent, unchanged by the GUI backend. These are *stateless* (one packet in, one image out).
+  - `draw_decoder.rs`: decodes `jpeg` (via `turbojpeg`), `png` (via `spng`) and `webp` (via `libwebp-sys`)
+    payloads into raw pixel buffers — platform-independent, unchanged by the GUI backend. These are *stateless*
+    (one packet in, one image out). `webp` uses `WebPDecodeBGRA`, which both allocates its output (so the pixels
+    have to be copied into a `Vec` and the buffer handed back to `WebPFree`) and hands back BGRA — the same layout
+    turbojpeg produces, so `window::paint` treats `webp` exactly like `jpeg` and no new pixel path was needed.
   - `mediafoundation.rs` (Windows-only, `#[cfg(windows)]`): `h264` video decode via Media Foundation — no
     third-party codec is linked (the decoder lives in the OS, `msmpeg2vdec.dll`; +~13KB to the binary, just the
     COM/MF bindings from the `windows` crate). Pipeline is `CLSID_CMSH264DecoderMFT` (H.264 Annex-B → NV12) →
@@ -194,3 +204,26 @@ non-idle "timeout") is a failure, everything else ("server shutdown", "new clien
 
 - `exe.manifest` (Windows DPI-awareness manifest) is Windows-build-specific and harmless to leave as-is on
   Linux; nothing in the current `winit`-based code references it.
+- **Do not enable `libwebp-sys`'s `sse41` / `avx2` features.** They look like free speed and are neither free nor
+  speed. `libwebp-sys`' `build.rs` puts `-msse4.1`/`-mavx2` on the *whole* `cc::Build` — every vendored `.c` file,
+  unlike libwebp's own CMake, which applies them per-file precisely so that the generic and SSE2 paths stay
+  baseline. With `avx2` on, `dec_sse2.o` (the path libwebp's *runtime* CPU dispatch picks on any SSE2 machine)
+  comes out full of VEX-encoded instructions and even `ymm` registers, so the binary `SIGILL`s on any pre-AVX2
+  CPU (pre-2013 Intel, and current low-power Celeron/Pentium/Atom N-series — exactly the thin clients this is
+  for), runtime dispatch notwithstanding.
+  And they buy nothing measurable, on either of the two encodings xpra actually sends (it picks lossless VP8L for
+  text-heavy/few-colour rects and lossy VP8 for the rest). Best-of-7 × 200 iterations on an i7-6700K, which has
+  both feature bits, with the kernels confirmed compiled in (37 `SSE41` symbols vs 9 in the default build, 38
+  `AVX2` ones) and therefore dispatched:
+
+  |                       | default (SSE2) | `sse41` | `sse41`+`avx2` |
+  |-----------------------|----------------|---------|----------------|
+  | 1080p lossy (VP8)     | 8.92 ms        | 8.97 ms | 8.82 ms        |
+  | 1080p lossless (VP8L) | 9.50 ms        | 9.54 ms | 9.40 ms        |
+  | text lossy (VP8)      | 5.72 ms        | 5.70 ms | 5.70 ms        |
+  | text lossless (VP8L)  | 0.58 ms        | 0.57 ms | 0.63 ms        |
+
+  All within noise. For `avx2` that is structural, not luck: `lossless_avx2.c` is the *only* decode-side AVX2 file
+  in libwebp, so AVX2 has no lossy-VP8-decode kernels to run at all, and the VP8L ones it does have don't move the
+  needle. SSE4.1 does have real lossy-decode kernels (`dec_sse41.c`, `upsampling_sse41.c`, `yuv_sse41.c`) — they
+  just don't beat the SSE2 ones the decoder already uses.

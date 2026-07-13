@@ -132,7 +132,7 @@ impl XpraClient {
         let username = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_default();
         // h264 is decoded via Media Foundation, which is Windows-only:
         #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut encodings = vec!["jpeg", "png"];
+        let mut encodings = vec!["jpeg", "png", "webp"];
         // The nested "encoding" caps dict (read server-side as hello["encoding"], see xpra's
         // server/source/encoding.py). For a video encoding to be offered at all, the server needs
         // `full_csc_modes[<enc>]` to list at least one colourspace its encoder can produce that we

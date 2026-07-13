@@ -55,3 +55,23 @@ or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the r
 not require interactive input on stdin (stdin carries the xpra protocol, not a terminal), so use key-based auth
 via an ssh-agent or a passphrase-less key; host-key confirmation and password prompts still work normally since
 OpenSSH reads those from the controlling terminal, not stdin.
+
+## Picture encodings
+
+`jpeg` (libjpeg-turbo), `png` (libspng), `webp` (libwebp), and `h264` on Windows only (decoded by the OS through
+Media Foundation, no codec is bundled).
+
+### Linking libwebp
+
+By default `libwebp` is built from the vendored C sources and linked **statically**, so that the release binaries
+are self-contained — this needs no extra tooling (a C compiler only: no `cmake`, no `nasm`, no `bindgen`).
+
+Distribution packages generally must not bundle their own copy of a library the distribution already ships and has
+to be able to patch, so there is a feature to link the system `libwebp` shared library instead (located with
+`pkg-config`):
+
+```shell
+cargo build --release --features webp-dylib
+```
+
+

@@ -15,6 +15,19 @@ spng = { version = "0.2.0-alpha.3" }
 base64 = "0.22.1"
 machine-uid = "0.6.0"
 native-tls = "0.2"
+# webp decoding. By default this builds the vendored libwebp C sources with `cc` (no cmake / nasm /
+# bindgen needed) and links them statically, which is what the CI release binaries want.
+# See the `webp-dylib` feature below for the shared-library build downstream packagers want.
+libwebp-sys = "0.14"
+
+[features]
+default = []
+# Link against the system libwebp shared library (found via pkg-config) instead of building and
+# statically linking the vendored copy: `cargo build --release --features webp-dylib`.
+# Distro packages generally must not vendor a copy of a library that the distro already ships and
+# has to be able to patch for CVEs. The FFI surface is identical either way, so nothing outside of
+# this file changes.
+webp-dylib = ["libwebp-sys/system-dylib"]
 
 # Windows-only: H.264 video decode via Media Foundation (see src/client/mediafoundation.rs).
 # The decoder itself lives in the OS; this only pulls in the thin COM/MF bindings.
