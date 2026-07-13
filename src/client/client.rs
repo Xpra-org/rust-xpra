@@ -479,13 +479,17 @@ impl XpraClient {
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
         let title = packet.get_hash_str(6, "title".to_string());
+        // override-redirect windows are never decorated; otherwise honour the metadata flag
+        // (absent means decorated, as in xpra's own client - see `client/gui/window_base.py`)
+        let decorated = !override_redirect
+            && packet.get_hash_bool(6, "decorations".to_string()).unwrap_or(true);
 
         #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title(&title)
             .with_position(PhysicalPosition::new(x, y))
             .with_inner_size(PhysicalSize::new(w.max(1), h.max(1)))
-            .with_decorations(!override_redirect)
+            .with_decorations(decorated)
             .with_resizable(!override_redirect);
         #[cfg(target_os = "linux")]
         {
@@ -548,6 +552,16 @@ impl XpraClient {
         let wid = packet.get_u64(1);
         let metadata = &packet.main[2];
         info!("window-metadata for {:?}: {:?}", wid, metadata);
+        let window = match self.windows.get(&wid) {
+            Some(window) => window,
+            None => {
+                warn!("window {:?} not found!", wid);
+                return;
+            }
+        };
+        if let Some(decorations) = packet.get_hash_bool(2, "decorations".to_string()) {
+            window.window.set_decorations(decorations && !window.override_redirect);
+        }
     }
 
     fn process_draw_decoded(&mut self, packet: &mut Packet) {
