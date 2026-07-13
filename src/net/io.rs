@@ -51,8 +51,8 @@ pub fn make_header(data: &[u8]) -> Vec<u8>{
 }
 
 
-pub fn write_packet(stream: &mut Connection, data: &[u8]) {
+pub fn write_packet(stream: &mut Connection, data: &[u8]) -> Result<(), Error> {
     let mut packet = make_header(data);
     packet.extend_from_slice(data);
-    stream.write_all(&packet).expect("write packet failed");
+    stream.write_all(&packet)
 }

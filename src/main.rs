@@ -2,13 +2,15 @@ extern crate alloc;
 
 use std::env;
 use std::net::TcpStream;
+use std::process;
 use std::sync::mpsc::channel;
 use log::{error, LevelFilter};
 use simple_logger::SimpleLogger;
 use winit::event_loop::EventLoop;
+use xpra::exit_codes::ExitCode;
 use xpra::net::connection::Connection;
 use xpra::net::packet::Packet;
-use xpra::net::uri::{host_only, parse_target, Scheme};
+use xpra::net::uri::{host_only, parse_target, Scheme, Target};
 use xpra::net::{ssh, tls, websocket};
 
 mod client;
@@ -24,47 +26,39 @@ fn main() {
     };
     SimpleLogger::new().with_level(level).init().unwrap();
 
+    process::exit(run().value());
+}
+
+
+fn run() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         error!("invalid number of arguments: {:?}", args.len());
         error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/ | ssh://[USER@]HOST[:PORT]/[DISPLAY]", args[0]);
-        return;
+        return ExitCode::ArgumentMismatch;
     }
     let target = match parse_target(&args[1]) {
         Ok(target) => target,
         Err(message) => {
             error!("{}", message);
-            return;
+            return ExitCode::ArgumentMismatch;
         }
     };
-    let connection = match target.scheme {
-        Scheme::Tcp => {
-            let stream = TcpStream::connect(&target.address).expect("connection failed");
-            Connection::Tcp(stream)
-        }
-        Scheme::Tls => {
-            let stream = TcpStream::connect(&target.address).expect("connection failed");
-            let tls_stream = tls::connect(stream, host_only(&target.address)).expect("tls handshake failed");
-            Connection::Tls(tls_stream)
-        }
-        Scheme::WebSocket => {
-            let stream = TcpStream::connect(&target.address).expect("connection failed");
-            let ws = websocket::connect(stream, &target.address, &target.path).expect("websocket handshake failed");
-            Connection::WebSocket(ws)
-        }
-        Scheme::WebSocketTls => {
-            let stream = TcpStream::connect(&target.address).expect("connection failed");
-            let tls_stream = tls::connect(stream, host_only(&target.address)).expect("tls handshake failed");
-            let ws = websocket::connect(tls_stream, &target.address, &target.path).expect("websocket handshake failed");
-            Connection::WebSocketTls(ws)
-        }
-        Scheme::Ssh => {
-            let ssh_stream = ssh::connect(&target.address, target.username.as_deref(), &target.path).expect("ssh connection failed");
-            Connection::Ssh(ssh_stream)
+    let connection = match connect(&target) {
+        Ok(connection) => connection,
+        Err((exit_code, message)) => {
+            error!("{}", message);
+            return exit_code;
         }
     };
 
-    let event_loop = EventLoop::<Packet>::with_user_event().build().expect("failed to create event loop");
+    let event_loop = match EventLoop::<Packet>::with_user_event().build() {
+        Ok(event_loop) => event_loop,
+        Err(e) => {
+            error!("failed to create the event loop: {}", e);
+            return ExitCode::InternalError;
+        }
+    };
     event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
 
     // this channel is used for sending 'draw' packets from the UI thread to the decode thread:
@@ -73,5 +67,47 @@ fn main() {
     XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx);
 
     let mut client = XpraClient::new(connection, proxy, decode_tx);
-    event_loop.run_app(&mut client).expect("event loop error");
+    if let Err(e) = event_loop.run_app(&mut client) {
+        error!("event loop error: {}", e);
+        return ExitCode::InternalError;
+    }
+    // whatever ended the session: a server `disconnect`, a lost connection, or a clean exit.
+    client.exit_code.unwrap_or(ExitCode::Ok)
+}
+
+
+// Failures here mean we never had a session at all, so they map to the "failed to connect"
+// family of exit codes rather than `ConnectionLost`.
+fn connect(target: &Target) -> Result<Connection, (ExitCode, String)> {
+    let tcp_connect = || {
+        TcpStream::connect(&target.address).map_err(|e| {
+            (ExitCode::ConnectionFailed, format!("failed to connect to {:?}: {}", target.address, e))
+        })
+    };
+    let tls_connect = |stream| {
+        tls::connect(stream, host_only(&target.address)).map_err(|e| {
+            (ExitCode::SslFailure, format!("tls handshake failed: {}", e))
+        })
+    };
+    // the websocket handshake is generic over the underlying stream (tcp or tls), so it can't
+    // be wrapped in a closure the way the other two are:
+    let ws_error = |e| (ExitCode::ConnectionFailed, format!("websocket handshake failed: {}", e));
+    match target.scheme {
+        Scheme::Tcp => Ok(Connection::Tcp(tcp_connect()?)),
+        Scheme::Tls => Ok(Connection::Tls(tls_connect(tcp_connect()?)?)),
+        Scheme::WebSocket => {
+            let ws = websocket::connect(tcp_connect()?, &target.address, &target.path).map_err(ws_error)?;
+            Ok(Connection::WebSocket(ws))
+        }
+        Scheme::WebSocketTls => {
+            let tls_stream = tls_connect(tcp_connect()?)?;
+            let ws = websocket::connect(tls_stream, &target.address, &target.path).map_err(ws_error)?;
+            Ok(Connection::WebSocketTls(ws))
+        }
+        Scheme::Ssh => {
+            let ssh_stream = ssh::connect(&target.address, target.username.as_deref(), &target.path)
+                .map_err(|e| (ExitCode::SshFailure, format!("ssh connection failed: {}", e)))?;
+            Ok(Connection::Ssh(ssh_stream))
+        }
+    }
 }

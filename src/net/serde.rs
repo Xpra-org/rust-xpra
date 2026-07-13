@@ -12,8 +12,11 @@ pub const VERSION_KEY_STR: &str = "version";
 
 pub fn parse_payload(mut payload: Vec<u8>) -> Result<Packet, Error> {
     let payload_buf: &mut [u8] = payload.as_mut_slice();
-    let payload_str = str::from_utf8(payload_buf);
-    let ret = YamlLoader::load_from_str(payload_str.unwrap());
+    let payload_str = match str::from_utf8(payload_buf) {
+        Ok(payload_str) => payload_str,
+        Err(e) => return Err(Error::new(ErrorKind::InvalidData, e)),
+    };
+    let ret = YamlLoader::load_from_str(payload_str);
     if ! ret.is_ok() {
         return Err(Error::new(ErrorKind::InvalidData, ret.unwrap_err()));
     }

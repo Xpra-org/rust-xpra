@@ -3,6 +3,7 @@ use machine_uid;
 
 use std::env;
 use std::fmt;
+use std::io;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver};
@@ -21,6 +22,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{Window, WindowId};
 
+use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
 use xpra::VERSION;
 use xpra::net::connection::Connection;
@@ -41,6 +43,43 @@ pub struct XpraClient {
     pub decode_sender: Sender<Packet>,
     pub softbuffer_ctx: Option<Context<OwnedDisplayHandle>>,
     pub modifiers: ModifiersState,
+    pub startup_complete: bool,
+    // `Some` once we're on the way out (a `disconnect` packet, a lost connection or a failed
+    // write): it holds the code we'll exit the process with, and stops us from writing to (and
+    // complaining about) a dead connection while the event loop winds down.
+    pub exit_code: Option<ExitCode>,
+}
+
+
+// "connection-lost" and "invalid-packet" are client-side packet types (like "draw-decoded"):
+// the reader thread and the write path use them to tell the UI thread that the connection is
+// gone, since only `user_event` has access to the `ActiveEventLoop` needed to stop the event loop.
+fn client_packet(packet_type: &str, message: &str) -> Packet {
+    Packet {
+        main: vec![
+            Yaml::String(packet_type.to_string()),
+            Yaml::String(message.to_string()),
+        ],
+        raw: HashMap::new(),
+        decode_time_us: None,
+    }
+}
+
+// xpra's `disconnect_is_an_error` (`net/common.py`): disconnect reasons are free-form strings
+// (`ConnectionMessage` in `net/constants.py`), and an error is anything that says "error", or any
+// timeout other than the idle one.
+fn disconnect_is_an_error(reason: &str) -> bool {
+    reason.contains("error") || (reason.contains("timeout") && reason != "idle timeout")
+}
+
+fn connection_error(e: &io::Error) -> String {
+    match e.kind() {
+        // what a killed server looks like: the socket closed mid-packet (or between packets),
+        // and "failed to fill whole buffer" is not a helpful thing to show the user.
+        io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset =>
+            "connection closed by the server".to_string(),
+        _ => e.to_string(),
+    }
 }
 
 impl fmt::Debug for XpraClient {
@@ -64,7 +103,24 @@ impl XpraClient {
             decode_sender,
             softbuffer_ctx: None,
             modifiers: ModifiersState::empty(),
+            startup_complete: false,
+            exit_code: None,
         }
+    }
+
+    // stop the event loop, remembering what to exit the process with (the first cause wins).
+    fn quit(&mut self, event_loop: &ActiveEventLoop, exit_code: ExitCode) {
+        if self.exit_code.is_none() {
+            self.exit_code = Some(exit_code);
+        }
+        event_loop.exit();
+    }
+
+    // losing the connection before the session is up means we never had a usable server
+    // (wrong port, not an xpra server, rejected before `startup-complete`, ...), which xpra
+    // reports as `CONNECTION_FAILED` rather than `CONNECTION_LOST`.
+    fn connection_lost_code(&self) -> ExitCode {
+        if self.startup_complete { ExitCode::ConnectionLost } else { ExitCode::ConnectionFailed }
     }
 
     pub fn send_hello(&mut self) {
@@ -180,9 +236,21 @@ impl XpraClient {
     }
 
     fn write_json(&mut self, packet: Value) {
+        // once we're on the way out, drop outgoing packets instead of failing on every one:
+        // the event loop is winding down but still delivers queued input events.
+        if self.exit_code.is_some() {
+            return;
+        }
         let packet_str = packet.to_string();
         let packet_data = packet_str.as_bytes();
-        write_packet(&mut self.stream, packet_data);
+        if let Err(e) = write_packet(&mut self.stream, packet_data) {
+            // the server went away mid-write (broken pipe / reset): shut down cleanly rather
+            // than panicking. The reader thread may not have noticed yet, so tell the UI thread
+            // ourselves - `user_event` is the only place that can reach the `ActiveEventLoop`.
+            error!("failed to send packet to the server: {}", e);
+            self.exit_code = Some(self.connection_lost_code());
+            let _ = self.proxy.send_event(client_packet("connection-lost", &e.to_string()));
+        }
     }
 
 
@@ -191,10 +259,25 @@ impl XpraClient {
         let mut stream = self.stream.try_clone().unwrap();
         thread::Builder::new().name("reader".to_string()).spawn(move || loop {
             let t0 = Instant::now();
-            let payload = read_packet(&mut stream).unwrap();
+            let payload = match read_packet(&mut stream) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    // the server closed the connection (or died): hand the reason to the UI
+                    // thread, which logs it and exits the event loop.
+                    debug!("read loop terminated: {}", e);
+                    let _ = proxy.send_event(client_packet("connection-lost", &connection_error(&e)));
+                    break;
+                }
+            };
             let read_elapsed = t0.elapsed();
             let payload_len = payload.len();
-            let packet = parse_payload(payload).unwrap();
+            let packet = match parse_payload(payload) {
+                Ok(packet) => packet,
+                Err(e) => {
+                    let _ = proxy.send_event(client_packet("invalid-packet", &e.to_string()));
+                    break;
+                }
+            };
             if packet.get_str(0) == "draw" {
                 trace!("perf: draw packet: {:?} bytes read (network) in {:?}", payload_len, read_elapsed);
             }
@@ -214,7 +297,14 @@ impl XpraClient {
             #[cfg(windows)]
             let mut h264_decoders: HashMap<u64, super::mediafoundation::H264Decoder> = HashMap::new();
             loop {
-                let mut packet = receiver.recv().unwrap();
+                let mut packet = match receiver.recv() {
+                    Ok(packet) => packet,
+                    // the UI thread dropped its sender: the client is shutting down.
+                    Err(_) => {
+                        debug!("decoding thread stopping");
+                        break;
+                    }
+                };
                 // window teardown forwarded from the UI thread: release its h264 decoder (Windows).
                 if packet.get_str(0) == "lost-window" {
                     #[cfg(windows)]
@@ -298,7 +388,10 @@ impl XpraClient {
                 self.process_hello(&p.main[1]);
             }
             "encodings" => debug!("got server encodings: {:?}", p.main[1]),
-            "startup-complete" => info!("startup complete!"),
+            "startup-complete" => {
+                info!("startup complete!");
+                self.startup_complete = true;
+            }
             "new-window" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
             "window-move-resize" => self.process_window_move_resize(&p),
@@ -311,13 +404,57 @@ impl XpraClient {
                 { let _ = self.decode_sender.send(p); }
             }
             "window-metadata" => self.process_window_metadata(&p),
-            "draw" => { self.decode_sender.send(p).unwrap(); }
+            "draw" => {
+                if self.decode_sender.send(p).is_err() {
+                    error!("cannot decode: the decoding thread has stopped");
+                }
+            }
             "draw-decoded" => self.process_draw_decoded(&mut p),
             "draw-failed" => self.process_draw_failed(&p),
             "ping" => self.process_ping(&p),
-            "disconnect" => event_loop.exit(),
+            "disconnect" => self.process_disconnect(event_loop, &p),
+            "connection-lost" => {
+                // synthesized locally (see `client_packet`): the write path has already logged
+                // the error that got it here, so only log if this is the first we hear of it.
+                if self.exit_code.is_none() {
+                    warn!("connection lost: {}", p.get_str(1));
+                }
+                let exit_code = self.connection_lost_code();
+                self.quit(event_loop, exit_code);
+            }
+            "invalid-packet" => {
+                error!("invalid packet received: {}", p.get_str(1));
+                // garbage on a connection that never became a session usually means we're not
+                // talking to an xpra server at all, so report that rather than a packet failure:
+                let exit_code = if self.startup_complete {
+                    ExitCode::PacketFailure
+                } else {
+                    ExitCode::ConnectionFailed
+                };
+                self.quit(event_loop, exit_code);
+            }
             other => warn!("unhandled packet type {:?}", other),
         }
+    }
+
+    // ["disconnect", reason, *info] - see xpra's `server_disconnect_exit_code` in
+    // `client/base/client.py`: most disconnects are the server saying goodbye (exit code `OK`);
+    // the exceptions are authentication failures and anything whose reason reads as an error.
+    fn process_disconnect(&mut self, event_loop: &ActiveEventLoop, packet: &Packet) {
+        let info: Vec<String> = (1..packet.len()).map(|i| packet.get_str(i as u8)).collect();
+        let reason = info.first().cloned().unwrap_or_default();
+        let message = info.join(", ");
+        let exit_code = if info.iter().any(|i| i == "authentication failed") {
+            ExitCode::AuthenticationFailed
+        } else if disconnect_is_an_error(&reason) {
+            error!("server connection failure: {}", message);
+            // being kicked out before the session is up is really a failure to connect:
+            if self.startup_complete { ExitCode::Failure } else { ExitCode::ConnectionFailed }
+        } else {
+            info!("disconnected by the server: {}", message);
+            ExitCode::Ok
+        };
+        self.quit(event_loop, exit_code);
     }
 
     fn process_hello(&mut self, hello: &Yaml) {

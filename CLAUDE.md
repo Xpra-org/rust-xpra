@@ -136,8 +136,12 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     offers a video encoding whose listed colourspaces intersect its encoder's — see xpra
     `server/source/encoding.py`). We list only `YUV420P` and pin `encoding.h264 = {"YUV420P.profile": "high"}`
     because the MF decoder only handles 8-bit 4:2:0 up to High profile (never 4:2:2/4:4:4/High10).
-    likely tuning points are colour matrix/range (the `full-range` draw option isn't honoured yet)
-    and RGB32 orientation (we request top-down via a positive `MF_MT_DEFAULT_STRIDE`).
+    Colour range is handled explicitly: MF's H.264 decoder doesn't reliably surface the VUI
+    `video_full_range_flag`, and xpra's encoders default to *full* range and only send the `full-range` draw
+    option on transitions/keyframes (omitted in steady state), so `H264Decoder` tracks it per-stream
+    (defaulting to `true`, `None` = unchanged) and stamps `MF_MT_VIDEO_NOMINAL_RANGE` on the Video Processor's
+    NV12 input. The remaining unverified knob is RGB32 orientation (we request top-down via a positive
+    `MF_MT_DEFAULT_STRIDE`); `MF_MT_YUV_MATRIX` is left to the VP's pick-by-resolution BT.601/709 default.
     Per-window decoders are released when the window closes: the UI thread forwards `lost-window` down the
     same channel as draws (so still-queued draws for that window drain first), and the decode loop drops that
     `wid`'s `H264Decoder`.
@@ -161,6 +165,30 @@ Three threads, and GUI/`winit`/`softbuffer` calls must only ever happen on the U
 
 `ApplicationHandler::user_event` is the only place that receives packets from these threads and dispatches them
 via `do_process_packet`.
+
+### Shutdown / connection loss / exit codes
+
+`[profile.release]` sets `panic = "abort"`, so a panic on *any* thread kills the whole process — the I/O paths
+must return errors, not `unwrap()`. Only the UI thread can stop the event loop (`ActiveEventLoop::exit` is only
+reachable from an `ApplicationHandler` callback), so the reader thread (on read/parse failure) and the write path
+(on a failed `write_packet`) both synthesize a client-side packet — `connection-lost` or `invalid-packet`, neither
+of which exists on the wire — and send it to the UI thread through the usual `EventLoopProxy`, which logs the
+reason and exits. The decode thread just breaks out of its loop when its `mpsc` channel closes (UI thread gone) —
+a killed server used to abort here with `RecvError`.
+
+`XpraClient::quit` records the cause in `exit_code: Option<ExitCode>` (first cause wins) and stops the event loop;
+`main::run` returns it and `main` hands it to `process::exit`. A set `exit_code` also silently drops further
+outgoing packets, since the event loop keeps delivering queued input events on its way out.
+
+`src/exit_codes.rs` mirrors the subset of xpra's own `ExitCode` (`xpra/exit_codes.py`) that we can produce, so
+wrapper scripts see the same values as with the python client: `ConnectionFailed`(18) for anything that fails
+before there is a session (connect refused, ws handshake, garbage from a non-xpra peer, kicked out before
+`startup-complete`), `SslFailure`(16)/`SshFailure`(8) for those transports' setup, `ConnectionLost`(1) once the
+session was up, `PacketFailure`(9) for an unparseable packet mid-session, `AuthenticationFailed`(28),
+`ArgumentMismatch`(34) for a bad command line, and `Ok`(0) for a plain server-sent `disconnect`. The
+before/after-`startup_complete` split and `disconnect_is_an_error` mirror xpra's `client/base/client.py`
+(`_process_connection_lost`, `server_disconnect_exit_code`) — a disconnect whose reason mentions "error" (or a
+non-idle "timeout") is a failure, everything else ("server shutdown", "new client", ...) is a normal goodbye.
 
 ## Known repo quirks
 
