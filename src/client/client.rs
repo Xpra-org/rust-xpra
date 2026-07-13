@@ -215,6 +215,17 @@ impl XpraClient {
             let mut h264_decoders: HashMap<u64, super::mediafoundation::H264Decoder> = HashMap::new();
             loop {
                 let mut packet = receiver.recv().unwrap();
+                // window teardown forwarded from the UI thread: release its h264 decoder (Windows).
+                if packet.get_str(0) == "lost-window" {
+                    #[cfg(windows)]
+                    {
+                        let key = packet.get_u64(1);
+                        if h264_decoders.remove(&key).is_some() {
+                            debug!("released h264 decoder for lost window {:?}", key);
+                        }
+                    }
+                    continue;
+                }
                 let wid = packet.get_i64(1);
                 let w = packet.get_i32(4);
                 let h = packet.get_i32(5);
@@ -288,7 +299,14 @@ impl XpraClient {
             "new-window" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
             "window-move-resize" => self.process_window_move_resize(&p),
-            "lost-window" => self.process_lost_window(&p),
+            "lost-window" => {
+                self.process_lost_window(&p);
+                // forward to the decode thread so it can drop this window's persistent h264
+                // decoder; routed through the same channel as draws, so any still-queued draws
+                // for this window drain before the decoder is released.
+                #[cfg(windows)]
+                { let _ = self.decode_sender.send(p); }
+            }
             "window-metadata" => self.process_window_metadata(&p),
             "draw" => { self.decode_sender.send(p).unwrap(); }
             "draw-decoded" => self.process_draw_decoded(&mut p),

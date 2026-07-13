@@ -138,7 +138,9 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     because the MF decoder only handles 8-bit 4:2:0 up to High profile (never 4:2:2/4:4:4/High10).
     likely tuning points are colour matrix/range (the `full-range` draw option isn't honoured yet)
     and RGB32 orientation (we request top-down via a positive `MF_MT_DEFAULT_STRIDE`).
-    Per-window decoders currently live until process exit (the decode thread never sees `lost-window`).
+    Per-window decoders are released when the window closes: the UI thread forwards `lost-window` down the
+    same channel as draws (so still-queued draws for that window drain first), and the decode loop drops that
+    `wid`'s `H264Decoder`.
 
 - `src/main.rs`: binary entry point. Connects the `TcpStream`, builds a `winit::event_loop::EventLoop<Packet>`,
   spawns the decode thread, constructs `XpraClient`, and runs `event_loop.run_app(&mut client)`.
