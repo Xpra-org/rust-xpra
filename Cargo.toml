@@ -16,6 +16,15 @@ base64 = "0.22.1"
 machine-uid = "0.6.0"
 native-tls = "0.2"
 
+# Windows-only: H.264 video decode via Media Foundation (see src/client/mediafoundation.rs).
+# The decoder itself lives in the OS; this only pulls in the thin COM/MF bindings.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_Media_MediaFoundation",
+] }
+
 [profile.release]
 strip = true
 opt-level = "z"

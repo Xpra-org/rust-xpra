@@ -74,6 +74,24 @@ impl XpraClient {
             other => other,
         };
         let username = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_default();
+        // h264 is decoded via Media Foundation, which is Windows-only:
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut encodings = vec!["jpeg", "png"];
+        // The nested "encoding" caps dict (read server-side as hello["encoding"], see xpra's
+        // server/source/encoding.py). For a video encoding to be offered at all, the server needs
+        // `full_csc_modes[<enc>]` to list at least one colourspace its encoder can produce that we
+        // can decode. Media Foundation's H.264 decoder only handles 8-bit 4:2:0 up to High profile,
+        // so we advertise *only* YUV420P (never 422/444) and pin the profile to "high".
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut encoding_caps = json!({});
+        #[cfg(windows)]
+        {
+            encodings.push("h264");
+            encoding_caps = json!({
+                "full_csc_modes": { "h264": ["YUV420P"] },
+                "h264": { "YUV420P.profile": "high" },
+            });
+        }
         let packet = json!(["hello", {
             "version": VERSION,
             "yaml": true,
@@ -83,7 +101,8 @@ impl XpraClient {
             "mouse": true,
             "sharing": true,
             "ping": true,
-            "encodings": ["jpeg", "png", ],
+            "encodings": encodings,
+            "encoding": encoding_caps,
             "client_type": "rust",
             "platform": platform,
             "user": env::var("USER").unwrap_or("".into()),
@@ -189,6 +208,11 @@ impl XpraClient {
     pub fn start_draw_decode_loop(proxy: EventLoopProxy<Packet>, receiver: Receiver<Packet>) {
         thread::Builder::new().name("decode".to_string()).spawn(move || {
             info!("decoding thread started");
+            // Per-window H.264 decoders (Windows / Media Foundation). H.264 is inter-frame
+            // predicted, so unlike the stateless jpeg/png path each window keeps a persistent,
+            // stateful decoder. These COM objects live only on this thread.
+            #[cfg(windows)]
+            let mut h264_decoders: HashMap<u64, super::mediafoundation::H264Decoder> = HashMap::new();
             loop {
                 let mut packet = receiver.recv().unwrap();
                 let wid = packet.get_i64(1);
@@ -202,21 +226,46 @@ impl XpraClient {
                 let mut main = packet.main.to_vec();
                 let mut raw = HashMap::new();
                 let t0 = Instant::now();
-                let result = draw_decoder::decode(&coding, data);
+                // Ok(Some(pixels)) = a frame is ready; Ok(None) = input consumed but no frame yet
+                // (decoder warm-up) -- we must still ack the sequence; Err = decode failure.
+                let result: Result<Option<Vec<u8>>, String> = if coding == "h264" {
+                    #[cfg(windows)]
+                    {
+                        let key = wid as u64;
+                        let ensured = if h264_decoders.contains_key(&key) {
+                            Ok(())
+                        } else {
+                            super::mediafoundation::H264Decoder::new()
+                                .map(|d| { h264_decoders.insert(key, d); })
+                        };
+                        ensured.and_then(|()| {
+                            h264_decoders.get_mut(&key).unwrap()
+                                .decode(&data, w.max(0) as u32, h.max(0) as u32)
+                        })
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        Err("h264 decoding is only supported on Windows".to_string())
+                    }
+                } else {
+                    draw_decoder::decode(&coding, data).map(Some)
+                };
                 let decode_elapsed = t0.elapsed();
                 trace!("perf: draw packet: {:?}x{:?} {:?} decoded in {:?}", w, h, coding, decode_elapsed);
                 let mut decode_time_us = None;
-                if result.is_err() {
-                    let message = result.unwrap_err();
-                    error!("draw decoding error for {:?} sequence {:?}: {:?}", coding, seq, message);
-                    main[0] = Yaml::String("decoding-failed".to_string());
-                    main[7] = Yaml::String(message.to_string());
-                }
-                else {
-                    let pixels = result.unwrap();
-                    raw.insert(7, pixels);
-                    main[0] = Yaml::String("draw-decoded".to_string());
-                    decode_time_us = Some(decode_elapsed.as_micros() as i64);
+                match result {
+                    Err(message) => {
+                        error!("draw decoding error for {:?} sequence {:?}: {:?}", coding, seq, message);
+                        main[0] = Yaml::String("decoding-failed".to_string());
+                        main[7] = Yaml::String(message.to_string());
+                    }
+                    Ok(pixels) => {
+                        // an empty payload (None) means "no frame this time": the UI thread will
+                        // ack the sequence without painting.
+                        raw.insert(7, pixels.unwrap_or_default());
+                        main[0] = Yaml::String("draw-decoded".to_string());
+                        decode_time_us = Some(decode_elapsed.as_micros() as i64);
+                    }
                 }
                 let patched_packet = Packet { main, raw, decode_time_us };
                 if proxy.send_event(patched_packet).is_err() {
@@ -364,7 +413,10 @@ impl XpraClient {
             }
         };
         trace!("drawing {:?} on {:?}", coding, wid);
-        window.paint(seq, x, y, w, h, &coding, &pixels);
+        // an empty payload is a decoder warm-up frame (h264): ack it, but there's nothing to paint.
+        if !pixels.is_empty() {
+            window.paint(seq, x, y, w, h, &coding, &pixels);
+        }
 
         let message = "".to_string();
         self.send_damage_sequence(seq, wid, w, h, decode_time_us, message);

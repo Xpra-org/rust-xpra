@@ -121,7 +121,24 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     and presents it; `resize()` reallocates `framebuffer` (zero-filled — relies on the server re-sending damage
     after a `configure-window` round-trip rather than preserving old contents).
   - `draw_decoder.rs`: decodes `jpeg` (via `turbojpeg`) and `png` (via `spng`) payloads into raw pixel buffers —
-    platform-independent, unchanged by the GUI backend.
+    platform-independent, unchanged by the GUI backend. These are *stateless* (one packet in, one image out).
+  - `mediafoundation.rs` (Windows-only, `#[cfg(windows)]`): `h264` video decode via Media Foundation — no
+    third-party codec is linked (the decoder lives in the OS, `msmpeg2vdec.dll`; +~13KB to the binary, just the
+    COM/MF bindings from the `windows` crate). Pipeline is `CLSID_CMSH264DecoderMFT` (H.264 Annex-B → NV12) →
+    `CLSID_VideoProcessorMFT` (NV12 → RGB32, which in memory is softbuffer's BGRA), so `window::paint` treats
+    h264 exactly like turbojpeg's BGRA. Unlike jpeg/png the decoder is **stateful** (H.264 is inter-frame
+    predicted): `start_draw_decode_loop` keeps a per-`wid` `HashMap<u64, H264Decoder>` local to the decode thread
+    (these COM objects never cross threads, so nothing is `Send`). `H264Decoder::decode` returns
+    `Ok(Some(bgra))` (frame ready), `Ok(None)` (input consumed, decoder still warming up — the sequence is still
+    acked, painting is skipped), or `Err`. Advertising is Windows-only and needs *two* things for the server to
+    actually send video: `h264` in the top-level `encodings` list, **and** a nested `encoding` caps dict with
+    `full_csc_modes = {"h264": ["YUV420P"]}` (the server reads `hello["encoding"]["full_csc_modes"]` and only
+    offers a video encoding whose listed colourspaces intersect its encoder's — see xpra
+    `server/source/encoding.py`). We list only `YUV420P` and pin `encoding.h264 = {"YUV420P.profile": "high"}`
+    because the MF decoder only handles 8-bit 4:2:0 up to High profile (never 4:2:2/4:4:4/High10).
+    likely tuning points are colour matrix/range (the `full-range` draw option isn't honoured yet)
+    and RGB32 orientation (we request top-down via a positive `MF_MT_DEFAULT_STRIDE`).
+    Per-window decoders currently live until process exit (the decode thread never sees `lost-window`).
 
 - `src/main.rs`: binary entry point. Connects the `TcpStream`, builds a `winit::event_loop::EventLoop<Packet>`,
   spawns the decode thread, constructs `XpraClient`, and runs `event_loop.run_app(&mut client)`.
