@@ -61,6 +61,16 @@ impl Packet {
         yaml_hash_str(&self.main[index as usize], key)
     }
 
+    // Read a boolean from a hash field, tolerating a missing field entirely (e.g. a draw packet's
+    // optional trailing options dict). Returns None if the field/key is absent or not a bool.
+    pub fn get_hash_bool(&self, index: u8, key: String) -> Option<bool> {
+        let i = index as usize;
+        if i >= self.main.len() {
+            return None;
+        }
+        yaml_hash_bool(&self.main[i], key)
+    }
+
     pub fn get_bytes(&mut self, index: u8) -> Vec<u8> {
         let raw = self.raw.remove(&index);
         if raw.is_some() {
@@ -136,6 +146,19 @@ pub fn yaml_hash_str(value: &Yaml, key: String) -> String {
         }
     }
     "".to_string()
+}
+
+pub fn yaml_hash_bool(value: &Yaml, key: String) -> Option<bool> {
+    if let Yaml::Hash(hash) = value {
+        let yaml_key: Yaml = Yaml::String(key);
+        match hash.get(&yaml_key) {
+            Some(Yaml::Boolean(b)) => return Some(*b),
+            // some encoders send 0/1 rather than a yaml bool:
+            Some(Yaml::Integer(i)) => return Some(*i != 0),
+            _ => {}
+        }
+    }
+    None
 }
 
 pub fn yaml_hash_i32(value: &Yaml, key: String) -> i32 {

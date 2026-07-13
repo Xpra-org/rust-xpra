@@ -59,6 +59,9 @@ pub struct H264Decoder {
     vp_dirty: bool,          // Video Processor types need (re)building (dims changed / stream change)
     out_w: u32,              // target output size the Video Processor is currently configured for
     out_h: u32,
+    full_range: bool,        // colour range of the NV12 (from xpra's `full-range`); MF's H.264
+                             // decoder doesn't reliably surface the VUI flag, and xpra's encoders
+                             // default to full range, so we track it ourselves and default to true.
 }
 
 impl H264Decoder {
@@ -80,15 +83,26 @@ impl H264Decoder {
             vp_dirty: true,
             out_w: 0,
             out_h: 0,
+            full_range: true,
         })
     }
 
     // Decode one encoded frame. Returns Ok(Some(bgra)) when a frame is ready (exactly w*h*4 bytes),
     // Ok(None) when the input was consumed but no frame is available yet (decoder warm-up) -- the
     // caller must still ack the draw sequence -- or Err on failure.
-    pub fn decode(&mut self, data: &[u8], w: u32, h: u32) -> Result<Option<Vec<u8>>, String> {
+    pub fn decode(&mut self, data: &[u8], w: u32, h: u32, full_range: Option<bool>)
+        -> Result<Option<Vec<u8>>, String>
+    {
         if w == 0 || h == 0 {
             return Err("invalid zero frame size".to_string());
+        }
+        // `full_range` is only present on transitions/keyframes; None means "unchanged". A change
+        // forces the Video Processor to be rebuilt with the new nominal range.
+        if let Some(fr) = full_range {
+            if fr != self.full_range {
+                self.full_range = fr;
+                self.vp_dirty = true;
+            }
         }
         if !self.started {
             self.configure_decoder(w, h)?;
@@ -224,6 +238,17 @@ impl H264Decoder {
                 .decoder
                 .GetOutputCurrentType(0)
                 .map_err(|e| format!("decoder GetOutputCurrentType: {e}"))?;
+            // Tell the Video Processor the true colour range rather than relying on whatever (if
+            // anything) the H.264 decoder copied from the VUI -- otherwise full-range content
+            // (xpra's default) gets treated as studio-range and comes out washed-out.
+            let nominal_range = if self.full_range {
+                MFNominalRange_0_255
+            } else {
+                MFNominalRange_16_235
+            };
+            in_type
+                .SetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE, nominal_range.0 as u32)
+                .map_err(|e| format!("setting nominal range: {e}"))?;
             self.processor
                 .SetInputType(0, &in_type, 0)
                 .map_err(|e| format!("processor SetInputType(NV12): {e}"))?;

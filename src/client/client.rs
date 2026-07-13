@@ -243,6 +243,9 @@ impl XpraClient {
                     #[cfg(windows)]
                     {
                         let key = wid as u64;
+                        // colour range signalled per-stream by the encoder; absent in steady state
+                        // (xpra omits it once settled), so None means "unchanged" to the decoder.
+                        let full_range = packet.get_hash_bool(10, "full-range".to_string());
                         let ensured = if h264_decoders.contains_key(&key) {
                             Ok(())
                         } else {
@@ -251,7 +254,7 @@ impl XpraClient {
                         };
                         ensured.and_then(|()| {
                             h264_decoders.get_mut(&key).unwrap()
-                                .decode(&data, w.max(0) as u32, h.max(0) as u32)
+                                .decode(&data, w.max(0) as u32, h.max(0) as u32, full_range)
                         })
                     }
                     #[cfg(not(windows))]
