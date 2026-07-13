@@ -39,12 +39,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Install upx
-      run: choco install upx -y
+    # no `upx` step here: UPX has no packer for win64/arm64 PE (x86/x86_64 only).
     - name: Build
       run: cargo build --release --verbose
-    - name: Compress
-      run: upx --best --lzma target\release\xpra.exe
     - name: Package
       run: |
         mkdir dist
@@ -125,11 +122,11 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install system dependencies
-      run: brew install pkg-config upx
+      run: brew install pkg-config
+    # no `upx` step here: UPX dropped Mach-O support, and arm64 macOS requires a
+    # valid code signature that packing would invalidate (binary killed on launch).
     - name: Build
       run: cargo build --release --verbose
-    - name: Compress
-      run: upx --best --lzma ./target/release/xpra
     - name: Package
       run: |
         mkdir dist
