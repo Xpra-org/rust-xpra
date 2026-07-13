@@ -8,6 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Build libjpeg-turbo from turbojpeg-sys' vendored copy: the runners have no
+  # libturbojpeg >= 3.0 (and Windows has no pkg-config at all). Set in the process
+  # environment so it wins over the `[env]` block in .cargo/config.toml.
+  TURBOJPEG_SOURCE: vendor
 
 jobs:
   build-windows:
@@ -31,7 +35,6 @@ jobs:
         sudo apt-get install -y \
           nasm \
           pkg-config \
-          libjpeg-turbo8-dev \
           libx11-dev \
           libxrandr-dev \
           libxi-dev \

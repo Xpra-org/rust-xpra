@@ -5,6 +5,12 @@ on:
     tags:
       - "v*"
 
+env:
+  # Build libjpeg-turbo from turbojpeg-sys' vendored copy: the runners have no
+  # libturbojpeg >= 3.0 (and Windows has no pkg-config at all). Set in the process
+  # environment so it wins over the `[env]` block in .cargo/config.toml.
+  TURBOJPEG_SOURCE: vendor
+
 jobs:
   build-windows:
 
@@ -60,7 +66,6 @@ jobs:
         sudo apt-get install -y \
           nasm \
           pkg-config \
-          libjpeg-turbo8-dev \
           libx11-dev \
           libxrandr-dev \
           libxi-dev \
@@ -93,7 +98,6 @@ jobs:
         sudo apt-get install -y \
           nasm \
           pkg-config \
-          libjpeg-turbo8-dev \
           libx11-dev \
           libxrandr-dev \
           libxi-dev \
@@ -121,7 +125,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install system dependencies
-      run: brew install pkg-config jpeg-turbo upx
+      run: brew install pkg-config upx
     - name: Build
       run: cargo build --release --verbose
     - name: Compress

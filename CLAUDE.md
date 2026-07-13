@@ -13,8 +13,8 @@ of Wayland not letting clients query/set absolute desktop position or create tru
 ## Build / run
 
 Cross-platform: builds on Windows and Linux via `winit` + `softbuffer` (no native GTK/Qt dependency). CI builds
-both (see `.github/workflows/rust.yml`). On Linux, building needs X11/Wayland/xkbcommon dev headers (see the
-`build-linux` job for the exact package list) plus `pkg-config` + libjpeg-turbo dev headers for `turbojpeg`.
+both (see `.github/workflows/rust.yml`). On Linux, building needs `pkg-config` and X11/Wayland/xkbcommon dev
+headers (see the `build-linux` job for the exact package list).
 
 ```shell
 cargo build
@@ -22,8 +22,12 @@ cargo build
 ./target/debug/xpra wss://HOST:PORT/
 ```
 
-`config.toml` sets `TURBOJPEG_SOURCE=pkg-config` and `TURBOJPEG_STATIC=1`, required for the `turbojpeg` crate to
-build against a local libjpeg-turbo.
+`.cargo/config.toml` sets `TURBOJPEG_SOURCE=pkg-config` + `TURBOJPEG_STATIC=1` so that `turbojpeg` links against
+the system libjpeg-turbo (needs its dev headers, and version >= 3.0) instead of compiling `turbojpeg-sys`' vendored
+copy. Cargo's `[env]` does not override variables already set in the process environment, so both CI workflows set
+`TURBOJPEG_SOURCE=vendor` in their top-level `env:` block to opt back into the vendored build — the GitHub runners
+have no libjpeg-turbo 3.x (and the Windows ones no `pkg-config`). Same escape hatch locally: set
+`TURBOJPEG_SOURCE=vendor` in the environment (requires `cmake` + `nasm`) if the system libjpeg-turbo is too old.
 
 There are no automated tests for the GUI/protocol dispatch layer — verify changes manually against a real Xpra
 server (`xpra start :100 --bind-tcp=127.0.0.1:PORT --auth=none --tcp-auth=none` works well for local testing).
