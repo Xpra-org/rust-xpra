@@ -19,6 +19,9 @@ pub struct XpraWindow {
     pub mapped: bool,
     pub override_redirect: bool,
     pub paint_debug: bool,
+    // absolute position of the pointer as of the last CursorMoved event:
+    // button and wheel events don't carry a position of their own.
+    pub last_cursor: (i32, i32),
 }
 
 
@@ -40,6 +43,7 @@ impl XpraWindow {
             mapped: false,
             override_redirect,
             paint_debug: cfg!(debug_assertions),
+            last_cursor: (0, 0),
         }
     }
 
@@ -159,6 +163,15 @@ impl XpraWindow {
         let h = size.height.max(1);
         let pos = self.window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
         (pos.x, pos.y, w, h)
+    }
+
+    // convert a position relative to the client area into the absolute coordinates
+    // xpra expects, using the same window origin as get_geometry() (which is what
+    // map-window / configure-window told the server) so the two stay consistent -
+    // on Wayland both fall back to (0,0) and the server sees window-relative values.
+    pub fn absolute_position(&self, position: PhysicalPosition<f64>) -> (i32, i32) {
+        let origin = self.window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
+        (origin.x + position.x as i32, origin.y + position.y as i32)
     }
 
     // convert an inner (client-area) position into the outer position winit's

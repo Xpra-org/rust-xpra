@@ -634,8 +634,11 @@ impl XpraClient {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                if let Some(window) = self.windows.get(&wid) {
-                    let (x, y) = self.absolute_cursor_position(window, position);
+                let pos = self.windows.get_mut(&wid).map(|window| {
+                    window.last_cursor = window.absolute_position(position);
+                    window.last_cursor
+                });
+                if let Some((x, y)) = pos {
                     self.send_pointer_position(wid, x, y);
                 }
             }
@@ -650,7 +653,7 @@ impl XpraClient {
                 };
                 if let (Some(button), Some(window)) = (xpra_button, self.windows.get(&wid)) {
                     let pressed = state == ElementState::Pressed;
-                    let (x, y) = self.last_cursor_position(window);
+                    let (x, y) = window.last_cursor;
                     self.send_pointer_button(wid, button, pressed, x, y);
                 }
             }
@@ -660,7 +663,7 @@ impl XpraClient {
                     MouseScrollDelta::PixelDelta(pos) => (pos.x as f32, pos.y as f32),
                 };
                 if let Some(window) = self.windows.get(&wid) {
-                    let (x, y) = self.last_cursor_position(window);
+                    let (x, y) = window.last_cursor;
                     if dy != 0.0 {
                         let button = if dy > 0.0 { 4 } else { 5 };
                         self.send_pointer_button(wid, button, true, x, y);
@@ -695,20 +698,6 @@ impl XpraClient {
         }
     }
 
-    fn absolute_cursor_position(&self, window: &XpraWindow, position: PhysicalPosition<f64>) -> (i32, i32) {
-        match window.window.inner_position() {
-            Ok(origin) => (origin.x + position.x as i32, origin.y + position.y as i32),
-            // not available on Wayland: fall back to window-relative coordinates.
-            Err(_) => (position.x as i32, position.y as i32),
-        }
-    }
-
-    fn last_cursor_position(&self, window: &XpraWindow) -> (i32, i32) {
-        match window.window.inner_position() {
-            Ok(origin) => (origin.x, origin.y),
-            Err(_) => (0, 0),
-        }
-    }
 }
 
 
