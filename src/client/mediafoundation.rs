@@ -38,6 +38,12 @@ const CLSID_VIDEO_PROCESSOR_MFT: GUID = GUID::from_u128(0x88753b26_5b24_49bd_b2e
 const MF_E_TRANSFORM_NEED_MORE_INPUT: HRESULT = HRESULT(0xC00D6D72u32 as i32);
 const MF_E_TRANSFORM_STREAM_CHANGE: HRESULT = HRESULT(0xC00D6D61u32 as i32);
 
+// Attribute that puts a decoder MFT in low-latency mode: emit each frame as soon as it is decoded
+// instead of buffering a whole reorder/DPB window first. Defined here (like the CLSIDs above) so we
+// don't depend on the `windows` metadata surfacing it. Without this the stock H.264 decoder holds
+// ~30 frames before releasing the first, which is a visible multi-second stall at stream start.
+const MF_LOW_LATENCY: GUID = GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_b22727a024ee);
+
 static MF_STARTUP: Once = Once::new();
 
 fn ensure_mf_started() {
@@ -142,6 +148,13 @@ impl H264Decoder {
 
     fn configure_decoder(&mut self, w: u32, h: u32) -> Result<(), String> {
         unsafe {
+            // Ask the decoder to stream frames out with minimal buffering. xpra's stream has no
+            // B-frames (see make_input_sample) so there is nothing to reorder; without this the MFT
+            // holds a full reorder window before emitting frame one -- a multi-second startup stall.
+            // Best-effort: an MFT that doesn't expose the attribute store just means no speed-up.
+            if let Ok(attrs) = self.decoder.GetAttributes() {
+                let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
             let input = MFCreateMediaType().map_err(|e| format!("MFCreateMediaType: {e}"))?;
             input
                 .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
