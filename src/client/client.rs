@@ -20,7 +20,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{Icon, ResizeDirection, Window, WindowId};
+use winit::window::{CursorIcon, CustomCursor, Icon, ResizeDirection, Window, WindowId};
 
 use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
@@ -44,6 +44,10 @@ pub struct XpraClient {
     pub softbuffer_ctx: Option<Context<OwnedDisplayHandle>>,
     pub modifiers: ModifiersState,
     pub startup_complete: bool,
+    // the current pointer cursor (xpra sends one cursor for the whole session, not per-window);
+    // kept so it can be applied to windows created after the last "cursor" packet. `None` = the
+    // platform default cursor.
+    pub current_cursor: Option<CustomCursor>,
     // `Some` once we're on the way out (a `disconnect` packet, a lost connection or a failed
     // write): it holds the code we'll exit the process with, and stops us from writing to (and
     // complaining about) a dead connection while the event loop winds down.
@@ -129,6 +133,7 @@ impl XpraClient {
             softbuffer_ctx: None,
             modifiers: ModifiersState::empty(),
             startup_complete: false,
+            current_cursor: None,
             exit_code: None,
         }
     }
@@ -184,6 +189,12 @@ impl XpraClient {
             "mouse": true,
             "sharing": true,
             "bell": true,
+            // request pointer cursor forwarding. We only advertise the "png" cursor encoding
+            // (decoded like window icons); "backwards-compatible" makes the server send the old
+            // "cursor" packet, matching the rest of this client. The legacy "cursors" bool is a
+            // fallback for how older servers gate cursor sending.
+            "cursor": { "encodings": ["png"], "backwards-compatible": true },
+            "cursors": true,
             "ping": true,
             "encodings": encodings,
             "encoding": encoding_caps,
@@ -447,6 +458,7 @@ impl XpraClient {
             // (xpra's own client no-ops most of these); log rather than warn about "unhandled".
             "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
             "bell" => self.process_bell(&p),
+            "cursor" => self.process_cursor(event_loop, &mut p),
             "window-icon" => self.process_window_icon(&mut p),
             "window-metadata" => self.process_window_metadata(&p),
             "draw" => {
@@ -558,6 +570,11 @@ impl XpraClient {
         };
         info!("new-window {:?} : {:?}", wid, title);
 
+        // start the window off with the current session cursor (see process_cursor):
+        if let Some(cursor) = self.current_cursor.clone() {
+            window.set_cursor(cursor);
+        }
+
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
         let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
         xpra_window.mapped = true;
@@ -652,6 +669,55 @@ impl XpraClient {
         if !window.window.has_focus() {
             window.window.focus_window();
         }
+    }
+
+    // ["cursor", encoding, x, y, w, h, xhot, yhot, serial, pixels, name, ...sizes]: the pointer
+    // cursor shape. xpra sends one cursor for the whole session (not per-window), so we apply it to
+    // every window and remember it for windows created later. A 2-item ["cursor", ""] packet resets
+    // to the default. We only advertised the "png" encoding, so pixels decode like a window icon.
+    fn process_cursor(&mut self, event_loop: &ActiveEventLoop, packet: &mut Packet) {
+        // an empty (2-item) packet means "use the default cursor":
+        if packet.len() <= 2 {
+            self.current_cursor = None;
+            for window in self.windows.values() {
+                window.window.set_cursor(CursorIcon::Default);
+            }
+            return;
+        }
+        // the encoding may be prefixed "default:" (also marks it as the session default); either
+        // way we just render it, so strip the prefix:
+        let encoding = packet.get_str(1);
+        let encoding = encoding.rsplit(':').next().unwrap_or(&encoding);
+        if encoding != "png" {
+            debug!("ignoring cursor with unsupported encoding {:?}", encoding);
+            return;
+        }
+        let xhot = packet.get_u32(6);
+        let yhot = packet.get_u32(7);
+        let data = packet.get_bytes(9);
+        let (w, h, rgba) = match draw_decoder::decode_png_rgba(&data) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                debug!("failed to decode cursor: {}", e);
+                return;
+            }
+        };
+        // winit takes u16 dimensions and a hotspot that must lie inside the image:
+        let (cw, ch) = (w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16);
+        let hx = xhot.min(w.saturating_sub(1)) as u16;
+        let hy = yhot.min(h.saturating_sub(1)) as u16;
+        let source = match CustomCursor::from_rgba(rgba, cw, ch, hx, hy) {
+            Ok(source) => source,
+            Err(e) => {
+                debug!("invalid cursor image {}x{}: {:?}", w, h, e);
+                return;
+            }
+        };
+        let cursor = event_loop.create_custom_cursor(source);
+        for window in self.windows.values() {
+            window.window.set_cursor(cursor.clone());
+        }
+        self.current_cursor = Some(cursor);
     }
 
     // ["bell", wid, device, percent, pitch, duration, bell_class, bell_id, bell_name]: the server
