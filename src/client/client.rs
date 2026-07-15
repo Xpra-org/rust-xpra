@@ -395,6 +395,7 @@ impl XpraClient {
             "new-window" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
             "window-move-resize" => self.process_window_move_resize(&p),
+            "configure-override-redirect" => self.process_window_move_resize(&p),
             "initiate-moveresize" => self.process_initiate_moveresize(&p),
             "lost-window" => {
                 self.process_lost_window(&p);
