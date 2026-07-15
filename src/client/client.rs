@@ -400,6 +400,7 @@ impl XpraClient {
             "window-move-resize" => self.process_window_move_resize(&p),
             "configure-override-redirect" => self.process_window_move_resize(&p),
             "initiate-moveresize" => self.process_initiate_moveresize(&p),
+            "raise-window" => self.process_raise_window(&p),
             "lost-window" => {
                 self.process_lost_window(&p);
                 // forward to the decode thread so it can drop this window's persistent h264
@@ -593,6 +594,23 @@ impl XpraClient {
         };
         if let Err(e) = result {
             debug!("initiate-moveresize for window {:?} was not accepted: {:?}", wid, e);
+        }
+    }
+
+    // ["raise-window", wid]: bring the window to the front. Also arrives as the server's fallback
+    // for restack requests, since we don't advertise the "window.restack" capability. Like xpra's
+    // own client, skip it if the window already has focus; focus_window() is a no-op on Wayland.
+    fn process_raise_window(&mut self, packet: &Packet) {
+        let wid = packet.get_u64(1);
+        let window = match self.windows.get(&wid) {
+            Some(window) => window,
+            None => {
+                error!("cannot raise: window {:?} not found", wid);
+                return;
+            }
+        };
+        if !window.window.has_focus() {
+            window.window.focus_window();
         }
     }
 
