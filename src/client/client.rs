@@ -427,6 +427,13 @@ impl XpraClient {
             "draw-decoded" => self.process_draw_decoded(&mut p),
             "draw-failed" => self.process_draw_failed(&p),
             "ping" => self.process_ping(&p),
+            "challenge" => {
+                // the server is asking us to authenticate, but we have no auth support (see
+                // README): we can't answer the challenge. Fail with the same exit code xpra uses
+                // rather than hang until the server's authentication timeout fires.
+                error!("this server requires authentication, which is not supported");
+                self.quit(event_loop, ExitCode::AuthenticationFailed);
+            }
             "disconnect" => self.process_disconnect(event_loop, &p),
             "connection-lost" => {
                 // synthesized locally (see `client_packet`): the write path has already logged
