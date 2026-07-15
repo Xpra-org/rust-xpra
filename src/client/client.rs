@@ -195,6 +195,9 @@ impl XpraClient {
             // fallback for how older servers gate cursor sending.
             "cursor": { "encodings": ["png"], "backwards-compatible": true },
             "cursors": true,
+            // we don't render real desktop notifications; we just log them (see process_notify_show).
+            // The server gates notification sending on this dict's "enabled" flag.
+            "notifications": { "enabled": true },
             "ping": true,
             "encodings": encodings,
             "encoding": encoding_caps,
@@ -459,6 +462,8 @@ impl XpraClient {
             "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
             "bell" => self.process_bell(&p),
             "cursor" => self.process_cursor(event_loop, &mut p),
+            "notify_show" => self.process_notify_show(&p),
+            "notify_close" => self.process_notify_close(&p),
             "window-icon" => self.process_window_icon(&mut p),
             "window-metadata" => self.process_window_metadata(&p),
             "draw" => {
@@ -718,6 +723,30 @@ impl XpraClient {
             window.window.set_cursor(cursor.clone());
         }
         self.current_cursor = Some(cursor);
+    }
+
+    // ["notify_show", dbus_id, nid, app_name, replaces_nid, app_icon, summary, body, expire_timeout,
+    // icon, actions, hints]: a server-forwarded desktop notification. We don't render real
+    // notifications (no notifier dependency), so - like xpra's own headless fallback - we just log
+    // the summary and body at info level. We advertised "notifications" so the server sends these.
+    fn process_notify_show(&mut self, packet: &Packet) {
+        let app_name = packet.get_str(3);
+        let summary = packet.get_str(6);
+        let body = packet.get_str(7);
+        if app_name.is_empty() {
+            info!("notification: {summary}");
+        } else {
+            info!("notification from {app_name}: {summary}");
+        }
+        for line in body.lines() {
+            info!("  {line}");
+        }
+    }
+
+    // ["notify_close", nid]: the server withdrawing a notification. We only logged it, so there is
+    // nothing to take back - just note it.
+    fn process_notify_close(&mut self, packet: &Packet) {
+        debug!("notification {:?} closed", packet.get_u64(1));
     }
 
     // ["bell", wid, device, percent, pitch, duration, bell_class, bell_id, bell_name]: the server
