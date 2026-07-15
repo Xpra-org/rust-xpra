@@ -28,6 +28,10 @@ itself does not let clients query or set their absolute desktop position:
 
 Running under XWayland (the X11 backend) instead of native Wayland avoids all of the above.
 
+Server-forwarded bells (`bell`) play a real tone on Windows, but on Linux fall back to writing the terminal
+bell (`^G`) to stderr - there is no portable desktop bell without an X11 or audio-server dependency, which this
+client avoids - so a bell is only audible when the client was started from a terminal whose bell is enabled.
+
 ## Usage
 
 ```shell

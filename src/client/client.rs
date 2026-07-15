@@ -82,6 +82,31 @@ fn connection_error(e: &io::Error) -> String {
     }
 }
 
+// Ring an audible bell. winit has no bell primitive, so this is per-platform and best-effort:
+// Windows plays a real tone honouring the server's pitch/duration; elsewhere we emit the terminal
+// BEL, which beeps only if the client was launched from a terminal with an audible bell - there is
+// no portable desktop bell without an X11/audio dependency (see README).
+fn ring_bell(pitch: i32, duration: i32) {
+    #[cfg(windows)]
+    {
+        // Beep() is valid for 37..=32767 Hz and blocks for `duration` ms, so fall back to a sane
+        // default tone for the X11 "server default" (pitch 0) and ring on a throwaway thread.
+        let freq = if (37..=32767).contains(&pitch) { pitch as u32 } else { 800 };
+        let dur = if duration > 0 { (duration as u32).min(5000) } else { 100 };
+        thread::spawn(move || {
+            let _ = unsafe { windows::Win32::System::Console::Beep(freq, dur) };
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pitch, duration);
+        use std::io::Write;
+        let mut stderr = io::stderr();
+        let _ = stderr.write_all(b"\x07");
+        let _ = stderr.flush();
+    }
+}
+
 impl fmt::Debug for XpraClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("XpraClient")
@@ -158,6 +183,7 @@ impl XpraClient {
             "keyboard": true,
             "mouse": true,
             "sharing": true,
+            "bell": true,
             "ping": true,
             "encodings": encodings,
             "encoding": encoding_caps,
@@ -420,6 +446,7 @@ impl XpraClient {
             // ["setting-change", setting, value]: server-pushed session settings we don't act on
             // (xpra's own client no-ops most of these); log rather than warn about "unhandled".
             "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
+            "bell" => self.process_bell(&p),
             "window-icon" => self.process_window_icon(&mut p),
             "window-metadata" => self.process_window_metadata(&p),
             "draw" => {
@@ -625,6 +652,15 @@ impl XpraClient {
         if !window.window.has_focus() {
             window.window.focus_window();
         }
+    }
+
+    // ["bell", wid, device, percent, pitch, duration, bell_class, bell_id, bell_name]: the server
+    // forwarding a window's bell (e.g. a terminal's ^G). We advertised "bell" support in the hello,
+    // without which the server never sends this. Only pitch/duration are used (see ring_bell).
+    fn process_bell(&mut self, packet: &Packet) {
+        let pitch = packet.get_i32(4);
+        let duration = packet.get_i32(5);
+        ring_bell(pitch, duration);
     }
 
     // ["window-icon", wid, w, h, encoding, pixels]: the titlebar/taskbar icon. The server only
