@@ -82,7 +82,7 @@ impl XpraWindow {
                 self.framebuffer[dst_off] = px;
             }
         }
-        trace!("perf: paint wid={:?} {:?}x{:?} converted in {:?}", self.wid, w, h, t0.elapsed());
+        trace!("perf: paint wid={:#x} {:?}x{:?} converted in {:?}", self.wid, w, h, t0.elapsed());
         if self.paint_debug {
             self.draw_debug_border(x, y, w, h);
         }
@@ -116,7 +116,7 @@ impl XpraWindow {
     }
 
     pub fn draw_screen(&mut self) {
-        trace!("draw_screen wid={:?}", self.wid);
+        trace!("draw_screen wid={:#x}", self.wid);
         let mut buffer = match self.surface.buffer_mut() {
             Ok(buffer) => buffer,
             Err(e) => {
@@ -133,7 +133,7 @@ impl XpraWindow {
         let copy_elapsed = t0.elapsed();
         let t1 = Instant::now();
         let result = buffer.present();
-        trace!("perf: draw_screen wid={:?} copy={:?} present={:?}", self.wid, copy_elapsed, t1.elapsed());
+        trace!("perf: draw_screen wid={:#x} copy={:?} present={:?}", self.wid, copy_elapsed, t1.elapsed());
         if let Err(e) = result {
             error!("failed to present softbuffer buffer: {:?}", e);
         }
@@ -145,7 +145,7 @@ impl XpraWindow {
         if rw == self.width && rh == self.height {
             return;
         }
-        debug!("resize wid={:?} to {:?}x{:?}", self.wid, rw, rh);
+        debug!("resize wid={:#x} to {:?}x{:?}", self.wid, rw, rh);
         if let (Some(w), Some(h)) = (NonZeroU32::new(rw), NonZeroU32::new(rh)) {
             if let Err(e) = self.surface.resize(w, h) {
                 error!("failed to resize softbuffer surface: {:?}", e);

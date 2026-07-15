@@ -356,7 +356,7 @@ impl XpraClient {
                     {
                         let key = packet.get_u64(1);
                         if h264_decoders.remove(&key).is_some() {
-                            debug!("released h264 decoder for {:?} on window {:?}", ptype, key);
+                            debug!("released h264 decoder for {:?} on window {:#x}", ptype, key);
                         }
                     }
                     continue;
@@ -367,7 +367,7 @@ impl XpraClient {
                 let coding = packet.get_str(6);
                 let data = packet.get_bytes(7);
                 let seq = packet.get_i64(8);
-                debug!("wid {:?} got {:?}x{:?} {:?} draw packet", wid, w, h, coding);
+                debug!("wid {:#x} got {:?}x{:?} {:?} draw packet", wid, w, h, coding);
 
                 let mut main = packet.main.to_vec();
                 let mut raw = HashMap::new();
@@ -542,7 +542,7 @@ impl XpraClient {
 
     fn process_new_common(&mut self, event_loop: &ActiveEventLoop, packet: &Packet, override_redirect: bool) {
         let wid = packet.get_u64(1);
-        debug!("new-window {:?}, override-redirect={:?}", wid, override_redirect);
+        debug!("new-window {:#x}, override-redirect={:?}", wid, override_redirect);
         let x = packet.get_i32(2);
         let y = packet.get_i32(3);
         let w = packet.get_u32(4);
@@ -573,7 +573,7 @@ impl XpraClient {
                 return;
             }
         };
-        info!("new-window {:?} : {:?}", wid, title);
+        info!("new-window {:#x} : {:?}", wid, title);
 
         // start the window off with the current session cursor (see process_cursor):
         if let Some(cursor) = self.current_cursor.clone() {
@@ -596,7 +596,7 @@ impl XpraClient {
         let window = match self.windows.get_mut(&wid) {
             Some(window) => window,
             None => {
-                error!("cannot move-resize: window {:?} not found", wid);
+                error!("cannot move-resize: window {:#x} not found", wid);
                 return;
             }
         };
@@ -608,7 +608,7 @@ impl XpraClient {
         if let Some(outer) = window.to_outer_position(x, y) {
             window.window.set_outer_position(outer);
         } else {
-            debug!("window {:?}: absolute positioning is not supported on this platform (Wayland)", wid);
+            debug!("window {:#x}: absolute positioning is not supported on this platform (Wayland)", wid);
         }
         let _ = window.window.request_inner_size(PhysicalSize::new(w.max(1), h.max(1)));
     }
@@ -630,7 +630,7 @@ impl XpraClient {
         let window = match self.windows.get(&wid) {
             Some(window) => window,
             None => {
-                error!("cannot initiate move-resize: window {:?} not found", wid);
+                error!("cannot initiate move-resize: window {:#x} not found", wid);
                 return;
             }
         };
@@ -655,7 +655,7 @@ impl XpraClient {
             None => window.window.drag_window(),
         };
         if let Err(e) = result {
-            debug!("initiate-moveresize for window {:?} was not accepted: {:?}", wid, e);
+            debug!("initiate-moveresize for window {:#x} was not accepted: {:?}", wid, e);
         }
     }
 
@@ -667,7 +667,7 @@ impl XpraClient {
         let window = match self.windows.get(&wid) {
             Some(window) => window,
             None => {
-                error!("cannot raise: window {:?} not found", wid);
+                error!("cannot raise: window {:#x} not found", wid);
                 return;
             }
         };
@@ -766,27 +766,27 @@ impl XpraClient {
         let wid = packet.get_u64(1);
         let encoding = packet.get_str(4);
         if encoding != "png" {
-            debug!("ignoring window-icon for {:?} with unsupported encoding {:?}", wid, encoding);
+            debug!("ignoring window-icon for {:#x} with unsupported encoding {:?}", wid, encoding);
             return;
         }
         let data = packet.get_bytes(5);
         let (w, h, rgba) = match draw_decoder::decode_png_rgba(&data) {
             Ok(decoded) => decoded,
             Err(e) => {
-                debug!("failed to decode window icon for {:?}: {}", wid, e);
+                debug!("failed to decode window icon for {:#x}: {}", wid, e);
                 return;
             }
         };
         let icon = match Icon::from_rgba(rgba, w, h) {
             Ok(icon) => icon,
             Err(e) => {
-                debug!("invalid window icon for {:?}: {:?}", wid, e);
+                debug!("invalid window icon for {:#x}: {:?}", wid, e);
                 return;
             }
         };
         match self.windows.get(&wid) {
             Some(window) => window.window.set_window_icon(Some(icon)),
-            None => error!("cannot set icon: window {:?} not found", wid),
+            None => error!("cannot set icon: window {:#x} not found", wid),
         }
     }
 
@@ -795,18 +795,18 @@ impl XpraClient {
         if let Some(window) = self.windows.remove(&wid) {
             self.id_map.remove(&window.window.id());
         } else {
-            warn!("window {:?} not found!", wid);
+            warn!("window {:#x} not found!", wid);
         }
     }
 
     fn process_window_metadata(&mut self, packet: &Packet) {
         let wid = packet.get_u64(1);
         let metadata = &packet.main[2];
-        info!("window-metadata for {:?}: {:?}", wid, metadata);
+        info!("window-metadata for {:#x}: {:?}", wid, metadata);
         let window = match self.windows.get(&wid) {
             Some(window) => window,
             None => {
-                warn!("window {:?} not found!", wid);
+                warn!("window {:#x} not found!", wid);
                 return;
             }
         };
@@ -835,7 +835,7 @@ impl XpraClient {
                 return;
             }
         };
-        trace!("drawing {:?} on {:?}", coding, wid);
+        trace!("drawing {:?} on {:#x}", coding, wid);
         // an empty payload is a decoder warm-up frame (h264): ack it, but there's nothing to paint.
         if !pixels.is_empty() {
             window.paint(seq, x, y, w, h, &coding, &pixels);
@@ -944,7 +944,7 @@ impl XpraClient {
                 self.send_window_close(wid);
             }
             _ => {
-                trace!("unhandled window event {:?} on wid={:?}", event, wid);
+                trace!("unhandled window event {:?} on wid={:#x}", event, wid);
             }
         }
     }
