@@ -415,6 +415,9 @@ impl XpraClient {
                 #[cfg(windows)]
                 { let _ = self.decode_sender.send(p); }
             }
+            // ["setting-change", setting, value]: server-pushed session settings we don't act on
+            // (xpra's own client no-ops most of these); log rather than warn about "unhandled".
+            "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
             "window-metadata" => self.process_window_metadata(&p),
             "draw" => {
                 if self.decode_sender.send(p).is_err() {
