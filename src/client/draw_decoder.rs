@@ -53,3 +53,20 @@ pub fn decode(coding: &String, data: Vec<u8>) -> Result<Vec<u8>, String>{
     }
     Err(format!("unsupported encoding {coding}"))
 }
+
+
+// Decode a png into (width, height, RGBA8) with proper error handling - used for window icons,
+// which arrive on the UI thread (unlike draws, which run on the decode thread). The draw path
+// above unwraps freely, which is fine there but would abort the whole process (panic = "abort")
+// on a malformed icon; here every fallible spng call is turned into an error the caller logs.
+pub fn decode_png_rgba(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let out_format = spng::Format::Rgba8;
+    let mut ctx = spng::raw::RawContext::new().map_err(|e| format!("spng init failed: {e:?}"))?;
+    ctx.set_png_buffer(data).map_err(|e| format!("invalid png: {e:?}"))?;
+    let ihdr = ctx.get_ihdr().map_err(|e| format!("invalid png header: {e:?}"))?;
+    let size = ctx.decoded_image_size(out_format).map_err(|e| format!("bad png size: {e:?}"))?;
+    let mut pixels: Vec<u8> = vec![0; size];
+    ctx.decode_image(&mut pixels, out_format, spng::DecodeFlags::empty())
+        .map_err(|e| format!("png decode failed: {e:?}"))?;
+    Ok((ihdr.width, ihdr.height, pixels))
+}

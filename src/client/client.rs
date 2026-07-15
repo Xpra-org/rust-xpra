@@ -20,7 +20,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{ResizeDirection, Window, WindowId};
+use winit::window::{Icon, ResizeDirection, Window, WindowId};
 
 use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
@@ -139,14 +139,16 @@ impl XpraClient {
         // can decode. Media Foundation's H.264 decoder only handles 8-bit 4:2:0 up to High profile,
         // so we advertise *only* YUV420P (never 422/444) and pin the profile to "high".
         #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut encoding_caps = json!({});
+        let mut encoding_caps = json!({
+            // read server-side as hello["encoding"]["window-icon"]; without it the server
+            // sends no "window-icon" packets at all (it only ships icons as png).
+            "window-icon": ["png"],
+        });
         #[cfg(windows)]
         {
             encodings.push("h264");
-            encoding_caps = json!({
-                "full_csc_modes": { "h264": ["YUV420P"] },
-                "h264": { "YUV420P.profile": "high" },
-            });
+            encoding_caps["full_csc_modes"] = json!({ "h264": ["YUV420P"] });
+            encoding_caps["h264"] = json!({ "YUV420P.profile": "high" });
         }
         let packet = json!(["hello", {
             "version": VERSION,
@@ -418,6 +420,7 @@ impl XpraClient {
             // ["setting-change", setting, value]: server-pushed session settings we don't act on
             // (xpra's own client no-ops most of these); log rather than warn about "unhandled".
             "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
+            "window-icon" => self.process_window_icon(&mut p),
             "window-metadata" => self.process_window_metadata(&p),
             "draw" => {
                 if self.decode_sender.send(p).is_err() {
@@ -621,6 +624,38 @@ impl XpraClient {
         };
         if !window.window.has_focus() {
             window.window.focus_window();
+        }
+    }
+
+    // ["window-icon", wid, w, h, encoding, pixels]: the titlebar/taskbar icon. The server only
+    // ever ships icons as png (see xpra's windowicon.py), which we advertised support for in the
+    // hello; a "default"/empty payload just means "keep the default icon". A bad icon logs and
+    // leaves the current one in place - purely cosmetic, never fatal.
+    fn process_window_icon(&mut self, packet: &mut Packet) {
+        let wid = packet.get_u64(1);
+        let encoding = packet.get_str(4);
+        if encoding != "png" {
+            debug!("ignoring window-icon for {:?} with unsupported encoding {:?}", wid, encoding);
+            return;
+        }
+        let data = packet.get_bytes(5);
+        let (w, h, rgba) = match draw_decoder::decode_png_rgba(&data) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                debug!("failed to decode window icon for {:?}: {}", wid, e);
+                return;
+            }
+        };
+        let icon = match Icon::from_rgba(rgba, w, h) {
+            Ok(icon) => icon,
+            Err(e) => {
+                debug!("invalid window icon for {:?}: {:?}", wid, e);
+                return;
+            }
+        };
+        match self.windows.get(&wid) {
+            Some(window) => window.window.set_window_icon(Some(icon)),
+            None => error!("cannot set icon: window {:?} not found", wid),
         }
     }
 
