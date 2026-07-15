@@ -305,13 +305,16 @@ impl XpraClient {
                         break;
                     }
                 };
-                // window teardown forwarded from the UI thread: release its h264 decoder (Windows).
-                if packet.get_str(0) == "lost-window" {
+                // window teardown (lost-window) or video stream end (eos) forwarded from the UI
+                // thread: release this window's h264 decoder so a following stream restarts from a
+                // keyframe (Windows). Both drain the draw queue first (see the dispatch side).
+                let ptype = packet.get_str(0);
+                if ptype == "lost-window" || ptype == "eos" {
                     #[cfg(windows)]
                     {
                         let key = packet.get_u64(1);
                         if h264_decoders.remove(&key).is_some() {
-                            debug!("released h264 decoder for lost window {:?}", key);
+                            debug!("released h264 decoder for {:?} on window {:?}", ptype, key);
                         }
                     }
                     continue;
@@ -402,6 +405,12 @@ impl XpraClient {
                 // forward to the decode thread so it can drop this window's persistent h264
                 // decoder; routed through the same channel as draws, so any still-queued draws
                 // for this window drain before the decoder is released.
+                #[cfg(windows)]
+                { let _ = self.decode_sender.send(p); }
+            }
+            "eos" => {
+                // video stream ended: forward to the decode thread to drop this window's h264
+                // decoder, over the draw channel so any queued draws for the old stream drain first.
                 #[cfg(windows)]
                 { let _ = self.decode_sender.send(p); }
             }
