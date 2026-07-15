@@ -20,7 +20,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{Window, WindowId};
+use winit::window::{ResizeDirection, Window, WindowId};
 
 use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
@@ -395,6 +395,7 @@ impl XpraClient {
             "new-window" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
             "window-move-resize" => self.process_window_move_resize(&p),
+            "initiate-moveresize" => self.process_initiate_moveresize(&p),
             "lost-window" => {
                 self.process_lost_window(&p);
                 // forward to the decode thread so it can drop this window's persistent h264
@@ -537,6 +538,52 @@ impl XpraClient {
             debug!("window {:?}: absolute positioning is not supported on this platform (Wayland)", wid);
         }
         let _ = window.window.request_inner_size(PhysicalSize::new(w.max(1), h.max(1)));
+    }
+
+    // ["initiate-moveresize", wid, x_root, y_root, direction, button, source_indication]
+    // The server forwards a window's _NET_WM_MOVERESIZE request (an app calling the EWMH hint,
+    // e.g. dragging its own client-side titlebar) so we can start an interactive move/resize
+    // through our own window manager. winit's drag_window()/drag_resize_window() map straight
+    // onto the same primitive (X11 _NET_WM_MOVERESIZE, Wayland xdg_toplevel move/resize) - and
+    // interactive drag is in fact the *one* way to reposition a window on Wayland, where the
+    // absolute positioning used by window-move-resize isn't available to clients.
+    // `direction` reuses the _NET_WM_MOVERESIZE integer constants; the keyboard-initiated ones
+    // (9/10) and cancel (11) have no winit equivalent and are ignored. These only take effect
+    // while the initiating pointer button is still held (the WM adopts the pointer grab), so a
+    // request whose grab has already been released gets silently dropped by the WM.
+    fn process_initiate_moveresize(&mut self, packet: &Packet) {
+        let wid = packet.get_u64(1);
+        let direction = packet.get_u32(4);
+        let window = match self.windows.get(&wid) {
+            Some(window) => window,
+            None => {
+                error!("cannot initiate move-resize: window {:?} not found", wid);
+                return;
+            }
+        };
+        // None = a plain move (direction 8, _NET_WM_MOVERESIZE_MOVE); the rest are resize edges.
+        let resize = match direction {
+            0 => Some(ResizeDirection::NorthWest), // _NET_WM_MOVERESIZE_SIZE_TOPLEFT
+            1 => Some(ResizeDirection::North),     // _NET_WM_MOVERESIZE_SIZE_TOP
+            2 => Some(ResizeDirection::NorthEast), // _NET_WM_MOVERESIZE_SIZE_TOPRIGHT
+            3 => Some(ResizeDirection::East),      // _NET_WM_MOVERESIZE_SIZE_RIGHT
+            4 => Some(ResizeDirection::SouthEast), // _NET_WM_MOVERESIZE_SIZE_BOTTOMRIGHT
+            5 => Some(ResizeDirection::South),     // _NET_WM_MOVERESIZE_SIZE_BOTTOM
+            6 => Some(ResizeDirection::SouthWest), // _NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT
+            7 => Some(ResizeDirection::West),      // _NET_WM_MOVERESIZE_SIZE_LEFT
+            8 => None,                             // _NET_WM_MOVERESIZE_MOVE
+            _ => {
+                debug!("ignoring unsupported initiate-moveresize direction {:?}", direction);
+                return;
+            }
+        };
+        let result = match resize {
+            Some(dir) => window.window.drag_resize_window(dir),
+            None => window.window.drag_window(),
+        };
+        if let Err(e) = result {
+            debug!("initiate-moveresize for window {:?} was not accepted: {:?}", wid, e);
+        }
     }
 
     fn process_lost_window(&mut self, packet: &Packet) {
