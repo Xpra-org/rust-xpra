@@ -1,6 +1,7 @@
 pub mod connection;
 pub mod io;
 pub mod packet;
+pub mod rand;
 pub mod serde;
 pub mod sha1;
 pub mod sha256;
