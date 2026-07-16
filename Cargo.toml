@@ -15,6 +15,11 @@ spng = { version = "0.2.0-alpha.3" }
 base64 = "0.22.1"
 machine-uid = "0.6.0"
 native-tls = "0.2"
+# lz4 packet decompression (pure-Rust, no C toolchain). We only use the block format with a
+# little-endian size prefix - xpra's exact lz4 wire format - so the `frame` default feature (and
+# its extra xxhash dependency) is turned off; `safe-decode` keeps decoding memory-safe on the
+# adversarial input a network peer can send.
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-decode", "safe-encode"] }
 # webp decoding. By default this builds the vendored libwebp C sources with `cc` (no cmake / nasm /
 # bindgen needed) and links them statically, which is what the CI release binaries want.
 # See the `webp-dylib` feature below for the shared-library build downstream packagers want.

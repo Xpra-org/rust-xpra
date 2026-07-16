@@ -4,6 +4,11 @@ use log::{trace};
 
 use super::connection::Connection;
 
+// The compression algorithm is carried in the high bits of the header's "level" byte (xpra
+// net/protocol/header.py): 0x10 = lz4, 0x40 = brotli, 0x80 = zstd (the low nibble is the level).
+// We advertise only lz4 (see the client's send_hello), so that is the only one we accept here.
+const LZ4_FLAG: u8 = 0x10;
+
 
 pub fn read_packet(stream: &mut Connection) -> Result<Vec<u8>, Error> {
     let mut header = [0; 8];
@@ -19,9 +24,7 @@ pub fn read_packet(stream: &mut Connection) -> Result<Vec<u8>, Error> {
     if header[1] & 0x4 == 0{   // FLAGS_YAML:
         return Err(Error::new(ErrorKind::InvalidData, format!("unsupported packet encoding: {:?}", header[1])));
     }
-    if header[2] != 0 {     // no compression
-        return Err(Error::new(ErrorKind::InvalidData, format!("unsupported compression: {:?}", header[2])));
-    }
+    let compression = header[2];
     let mut payload_size: usize = 0;
     for i in 0..4 {
         payload_size *= 0x100;
@@ -32,7 +35,23 @@ pub fn read_packet(stream: &mut Connection) -> Result<Vec<u8>, Error> {
     let mut payload = vec![0u8; payload_size];
     let payload_buf: &mut [u8] = payload.as_mut_slice();
     stream.read_exact(payload_buf)?;
+    if compression != 0 {
+        payload = decompress(compression, &payload)?;
+    }
     return Ok(payload);
+}
+
+
+// Undo the packet compression signalled by the header's "level" byte. Only lz4 is supported (the
+// only compressor we advertise); anything else is a protocol violation on our part and errors.
+fn decompress(compression: u8, payload: &[u8]) -> Result<Vec<u8>, Error> {
+    if compression & LZ4_FLAG == 0 {
+        return Err(Error::new(ErrorKind::InvalidData, format!("unsupported compression flag: {:#x}", compression)));
+    }
+    // xpra frames lz4 as a 4-byte little-endian uncompressed-size prefix followed by a raw lz4
+    // block - exactly lz4_flex's size-prepended block format.
+    lz4_flex::block::decompress_size_prepended(payload)
+        .map_err(|e| Error::new(ErrorKind::InvalidData, format!("lz4 decompression failed: {}", e)))
 }
 
 

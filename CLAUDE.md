@@ -100,8 +100,18 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     those from the controlling terminal, not stdin — ssh's stderr is inherited so such prompts/errors are visible.
   - `net/io.rs`: packet framing over a `Connection` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
     `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload, written
-    as a single `Connection::write_all` call. Only YAML encoding, no compression, no chunking are currently
-    supported (anything else is a hard error).
+    as a single `Connection::write_all` call. We write only YAML-encoded, uncompressed, unchunked packets (the
+    header's compression/chunk bytes are always 0 outbound), and reject any non-YAML or chunked packet on read.
+    **Inbound lz4 is supported**, though: the client advertises `compressors=["lz4"]` + a non-zero
+    `compression_level` in its hello (see `send_hello`), so the server compresses its packets to us — including,
+    right away, the large hello reply. When the header's compression byte is non-zero, `read_packet` decompresses
+    the payload before returning it (`decompress`): the algorithm is in the byte's high bits (`0x10`=lz4,
+    `0x40`=brotli, `0x80`=zstd, low nibble = level; xpra `net/protocol/header.py`) and only lz4 is accepted, since
+    it's the only compressor we advertise. xpra's lz4 framing is a 4-byte little-endian uncompressed-size prefix +
+    a raw lz4 block, which is exactly `lz4_flex`'s size-prepended block format (pure-Rust, `default-features` off
+    so no xxhash/frame dependency; `safe-decode` for memory safety on adversarial input). Outbound packets stay
+    uncompressed — they're small input events, all below the server's `MIN_COMPRESS_SIZE`, so there's nothing to
+    gain and no compressor is linked for the write path.
   - `net/serde.rs`: parses the YAML payload into a `Packet`.
   - `net/packet.rs`: `Packet { main: Vec<Yaml>, raw: HashMap<u8, Vec<u8>> }` — `main` holds the positional fields
     of an Xpra packet (`main[0]` is always the packet type string); `raw` holds binary payloads that get spliced

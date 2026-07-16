@@ -214,6 +214,12 @@ impl XpraClient {
             "version": VERSION,
             "yaml": true,
             "chunks": false,
+            // packet compression: advertise lz4 (the only algorithm we decompress, see net::io)
+            // and a non-zero level so the server actually compresses its packets to us - it falls
+            // back to "none" when compression_level is 0 (xpra server/core.py). This is inbound
+            // only; our own outgoing packets are small input events, sent uncompressed.
+            "compressors": ["lz4"],
+            "compression_level": 1,
             "windows": true,
             "keyboard": true,
             "mouse": true,
