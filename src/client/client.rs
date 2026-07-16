@@ -109,7 +109,7 @@ fn ring_bell(pitch: i32, duration: i32) {
         let freq = if (37..=32767).contains(&pitch) { pitch as u32 } else { 800 };
         let dur = if duration > 0 { (duration as u32).min(5000) } else { 100 };
         thread::spawn(move || {
-            let _ = unsafe { windows::Win32::System::Console::Beep(freq, dur) };
+            let _ = unsafe { windows::Win32::System::Diagnostics::Debug::Beep(freq, dur) };
         });
     }
     #[cfg(not(windows))]
