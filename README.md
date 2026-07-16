@@ -7,7 +7,8 @@ This is a proof of concept only and is not usable at this point.
 
 It builds on MS Windows and Linux (X11 and Wayland).
 
-It only supports unauthenticated `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below).
+It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). Password
+authentication is supported (HMAC digest challenges — see [Authentication](#authentication) below).
 
 No server, no audio, no clipboard, no notifications, etc..
 
@@ -59,6 +60,25 @@ or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the r
 not require interactive input on stdin (stdin carries the xpra protocol, not a terminal), so use key-based auth
 via an ssh-agent or a passphrase-less key; host-key confirmation and password prompts still work normally since
 OpenSSH reads those from the controlling terminal, not stdin.
+
+## Authentication
+
+Servers that require a password (xpra's `password`/`file`/`multifile`/`sqlite`/`pam`/... auth modules) send a
+`challenge`; the client answers it with an HMAC-SHA256 digest of the password. When a challenge arrives, the
+password is obtained from — in order:
+
+1. the `XPRA_PASSWORD` environment variable, if set (non-interactive; handy for scripts);
+2. [`pinentry`](https://www.gnupg.org/related_software/pinentry/), if one is found on `PATH` (honouring
+   `PINENTRY_PROGRAM`) — the same native, secure prompt GnuPG uses (GTK/Qt/curses on Linux, `pinentry-mac` on
+   macOS);
+3. otherwise a small built-in password dialog (drawn with the same `winit`/`softbuffer` stack as the rest of the
+   client), so a prompt is always available — including on Windows, where `pinentry` is normally absent.
+
+Only the `hmac+sha256` digest is implemented (it is the only one advertised, so the server always picks it);
+Kerberos/GSS/SCRAM/U2F and the legacy `xor`/`des` digests are not supported and fail cleanly. The HMAC response
+never reveals the password itself, and the server mixes in a fresh per-connection salt so a captured response
+cannot be replayed — but the session payload is still in the clear over `tcp`/`ws`, so use `ssl`/`wss` (or `ssh`)
+for confidentiality.
 
 ## Picture encodings
 

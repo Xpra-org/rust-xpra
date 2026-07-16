@@ -5,10 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project status
 
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
-Not usable yet: unauthenticated `tcp`/`ssl`/`ws`/`wss` connections only (and `ssl`/`wss` don't verify certificates
-yet — see `README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard/notifications support. See
-`README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock — all downstream
-of Wayland not letting clients query/set absolute desktop position or create truly unmanaged windows).
+Not usable yet: `tcp`/`ssl`/`ws`/`wss` connections (and `ssl`/`wss` don't verify certificates yet — see
+`README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard/notifications support. Password
+authentication *is* supported (the `hmac+sha256` challenge digest only — see the `challenge` flow below and
+`README.md`). See `README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock
+— all downstream of Wayland not letting clients query/set absolute desktop position or create truly unmanaged
+windows).
 
 ## Build / run
 
@@ -78,6 +80,10 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     transparently answering pings.
   - `net/sha1.rs`: a self-contained SHA1 (only used for the websocket accept-hash, not security-sensitive) — has
     unit tests with the standard RFC 3174 test vectors, run via `cargo test --lib`.
+  - `net/sha256.rs`: a self-contained SHA-256 + HMAC-SHA256, used to answer the server's password `challenge`
+    (see the client's `process_challenge`). Unlike `sha1` this *is* a security boundary, so it is verified against
+    the FIPS-180 and RFC 4231 test vectors (`cargo test --lib`). Hand-rolled rather than pulling in a crypto crate,
+    matching the rest of `net/`; `hmac_sha256_hex` returns the lowercase-hex ASCII form xpra puts on the wire.
   - `net/ssh.rs`: `ssh://`, implemented by shelling out to the system `ssh` binary (`std::process::Command`) and
     treating its stdin/stdout pipes as the byte stream — no SSH library dependency, mirroring the `tcp`/`ws`
     hand-rolled-over-a-library preference here (a full client like `russh` costs ~2MB and needs `tokio`; see the
@@ -119,6 +125,28 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `damage-sequence`). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
+    - **Authentication** (`process_challenge` in `client.rs`): a password-requiring server replies to our first
+      `hello` with a `challenge` packet instead of its own hello. We advertise only `digest`/`salt-digest` =
+      `["hmac+sha256"]`, so the server always picks that one digest (`choose_digest`, xpra `auth/sys_auth_base.py`).
+      The reply is a **second** `hello` (`send_hello(Some((response, client_salt)))`) carrying `challenge_response`
+      = `HMAC(password, HMAC(client_salt, server_salt))` (both HMACs lowercase-hex, via `net::sha256`). Two subtle
+      points: (1) the incoming `server_salt` is a YAML `!!binary` scalar that `packet::get_bytes` already
+      base64-decodes; (2) our writer emits JSON-as-YAML and *can't* carry raw binary, so `client_salt` is a random
+      **ASCII hex** string (from `secure_hex`, OS-CSPRNG-seeded) rather than raw bytes — the server utf-8-decodes
+      it back to the same bytes, so the digests still match. The password comes from, in order: `XPRA_PASSWORD`;
+      `pinentry` if on `PATH` (driven over its Assuan protocol on a worker thread — `spawn_pinentry`/`run_pinentry`
+      — which posts the result back as a synthesized `challenge-password`/`challenge-cancel` packet, the auth
+      analogue of `draw-decoded`); otherwise the built-in `AuthDialog`. A wrong password ends with the server's
+      `disconnect "authentication failed"` (→ `AuthenticationFailed`, exit 28); only `hmac+sha256` is handled, and
+      `xor`/`des`/other digests fail cleanly. **Verify against a real server** (no test harness for this):
+      `xpra start :N --bind-tcp=127.0.0.1:PORT --tcp-auth=password:value=PW`, then connect with `XPRA_PASSWORD=PW`
+      (env path) or without it (pinentry / dialog path) and confirm `startup complete!`.
+  - `auth_dialog.rs` + `font8x8.rs`: the built-in password prompt (`AuthDialog`) used when there is no
+    `XPRA_PASSWORD` and no `pinentry` — a plain `winit`+`softbuffer` window drawn like `XpraWindow` but
+    self-contained: it collects a password (echoing only `*`) and reports `Submit`/`Cancel` to `client.rs`, which
+    routes its events in `window_event` *before* the `id_map` lookup (the dialog has no `wid`). There is no text
+    dependency, so `font8x8.rs` is a public-domain 8x8 bitmap font (printable ASCII) blitted by hand into the
+    framebuffer. Works on every platform, so it is the universal fallback (Windows without GnuPG in particular).
   - `window.rs`: `XpraWindow` owns a `winit::window::Window`, a `softbuffer::Surface`, and a persistent
     `framebuffer: Vec<u32>` (softbuffer only hands you the *live* to-be-presented buffer on each
     `buffer_mut()` call, not a persistently addressable store, so `XpraWindow` keeps its own full-window pixel

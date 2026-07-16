@@ -3,6 +3,7 @@ pub mod io;
 pub mod packet;
 pub mod serde;
 pub mod sha1;
+pub mod sha256;
 pub mod ssh;
 pub mod tls;
 pub mod uri;

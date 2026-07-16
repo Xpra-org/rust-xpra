@@ -29,6 +29,8 @@ use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_payload;
 use xpra::net::packet::Packet;
+use xpra::net::sha256::hmac_sha256_hex;
+use super::auth_dialog::{AuthDialog, DialogAction};
 use super::draw_decoder;
 use super::window::XpraWindow;
 
@@ -48,6 +50,13 @@ pub struct XpraClient {
     // kept so it can be applied to windows created after the last "cursor" packet. `None` = the
     // platform default cursor.
     pub current_cursor: Option<CustomCursor>,
+    // the in-app password prompt shown when a server sends a `challenge` and no pinentry is
+    // available (see process_challenge); `None` when we are not prompting.
+    pub auth_dialog: Option<AuthDialog>,
+    // the server salt from the challenge we are currently answering, held while an interactive
+    // prompt (pinentry worker or the dialog) is collecting the password. `None` when not
+    // authenticating. Only `hmac+sha256` is advertised/handled, so this salt is all we need.
+    pub pending_challenge: Option<Vec<u8>>,
     // `Some` once we're on the way out (a `disconnect` packet, a lost connection or a failed
     // write): it holds the code we'll exit the process with, and stops us from writing to (and
     // complaining about) a dead connection while the event loop winds down.
@@ -119,6 +128,217 @@ impl fmt::Debug for XpraClient {
     }
 }
 
+// `nbytes` of OS randomness, hex-encoded (so 2*nbytes ASCII chars). Used for the challenge
+// client-salt and padding; ASCII so it survives our JSON-as-YAML writer (see answer_challenge).
+fn secure_hex(nbytes: usize) -> String {
+    let mut buf = vec![0u8; nbytes];
+    secure_random_bytes(&mut buf);
+    xpra::net::sha256::to_hex(&buf)
+}
+
+fn secure_random_bytes(buf: &mut [u8]) {
+    #[cfg(unix)]
+    {
+        use std::fs::File;
+        use std::io::Read;
+        if File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(buf))
+            .is_ok()
+        {
+            return;
+        }
+        warn!("/dev/urandom unavailable, using a non-cryptographic salt fallback");
+    }
+    #[cfg(windows)]
+    {
+        // ProcessPrng (bcryptprimitives) is the modern system CSPRNG - a single buffer, no handle,
+        // and documented never to fail; it is what the Rust stdlib and getrandom use on Windows.
+        use windows::Win32::Security::Cryptography::ProcessPrng;
+        if unsafe { ProcessPrng(buf) }.as_bool() {
+            return;
+        }
+        warn!("ProcessPrng failed, using a non-cryptographic salt fallback");
+    }
+    // Last resort (the OS CSPRNG effectively never fails): a time/address-seeded splitmix64.
+    // Adequate only to keep the client salt unique/unpredictable-enough to avoid replay; it never
+    // touches the password itself, which is HMAC'd regardless.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut state = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+        ^ (buf.as_ptr() as u64);
+    for b in buf.iter_mut() {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        *b = (z ^ (z >> 31)) as u8;
+    }
+}
+
+// Locate a pinentry binary on PATH (honouring PINENTRY_PROGRAM), so we can offer a native secure
+// prompt when one is installed. Returns the full path, or None to fall back to the built-in dialog.
+fn find_pinentry() -> Option<String> {
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(prog) = env::var("PINENTRY_PROGRAM") {
+        if !prog.is_empty() {
+            names.push(prog);
+        }
+    }
+    for name in ["pinentry", "pinentry-mac"] {
+        names.push(name.to_string());
+    }
+    let path = env::var_os("PATH")?;
+    let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
+    for dir in env::split_paths(&path) {
+        for name in &names {
+            for ext in exts {
+                let candidate = dir.join(format!("{name}{ext}"));
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+// Prompt for a password with pinentry on a worker thread (it blocks while the user types), then
+// post the outcome back to the UI thread as a synthesized client packet - the challenge equivalent
+// of the decode thread's "draw-decoded". An explicit cancel ends authentication; a failure to even
+// run pinentry falls back to the built-in dialog.
+fn spawn_pinentry(prog: String, prompt: String, proxy: EventLoopProxy<Packet>) {
+    thread::Builder::new()
+        .name("pinentry".to_string())
+        .spawn(move || {
+            let packet = match run_pinentry(&prog, &prompt) {
+                Ok(Some(password)) => client_packet("challenge-password", &password),
+                Ok(None) => client_packet("challenge-cancel", ""),
+                Err(e) => {
+                    warn!("pinentry failed ({e}), falling back to the built-in dialog");
+                    client_packet("challenge-fallback-dialog", &prompt)
+                }
+            };
+            let _ = proxy.send_event(packet);
+        })
+        .unwrap();
+}
+
+// Minimal Assuan client for pinentry: read the greeting, set the prompt text, GETPIN. Returns
+// Ok(Some(pin)), Ok(None) if the user cancelled, or Err if pinentry could not be driven.
+fn run_pinentry(prog: &str, prompt: &str) -> Result<Option<String>, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(prog)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit()) // let pinentry's own errors reach the terminal
+        .spawn()
+        .map_err(|e| format!("cannot start {prog}: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("no pinentry stdin")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("no pinentry stdout")?);
+
+    // drive the exchange in a closure so we always reap the child afterwards.
+    let result = (|| -> Result<Option<String>, String> {
+        // read one Assuan status line, skipping S/# comment and blank lines:
+        macro_rules! read_line {
+            () => {{
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+                        return Err("pinentry closed the connection".to_string());
+                    }
+                    let l = line.trim_end().to_string();
+                    if !(l.starts_with('S') || l.starts_with('#') || l.is_empty()) {
+                        break l;
+                    }
+                }
+            }};
+        }
+        // send a command and require an OK acknowledgement:
+        macro_rules! send_ok {
+            ($cmd:expr) => {{
+                writeln!(stdin, "{}", $cmd).map_err(|e| e.to_string())?;
+                let l = read_line!();
+                if !(l == "OK" || l.starts_with("OK ")) {
+                    return Err(l);
+                }
+            }};
+        }
+        // greeting:
+        let greeting = read_line!();
+        if !(greeting == "OK" || greeting.starts_with("OK ")) {
+            return Err(greeting);
+        }
+        // best-effort option for terminal (curses) pinentry; ignore any rejection:
+        if let Ok(tty) = env::var("GPG_TTY") {
+            writeln!(stdin, "OPTION ttyname={tty}").map_err(|e| e.to_string())?;
+            let _ = read_line!();
+        }
+        send_ok!("SETTITLE Xpra Authentication");
+        send_ok!("SETPROMPT Password:");
+        send_ok!(format!("SETDESC {}", assuan_escape(prompt)));
+        // GETPIN: an optional "D <pin>" data line followed by OK, or ERR on cancel.
+        writeln!(stdin, "GETPIN").map_err(|e| e.to_string())?;
+        let mut pin: Option<String> = None;
+        loop {
+            let l = read_line!();
+            if let Some(data) = l.strip_prefix("D ") {
+                pin = Some(assuan_unescape(data));
+            } else if l == "OK" || l.starts_with("OK ") {
+                break;
+            } else if l.starts_with("ERR") {
+                // any error from GETPIN (typically code 0x5000063, "canceled") = user declined:
+                pin = None;
+                break;
+            }
+        }
+        let _ = writeln!(stdin, "BYE");
+        Ok(pin)
+    })();
+
+    drop(stdin);
+    let _ = child.wait();
+    result
+}
+
+// Assuan percent-escaping for text we send (%, CR, LF must be escaped).
+fn assuan_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '%' => out.push_str("%25"),
+            '\r' => out.push_str("%0D"),
+            '\n' => out.push_str("%0A"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+// Decode the percent-escaping pinentry applies to the PIN in its "D" data line.
+fn assuan_unescape(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 impl XpraClient {
 
     pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>) -> Self {
@@ -134,6 +354,8 @@ impl XpraClient {
             modifiers: ModifiersState::empty(),
             startup_complete: false,
             current_cursor: None,
+            auth_dialog: None,
+            pending_challenge: None,
             exit_code: None,
         }
     }
@@ -153,7 +375,9 @@ impl XpraClient {
         if self.startup_complete { ExitCode::ConnectionLost } else { ExitCode::ConnectionFailed }
     }
 
-    pub fn send_hello(&mut self) {
+    // Send our `hello`. `reply` is `Some((challenge_response, client_salt))` on the second hello,
+    // once we've answered a server `challenge` (see process_challenge); `None` on the first one.
+    pub fn send_hello(&mut self, reply: Option<(String, String)>) {
         let platform = match std::env::consts::OS {
             "windows" => "win32",
             "macos" => "darwin",
@@ -180,7 +404,7 @@ impl XpraClient {
             encoding_caps["full_csc_modes"] = json!({ "h264": ["YUV420P"] });
             encoding_caps["h264"] = json!({ "YUV420P.profile": "high" });
         }
-        let packet = json!(["hello", {
+        let mut packet = json!(["hello", {
             "version": VERSION,
             "yaml": true,
             "chunks": false,
@@ -189,6 +413,12 @@ impl XpraClient {
             "mouse": true,
             "sharing": true,
             "bell": true,
+            // authentication: we only implement the hmac+sha256 password digest, so advertise
+            // just that. The server picks the challenge digest from these lists (choose_digest,
+            // xpra auth/sys_auth_base.py), so listing one forces both to hmac+sha256 - the one
+            // hash we compute in process_challenge / net::sha256.
+            "digest": ["hmac+sha256"],
+            "salt-digest": ["hmac+sha256"],
             // request pointer cursor forwarding. We only advertise the "png" cursor encoding
             // (decoded like window icons); "backwards-compatible" makes the server send the old
             // "cursor" packet, matching the rest of this client. The legacy "cursors" bool is a
@@ -208,6 +438,16 @@ impl XpraClient {
             "hostname": env::var("HOSTNAME").unwrap_or("".into()),
             "uuid": machine_uid::get().unwrap(),
         }]);
+        if let Some((response, client_salt)) = reply {
+            // both are ASCII (response is hex; we deliberately use a hex client_salt too) so they
+            // survive our JSON-as-YAML writer without any binary encoding - see process_challenge.
+            let caps = &mut packet[1];
+            caps["challenge_response"] = json!(response);
+            caps["challenge_client_salt"] = json!(client_salt);
+            // padding so a passive observer can't infer the password length from the packet size
+            // (only meaningful over ssl/wss); a throwaway random-hex string, like xpra's own.
+            caps["challenge_padding"] = json!(secure_hex(64));
+        }
         self.write_json(packet);
     }
 
@@ -474,12 +714,21 @@ impl XpraClient {
             "draw-decoded" => self.process_draw_decoded(&mut p),
             "draw-failed" => self.process_draw_failed(&p),
             "ping" => self.process_ping(&p),
-            "challenge" => {
-                // the server is asking us to authenticate, but we have no auth support (see
-                // README): we can't answer the challenge. Fail with the same exit code xpra uses
-                // rather than hang until the server's authentication timeout fires.
-                error!("this server requires authentication, which is not supported");
-                self.quit(event_loop, ExitCode::AuthenticationFailed);
+            "challenge" => self.process_challenge(event_loop, &mut p),
+            // ["challenge-password", pw] / ["challenge-cancel"]: synthesized locally by the
+            // pinentry worker thread (see prompt_password_pinentry), delivered on the UI thread so
+            // it can compute the response and re-send hello / quit - a challenge equivalent of the
+            // decode thread's "draw-decoded".
+            "challenge-password" => {
+                let password = p.get_str(1);
+                self.answer_challenge(&password);
+            }
+            "challenge-cancel" => self.cancel_auth(event_loop),
+            // pinentry could not run (e.g. no display); fall back to the built-in dialog. The
+            // prompt text rides along in field 1.
+            "challenge-fallback-dialog" => {
+                let prompt_text = p.get_str(1);
+                self.show_auth_dialog(event_loop, prompt_text);
             }
             "disconnect" => self.process_disconnect(event_loop, &p),
             "connection-lost" => {
@@ -524,6 +773,131 @@ impl XpraClient {
             ExitCode::Ok
         };
         self.quit(event_loop, exit_code);
+    }
+
+    // ["challenge", server_salt, cipher, digest, salt_digest, prompt]: the server wants a password.
+    // We only implement the hmac+sha256 password digest (see send_hello / net::sha256); the reply
+    // is a second hello carrying the challenge response. Mirrors xpra's client/base/challenge.py.
+    fn process_challenge(&mut self, event_loop: &ActiveEventLoop, packet: &mut Packet) {
+        if self.pending_challenge.is_some() || self.auth_dialog.is_some() {
+            // we answer a single challenge; a repeat means our answer was rejected, and the server
+            // will also send a disconnect ("authentication failed") that ends the session.
+            warn!("ignoring repeated challenge");
+            return;
+        }
+        let server_salt = packet.get_bytes(1);
+        let digest = packet.get_str(3);
+        let salt_digest = if packet.len() >= 5 { packet.get_str(4) } else { "xor".to_string() };
+        let prompt = if packet.len() >= 6 { packet.get_str(5) } else { "password".to_string() };
+        if server_salt.is_empty() {
+            error!("authentication challenge has no server salt");
+            self.quit(event_loop, ExitCode::AuthenticationFailed);
+            return;
+        }
+        // we advertised only hmac+sha256 for both digests, so that is all the server should pick.
+        // Anything else (including the xor/des digests, which xpra only allows over an encrypted
+        // link we don't have) we cannot answer - fail cleanly rather than hang until the server's
+        // authentication timeout.
+        if digest != "hmac+sha256" || salt_digest != "hmac+sha256" {
+            error!("server requested an unsupported challenge digest ({digest:?}/{salt_digest:?})");
+            self.quit(event_loop, ExitCode::AuthenticationFailed);
+            return;
+        }
+        self.pending_challenge = Some(server_salt);
+
+        // password source 1: XPRA_PASSWORD, for non-interactive (scripted / tested) runs.
+        if let Ok(pw) = env::var("XPRA_PASSWORD") {
+            if !pw.is_empty() {
+                info!("authenticating with the password from XPRA_PASSWORD");
+                self.answer_challenge(&pw);
+                return;
+            }
+        }
+        // the server's prompt is usually descriptive already (e.g. "password for user 'foo'"),
+        // so just prefix it, mirroring xpra's own "Please enter the {prompt}".
+        let prompt_text = format!("Enter {prompt}");
+        // source 2: pinentry when it is on PATH - a native secure prompt. It blocks while the user
+        // types, so it runs on a worker thread that posts the result back (see spawn_pinentry).
+        if let Some(prog) = find_pinentry() {
+            debug!("prompting for the password via {prog}");
+            spawn_pinentry(prog, prompt_text, self.proxy.clone());
+            return;
+        }
+        // source 3: the built-in dialog - the universal fallback (e.g. Windows without GnuPG).
+        self.show_auth_dialog(event_loop, prompt_text);
+    }
+
+    // compute the challenge response for `password` and send it as a second hello. `client_salt` is
+    // a random *ASCII* hex string (not raw bytes) so it survives our JSON-as-YAML writer unchanged;
+    // the server utf-8-encodes it back to the same bytes, so the digests still match (verified).
+    fn answer_challenge(&mut self, password: &str) {
+        let server_salt = match self.pending_challenge.take() {
+            Some(salt) => salt,
+            None => {
+                warn!("a password arrived but no challenge is pending");
+                return;
+            }
+        };
+        let client_salt = secure_hex(32);
+        let salt = hmac_sha256_hex(client_salt.as_bytes(), &server_salt);
+        let response = hmac_sha256_hex(password.as_bytes(), salt.as_bytes());
+        debug!("answering authentication challenge");
+        self.send_hello(Some((response, client_salt)));
+    }
+
+    fn show_auth_dialog(&mut self, event_loop: &ActiveEventLoop, prompt_text: String) {
+        let context = match self.softbuffer_ctx.as_ref() {
+            Some(context) => context,
+            None => {
+                error!("cannot show the password dialog: no softbuffer context");
+                self.quit(event_loop, ExitCode::AuthenticationFailed);
+                return;
+            }
+        };
+        match AuthDialog::new(event_loop, context, prompt_text) {
+            Ok(dialog) => self.auth_dialog = Some(dialog),
+            Err(e) => {
+                error!("cannot show the password dialog: {e}");
+                self.quit(event_loop, ExitCode::AuthenticationFailed);
+            }
+        }
+    }
+
+    fn handle_auth_dialog_event(&mut self, event_loop: &ActiveEventLoop, event: WindowEvent) {
+        match event {
+            WindowEvent::RedrawRequested => {
+                if let Some(dialog) = self.auth_dialog.as_mut() {
+                    dialog.draw();
+                }
+            }
+            WindowEvent::CloseRequested => self.cancel_auth(event_loop),
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                let action = match self.auth_dialog.as_mut() {
+                    Some(dialog) => dialog.handle_key(&key_event),
+                    None => return,
+                };
+                match action {
+                    DialogAction::None => {}
+                    DialogAction::Submit => {
+                        let password = self
+                            .auth_dialog
+                            .take()
+                            .map(|dialog| dialog.into_password())
+                            .unwrap_or_default();
+                        self.answer_challenge(&password);
+                    }
+                    DialogAction::Cancel => self.cancel_auth(event_loop),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn cancel_auth(&mut self, event_loop: &ActiveEventLoop) {
+        error!("authentication cancelled");
+        self.auth_dialog = None;
+        self.pending_challenge = None;
+        self.quit(event_loop, ExitCode::AuthenticationFailed);
     }
 
     fn process_hello(&mut self, hello: &Yaml) {
@@ -962,7 +1336,7 @@ impl ApplicationHandler<Packet> for XpraClient {
         if !self.hello_sent {
             self.start_read_loop();
             self.hello_sent = true;
-            self.send_hello();
+            self.send_hello(None);
         }
     }
 
@@ -979,7 +1353,12 @@ impl ApplicationHandler<Packet> for XpraClient {
         self.do_process_packet(event_loop, &packet_type, packet);
     }
 
-    fn window_event(&mut self, _event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        // the password dialog is not an xpra window (no wid); route its events separately.
+        if self.auth_dialog.as_ref().map(|d| d.window.id()) == Some(window_id) {
+            self.handle_auth_dialog_event(event_loop, event);
+            return;
+        }
         let Some(&wid) = self.id_map.get(&window_id) else {
             trace!("window event for unknown window {:?}", window_id);
             return;
