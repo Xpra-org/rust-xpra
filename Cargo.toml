@@ -24,6 +24,14 @@ lz4_flex = { version = "0.11", default-features = false, features = ["std", "saf
 # bindgen needed) and links them statically, which is what the CI release binaries want.
 # See the `webp-dylib` feature below for the shared-library build downstream packagers want.
 libwebp-sys = "0.14"
+# plain-text clipboard access (get/set the OS clipboard). Text-only, so - unlike arboard's default
+# features - it pulls in no image codecs. We take only the `x11` backend (not `wayland`): its
+# x11-clipboard is a thin wrapper over the very same x11rb winit + softbuffer already link, so it
+# adds almost nothing, whereas copypasta's wayland backend would pull a second copy of
+# smithay-client-toolkit / calloop (winit already links its own). On a Wayland session the X11
+# clipboard still works through XWayland (present in practice); on Windows the `x11` feature is a
+# no-op and copypasta uses the OS clipboard directly. See src/client/clipboard.rs.
+copypasta = { version = "0.10", default-features = false, features = ["x11"] }
 
 [features]
 default = []

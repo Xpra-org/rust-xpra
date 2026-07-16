@@ -1,5 +1,6 @@
 pub mod auth_dialog;
 pub mod client;
+pub mod clipboard;
 pub mod draw_decoder;
 pub mod font8x8;
 pub mod pinentry;

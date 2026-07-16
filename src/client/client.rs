@@ -6,7 +6,7 @@ use std::fmt;
 use std::io;
 use std::rc::Rc;
 use std::collections::HashMap;
-use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -32,6 +32,7 @@ use xpra::net::packet::{Packet, yaml_hash_bool};
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
 use super::auth_dialog::{AuthDialog, DialogAction};
+use super::clipboard::start_clipboard_loop;
 use super::draw_decoder;
 use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::remote_logging::LogSink;
@@ -81,6 +82,16 @@ pub struct XpraClient {
     // once the server's hello confirms it accepts client logs, which switches on forwarding of
     // info-and-above records to the server as `logging` packets. Empty otherwise.
     pub log_sink: LogSink,
+    // plain-text clipboard sync (see clipboard.rs). `Some` once the server's hello advertised
+    // clipboard support, at which point the clipboard thread is running; the `Sender` hands it text
+    // the remote end copied, to place on the local OS clipboard. `None` = server has no clipboard.
+    pub clipboard: Option<Sender<String>>,
+    // whether clipboard syncing is currently on. Set when the thread starts, toggled by the
+    // server's `set-clipboard-enabled`; gates both directions while the thread stays alive.
+    pub clipboard_enabled: bool,
+    // the last plain-text value synced in either direction, used to break the copy<->paste feedback
+    // loop: a value we just wrote locally is not re-sent to the server, and vice-versa.
+    pub last_clipboard: String,
 }
 
 
@@ -169,6 +180,9 @@ impl XpraClient {
             pending_challenge: None,
             exit_code: None,
             log_sink,
+            clipboard: None,
+            clipboard_enabled: false,
+            last_clipboard: String::new(),
         }
     }
 
@@ -250,6 +264,19 @@ impl XpraClient {
             // we don't render real desktop notifications; we just log them (see process_notify_show).
             // The server gates notification sending on this dict's "enabled" flag.
             "notifications": { "enabled": true },
+            // plain-text clipboard sync (see clipboard.rs and process_hello). The server reads this
+            // as hello["clipboard"] (a non-empty dict is what enables clipboard at all - xpra
+            // server/source/clipboard.py). `greedy` makes it ship the copied text inside the token
+            // it sends us, so a remote copy needs no extra request round-trip; `want_targets` asks
+            // for the target list. We scope to just the CLIPBOARD selection and the text targets -
+            // no PRIMARY/SECONDARY, no images/files.
+            "clipboard": {
+                "enabled": true,
+                "greedy": true,
+                "want_targets": true,
+                "selections": ["CLIPBOARD"],
+                "preferred-targets": ["UTF8_STRING", "STRING", "text/plain"],
+            },
             "ping": true,
             "encodings": encodings,
             "encoding": encoding_caps,
@@ -325,6 +352,45 @@ impl XpraClient {
 
     fn send_window_close(&mut self, wid: u64) {
         let packet = json!(["close-window", wid]);
+        self.write_json(packet);
+    }
+
+    // Clipboard (plain text, CLIPBOARD selection only - see clipboard.rs / process_hello).
+
+    // Announce that we now own the clipboard and hand the copied text over in the same packet
+    // (greedy), so a remote app can paste it without a follow-up request. The server does
+    // `str(data)` on the wire value (xpra gtk/clipboard.py got_token), so the text goes out as a
+    // plain JSON string - our JSON-as-YAML writer can't emit raw binary, and doesn't need to here
+    // (same reasoning as challenge_client_salt). Legacy `clipboard-token` layout: selection,
+    // targets, target, dtype, dformat, wire_encoding, wire_data. Stopping at wire_data (len 8)
+    // lets the server default claim=true and keep the greedy flag we advertised in hello
+    // (xpra clipboard/core.py _process_clipboard_token).
+    fn send_clipboard_token(&mut self, text: &str) {
+        let targets = ["UTF8_STRING", "TEXT", "STRING", "text/plain;charset=utf-8", "text/plain"];
+        let packet = json!(["clipboard-token", "CLIPBOARD", targets,
+                            "UTF8_STRING", "UTF8_STRING", 8, "bytes", text]);
+        self.write_json(packet);
+    }
+
+    // Ask the server for the current clipboard contents. Only used when it sends us a bare token
+    // (no inline data); with a greedy server that path is rarely taken. We keep a single request
+    // outstanding, so a constant request_id (echoed back in clipboard-contents) is enough.
+    fn send_clipboard_request(&mut self) {
+        let packet = json!(["clipboard-request", 0, "CLIPBOARD", "UTF8_STRING"]);
+        self.write_json(packet);
+    }
+
+    // Reply to the server's clipboard-request with our text. `dtype` is the requested text target
+    // echoed back. Note there is no `target` field here (unlike the token) - xpra clipboard/core.py
+    // proxy_got_contents: request_id, selection, dtype, dformat, wire_encoding, wire_data.
+    fn send_clipboard_contents(&mut self, request_id: u64, dtype: &str, text: &str) {
+        let packet = json!(["clipboard-contents", request_id, "CLIPBOARD",
+                            dtype, 8, "bytes", text]);
+        self.write_json(packet);
+    }
+
+    fn send_clipboard_contents_none(&mut self, request_id: u64) {
+        let packet = json!(["clipboard-contents-none", request_id, "CLIPBOARD"]);
         self.write_json(packet);
     }
 
@@ -603,6 +669,20 @@ impl XpraClient {
                 let prompt_text = p.get_str(1);
                 self.show_auth_dialog(event_loop, prompt_text);
             }
+            // clipboard (plain text). The server toggles syncing, takes/gives ownership via
+            // token/data, and pulls/pushes contents; see the process_clipboard_* handlers below and
+            // clipboard.rs. "clipboard-changed" is our own synthesized type, posted by the clipboard
+            // thread when the local OS clipboard changed - the analogue of "send-ping"/"draw-decoded".
+            "set-clipboard-enabled" => {
+                self.clipboard_enabled = p.get_bool(1);
+                debug!("clipboard sync {}", if self.clipboard_enabled { "enabled" } else { "disabled" });
+            }
+            "clipboard-token" => self.process_clipboard_token(&mut p),
+            "clipboard-request" => self.process_clipboard_request(&p),
+            "clipboard-contents" => self.process_clipboard_contents(&mut p),
+            "clipboard-contents-none" => debug!("clipboard-contents-none"),
+            "clipboard-pending-requests" => {} // server-side request count; nothing to render
+            "clipboard-changed" => self.process_clipboard_changed(&p),
             "disconnect" => self.process_disconnect(event_loop, &p),
             "connection-lost" => {
                 // synthesized locally (see `client_packet`): the write path has already logged
@@ -794,8 +874,113 @@ impl XpraClient {
                     *self.log_sink.lock().unwrap() = Some(self.proxy.clone());
                     info!("remote logging enabled");
                 }
+                // The server advertises clipboard support as a non-empty `clipboard` dict (xpra
+                // server/subsystem/clipboard.py get_caps; absent when started with --clipboard=no).
+                // When present, start the clipboard thread and enable syncing; otherwise we stay
+                // inert and never send clipboard packets - like the remote-logging gate above.
+                let server_clipboard = hash.get(&Yaml::String("clipboard".to_string()))
+                    .map(|c| matches!(c, Yaml::Hash(_)))
+                    .unwrap_or(false);
+                if server_clipboard && self.clipboard.is_none() {
+                    let (tx, rx) = channel::<String>();
+                    start_clipboard_loop(self.proxy.clone(), rx);
+                    self.clipboard = Some(tx);
+                    self.clipboard_enabled = true;
+                    info!("clipboard sync enabled");
+                }
             },
             _ => error!("unexpected hello data type: {:?}", hello),
+        }
+    }
+
+    // Clipboard handlers (plain text). See send_clipboard_* for the outbound side and clipboard.rs
+    // for the OS-clipboard thread. All are no-ops unless syncing is on.
+
+    // The remote end took ownership of the clipboard. A greedy server puts the copied text right in
+    // the token (fields 3..8 of the legacy layout: target, dtype, dformat, wire_encoding,
+    // wire_data), so we write it straight to the local clipboard. A bare token carries no data - we
+    // pull it with a clipboard-request instead.
+    fn process_clipboard_token(&mut self, packet: &mut Packet) {
+        if !self.clipboard_enabled {
+            return;
+        }
+        if packet.len() >= 8 {
+            if let Some(text) = self.clipboard_text(packet, 6, 7) {
+                self.set_local_clipboard(text);
+            }
+        } else {
+            self.send_clipboard_request();
+        }
+    }
+
+    // The server asks for our clipboard contents (a remote app is pasting). Reply with the latest
+    // local text, which the clipboard thread's poll keeps in `last_clipboard`. We only serve plain
+    // text, so a request for anything else (a TARGETS enumeration, an image, ...) gets "none" - and
+    // we echo the requested text target back as the reply's dtype.
+    fn process_clipboard_request(&mut self, packet: &Packet) {
+        let request_id = packet.get_u64(1);
+        let target = packet.get_str(3);
+        let is_text = matches!(target.as_str(),
+            "UTF8_STRING" | "TEXT" | "STRING" | "text/plain;charset=utf-8" | "text/plain");
+        if !self.clipboard_enabled || !is_text || self.last_clipboard.is_empty() {
+            self.send_clipboard_contents_none(request_id);
+            return;
+        }
+        let text = self.last_clipboard.clone();
+        self.send_clipboard_contents(request_id, &target, &text);
+    }
+
+    // The server's reply to a clipboard-request we made for a bare token: the pulled text. Layout
+    // has no target field - request_id, selection, dtype, dformat, wire_encoding, wire_data.
+    fn process_clipboard_contents(&mut self, packet: &mut Packet) {
+        if !self.clipboard_enabled {
+            return;
+        }
+        if packet.len() >= 7 {
+            if let Some(text) = self.clipboard_text(packet, 5, 6) {
+                self.set_local_clipboard(text);
+            }
+        }
+    }
+
+    // The clipboard thread saw the local clipboard change (a local copy): claim the clipboard on
+    // the remote side by sending a token carrying the new text. The `last_clipboard` guard drops a
+    // value we ourselves just wrote from a remote paste, so it doesn't bounce back to the server.
+    fn process_clipboard_changed(&mut self, packet: &Packet) {
+        if !self.clipboard_enabled {
+            return;
+        }
+        let text = packet.get_str(1);
+        if text.is_empty() || text == self.last_clipboard {
+            return;
+        }
+        self.last_clipboard = text.clone();
+        self.send_clipboard_token(&text);
+    }
+
+    // Decode a plain-text clipboard payload. xpra sends 8-bit text with wire encoding "bytes" (the
+    // only text encoding - clipboard/core.py); the bytes ride as a YAML !!binary scalar, which
+    // get_bytes base64-decodes. Non-text encodings ("integers"/"atoms") aren't text - skip them.
+    fn clipboard_text(&self, packet: &mut Packet, enc_index: u8, data_index: u8) -> Option<String> {
+        let encoding = packet.get_str(enc_index);
+        if encoding != "bytes" {
+            debug!("ignoring clipboard data with wire encoding {:?}", encoding);
+            return None;
+        }
+        let bytes = packet.get_bytes(data_index);
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    // Put text on the local OS clipboard (via the clipboard thread) and remember it, so the
+    // thread's poll doesn't report our own write back as a local change (which would loop it
+    // straight back to the server).
+    fn set_local_clipboard(&mut self, text: String) {
+        self.last_clipboard = text.clone();
+        if let Some(tx) = &self.clipboard {
+            let _ = tx.send(text);
         }
     }
 
