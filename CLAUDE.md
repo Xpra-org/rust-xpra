@@ -135,6 +135,11 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `damage-sequence`, `ping`, `ping_echo`, `logging`). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
+    - **Server events**: the hello advertises `events: true`, enabling informational
+      `server-event` packets for lifecycle events such as `handshake-complete`, `startup-complete`,
+      `suspend`, `resume`, and `exit`. `process_server_event` logs the event name and optional
+      arguments but deliberately does not alter client state; dedicated protocol packets remain
+      authoritative.
     - **Authentication** (`process_challenge` in `client.rs`): a password-requiring server replies to our first
       `hello` with a `challenge` packet instead of its own hello. We advertise only `digest`/`salt-digest` =
       `["hmac+sha256"]`, so the server always picks that one digest (`choose_digest`, xpra `auth/sys_auth_base.py`).

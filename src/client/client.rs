@@ -264,6 +264,10 @@ impl XpraClient {
             // we don't render real desktop notifications; we just log them (see process_notify_show).
             // The server gates notification sending on this dict's "enabled" flag.
             "notifications": { "enabled": true },
+            // receive informational server lifecycle events such as "handshake-complete",
+            // "startup-complete", "suspend", "resume" and "exit". Dedicated protocol packets
+            // remain authoritative; server-event packets are logged for diagnostics only.
+            "events": true,
             // plain-text clipboard sync (see clipboard.rs and process_hello). The server reads this
             // as hello["clipboard"] (a non-empty dict is what enables clipboard at all - xpra
             // server/source/clipboard.py). `greedy` makes it ship the copied text inside the token
@@ -637,6 +641,7 @@ impl XpraClient {
             "notify_close" => self.process_notify_close(&p),
             "window-icon" => self.process_window_icon(&mut p),
             "window-metadata" => self.process_window_metadata(&p),
+            "server-event" => self.process_server_event(&p),
             "draw" => {
                 if self.decode_sender.send(p).is_err() {
                     error!("cannot decode: the decoding thread has stopped");
@@ -705,6 +710,25 @@ impl XpraClient {
                 self.quit(event_loop, exit_code);
             }
             other => warn!("unhandled packet type {:?}", other),
+        }
+    }
+
+    // ["server-event", event_type, *args]: informational server lifecycle events. Advertising
+    // `events: true` in hello enables these; they complement rather than replace the dedicated
+    // protocol packets, so log them without changing client state.
+    fn process_server_event(&self, packet: &Packet) {
+        if packet.len() < 2 {
+            warn!("ignoring malformed server-event packet with no event type");
+            return;
+        }
+        let event_type = packet.get_str(1);
+        if event_type.is_empty() {
+            warn!("ignoring malformed server-event packet with an invalid event type");
+            return;
+        }
+        info!("server event: {}", event_type);
+        if packet.len() > 2 {
+            debug!("server event {:?} arguments: {:?}", event_type, &packet.main[2..]);
         }
     }
 
