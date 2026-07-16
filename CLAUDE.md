@@ -140,6 +140,10 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `suspend`, `resume`, and `exit`. `process_server_event` logs the event name and optional
       arguments but deliberately does not alter client state; dedicated protocol packets remain
       authoritative.
+    - **Pointer grabs**: the hello advertises `pointer.grabs`, which enables `pointer-grab` and
+      `pointer-ungrab` packets when a remote application grabs its pointer. The client asks winit
+      for `CursorGrabMode::Confined`, falls back to `Locked`, tracks the owning `wid`, and releases
+      the grab on an ungrab packet or before destroying the grabbed window.
     - **Authentication** (`process_challenge` in `client.rs`): a password-requiring server replies to our first
       `hello` with a `challenge` packet instead of its own hello. We advertise only `digest`/`salt-digest` =
       `["hmac+sha256"]`, so the server always picks that one digest (`choose_digest`, xpra `auth/sys_auth_base.py`).

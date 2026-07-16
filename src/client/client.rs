@@ -20,7 +20,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{CursorIcon, CustomCursor, Icon, ResizeDirection, Window, WindowId};
+use winit::window::{CursorGrabMode, CursorIcon, CustomCursor, Icon, ResizeDirection, Window, WindowId};
 
 use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
@@ -67,6 +67,10 @@ pub struct XpraClient {
     // kept so it can be applied to windows created after the last "cursor" packet. `None` = the
     // platform default cursor.
     pub current_cursor: Option<CustomCursor>,
+    // the window whose pointer is currently grabbed at the server's request. The grab is applied
+    // through winit and must be explicitly released on pointer-ungrab or before that window is
+    // destroyed.
+    pub pointer_grabbed: Option<u64>,
     // the in-app password prompt shown when a server sends a `challenge` and no pinentry is
     // available (see process_challenge); `None` when we are not prompting.
     pub auth_dialog: Option<AuthDialog>,
@@ -176,6 +180,7 @@ impl XpraClient {
             start: Instant::now(),
             last_client_latency_ms: -1,
             current_cursor: None,
+            pointer_grabbed: None,
             auth_dialog: None,
             pending_challenge: None,
             exit_code: None,
@@ -261,6 +266,10 @@ impl XpraClient {
             // fallback for how older servers gate cursor sending.
             "cursor": { "encodings": ["png"], "backwards-compatible": true },
             "cursors": true,
+            // allow remote applications to confine the local pointer to their forwarded window.
+            // The server only emits pointer-grab / pointer-ungrab when this nested capability is
+            // present (server/source/window.py).
+            "pointer": { "grabs": true },
             // we don't render real desktop notifications; we just log them (see process_notify_show).
             // The server gates notification sending on this dict's "enabled" flag.
             "notifications": { "enabled": true },
@@ -618,6 +627,8 @@ impl XpraClient {
             "raise-window" => self.process_raise_window(&p),
             "show-desktop" => self.process_show_desktop(&p),
             "pointer-position" => self.process_pointer_position(&p),
+            "pointer-grab" => self.process_pointer_grab(&p),
+            "pointer-ungrab" => self.process_pointer_ungrab(&p),
             "lost-window" => {
                 self.process_lost_window(&p);
                 // forward to the decode thread so it can drop this window's persistent h264
@@ -1179,6 +1190,62 @@ impl XpraClient {
         debug!("pointer-position: {},{} ({},{} relative to window {:#x})", x, y, rx, ry, wid);
     }
 
+    // ["pointer-grab", wid]: a remote application has grabbed its pointer. Prefer confining the
+    // cursor to the forwarded window; some winit backends only implement locking, so use that as
+    // the fallback. If another window held the grab, release it first.
+    fn process_pointer_grab(&mut self, packet: &Packet) {
+        if packet.len() < 2 {
+            warn!("ignoring malformed pointer-grab packet with no window id");
+            return;
+        }
+        let wid = packet.get_u64(1);
+        if self.pointer_grabbed == Some(wid) {
+            return;
+        }
+        if self.pointer_grabbed.is_some() {
+            self.release_pointer_grab();
+        }
+        let window = match self.windows.get(&wid) {
+            Some(window) => &window.window,
+            None => {
+                warn!("cannot grab pointer: window {:#x} not found", wid);
+                return;
+            }
+        };
+        match window
+            .set_cursor_grab(CursorGrabMode::Confined)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))
+        {
+            Ok(()) => {
+                self.pointer_grabbed = Some(wid);
+                debug!("pointer grabbed by window {:#x}", wid);
+            }
+            Err(e) => warn!("failed to grab pointer for window {:#x}: {:?}", wid, e),
+        }
+    }
+
+    // ["pointer-ungrab", wid]: the wid is informational; the local windowing API has one active
+    // pointer grab for the application, so release whichever forwarded window currently owns it.
+    fn process_pointer_ungrab(&mut self, packet: &Packet) {
+        if packet.len() >= 2 {
+            debug!("pointer-ungrab requested for window {}", packet.get_i64(1));
+        }
+        self.release_pointer_grab();
+    }
+
+    fn release_pointer_grab(&mut self) {
+        let Some(wid) = self.pointer_grabbed.take() else {
+            return;
+        };
+        if let Some(window) = self.windows.get(&wid) {
+            if let Err(e) = window.window.set_cursor_grab(CursorGrabMode::None) {
+                warn!("failed to release pointer grab for window {:#x}: {:?}", wid, e);
+            } else {
+                debug!("pointer grab released for window {:#x}", wid);
+            }
+        }
+    }
+
     // ["cursor", encoding, x, y, w, h, xhot, yhot, serial, pixels, name, ...sizes]: the pointer
     // cursor shape. xpra sends one cursor for the whole session (not per-window), so we apply it to
     // every window and remember it for windows created later. A 2-item ["cursor", ""] packet resets
@@ -1295,6 +1362,9 @@ impl XpraClient {
 
     fn process_lost_window(&mut self, packet: &Packet) {
         let wid = packet.get_u64(1);
+        if self.pointer_grabbed == Some(wid) {
+            self.release_pointer_grab();
+        }
         if let Some(window) = self.windows.remove(&wid) {
             self.id_map.remove(&window.window.id());
         } else {
