@@ -5,7 +5,6 @@ use std::net::TcpStream;
 use std::process;
 use std::sync::mpsc::channel;
 use log::{error, LevelFilter};
-use simple_logger::SimpleLogger;
 use winit::event_loop::EventLoop;
 use xpra::exit_codes::ExitCode;
 use xpra::net::connection::Connection;
@@ -15,6 +14,7 @@ use xpra::net::{ssh, tls, websocket};
 
 mod client;
 use client::client::XpraClient;
+use client::remote_logging::{self, LogSink};
 
 
 fn main() {
@@ -24,13 +24,15 @@ fn main() {
     else {
         LevelFilter::Info
     };
-    SimpleLogger::new().with_level(level).init().unwrap();
+    // installs the global logger; the sink stays empty until the server confirms it accepts our
+    // logs, at which point info-and-above records are also forwarded (see client::remote_logging).
+    let log_sink = remote_logging::init(level);
 
-    process::exit(run().value());
+    process::exit(run(log_sink).value());
 }
 
 
-fn run() -> ExitCode {
+fn run(log_sink: LogSink) -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         error!("invalid number of arguments: {:?}", args.len());
@@ -66,7 +68,7 @@ fn run() -> ExitCode {
     let proxy = event_loop.create_proxy();
     XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx);
 
-    let mut client = XpraClient::new(connection, proxy, decode_tx);
+    let mut client = XpraClient::new(connection, proxy, decode_tx, log_sink);
     if let Err(e) = event_loop.run_app(&mut client) {
         error!("event loop error: {}", e);
         return ExitCode::InternalError;

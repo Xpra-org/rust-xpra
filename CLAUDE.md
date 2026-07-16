@@ -132,7 +132,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `lost-window`, `window-metadata`, `draw`, `draw-decoded`, `draw-failed`, `disconnect`, ...); outgoing packets
     are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`, `focus`,
     `pointer`, `pointer-button`, `key-action`, `map-window`, `configure-window`, `close-window`,
-    `damage-sequence`). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
+    `damage-sequence`, `ping`, `ping_echo`, `logging`). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
     - **Authentication** (`process_challenge` in `client.rs`): a password-requiring server replies to our first
@@ -157,6 +157,21 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     routes its events in `window_event` *before* the `id_map` lookup (the dialog has no `wid`). There is no text
     dependency, so `font8x8.rs` is a public-domain 8x8 bitmap font (printable ASCII) blitted by hand into the
     framebuffer. Works on every platform, so it is the universal fallback (Windows without GnuPG in particular).
+  - `remote_logging.rs`: **client→server log forwarding** (xpra's `--remote-logging=send`). `RemoteLogger` is
+    the global `log::Log`: it wraps a `SimpleLogger` for unchanged local output *and* forwards info-and-above
+    records to the server as `logging` packets, so they land in the server's log file (handy when the client runs
+    headless / its stderr isn't visible). `init()` (called from `main`, replacing the plain `SimpleLogger` init)
+    returns a `LogSink = Arc<Mutex<Option<EventLoopProxy<Packet>>>>` that starts empty; `XpraClient::process_hello`
+    drops the proxy into it **only when the server's hello advertises `remote-logging.receive`** (a nested
+    `{receive, send}` dict, xpra `server/subsystem/logging.py`), so we never send `logging` packets to a server
+    that would reject them (verified against both `--remote-logging` default and `=no`). Forwarding, like the
+    ping timer, doesn't touch the socket: the logger posts a synthesized client-side `send-log` packet (carrying
+    the python logging level + text) via the proxy from *whatever* thread logged, and the UI thread turns it into
+    the wire `logging` packet (`send_log` → `["logging", level, msg, dtime]`, `dtime` = ms since `start`). Two
+    loop guards, mirroring xpra's own handler: only Info+ is forwarded (the write path only logs at debug/trace,
+    or errors that set `exit_code` and make `write_json` a no-op — so a normal send never re-logs), and a
+    thread-local `IN_FORWARD` flag stops a forward that itself logs from recursing. Level mapping is `log`→python:
+    Error 40 / Warn 30 / Info 20.
   - `window.rs`: `XpraWindow` owns a `winit::window::Window`, a `softbuffer::Surface`, and a persistent
     `framebuffer: Vec<u32>` (softbuffer only hands you the *live* to-be-presented buffer on each
     `buffer_mut()` call, not a persistently addressable store, so `XpraWindow` keeps its own full-window pixel

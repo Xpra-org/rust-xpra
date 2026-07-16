@@ -28,12 +28,13 @@ use xpra::VERSION;
 use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_payload;
-use xpra::net::packet::Packet;
+use xpra::net::packet::{Packet, yaml_hash_bool};
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
 use super::auth_dialog::{AuthDialog, DialogAction};
 use super::draw_decoder;
 use super::pinentry::{find_pinentry, spawn_pinentry};
+use super::remote_logging::LogSink;
 use super::window::XpraWindow;
 
 
@@ -76,6 +77,10 @@ pub struct XpraClient {
     // write): it holds the code we'll exit the process with, and stops us from writing to (and
     // complaining about) a dead connection while the event loop winds down.
     pub exit_code: Option<ExitCode>,
+    // shared with the global logger (see remote_logging.rs): we drop our `EventLoopProxy` into it
+    // once the server's hello confirms it accepts client logs, which switches on forwarding of
+    // info-and-above records to the server as `logging` packets. Empty otherwise.
+    pub log_sink: LogSink,
 }
 
 
@@ -145,7 +150,7 @@ impl fmt::Debug for XpraClient {
 
 impl XpraClient {
 
-    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>) -> Self {
+    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink) -> Self {
         XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
@@ -163,6 +168,7 @@ impl XpraClient {
             auth_dialog: None,
             pending_challenge: None,
             exit_code: None,
+            log_sink,
         }
     }
 
@@ -337,6 +343,17 @@ impl XpraClient {
     fn send_ping(&mut self) {
         let now_ms = self.start.elapsed().as_millis() as i64;
         let packet = json!(["ping", now_ms]);
+        self.write_json(packet);
+    }
+
+    // Forward one of our own log records to the server as a `logging` packet. `level` is a python
+    // logging level and `message` the formatted text (both prepared by remote_logging.rs); `dtime`
+    // is ms since our monotonic start, which the server uses to prefix each line. Only reached once
+    // forwarding is switched on in process_hello, so this never fires against a server that would
+    // reject it. Mirrors the client->server half of xpra's client/subsystem/logging.py.
+    fn send_log(&mut self, level: i64, message: String) {
+        let dtime = self.start.elapsed().as_millis() as i64;
+        let packet = json!(["logging", level, message, dtime]);
         self.write_json(packet);
     }
 
@@ -559,6 +576,9 @@ impl XpraClient {
             // our own periodic ping, fired by the ping timer thread (start_ping_loop); "send-ping"
             // is a client-side packet type like "draw-decoded", not something on the wire.
             "send-ping" => self.send_ping(),
+            // one of our own log records, handed here by the remote logger (remote_logging.rs) to
+            // be turned into a wire `logging` packet; "send-log" is client-side only, like above.
+            "send-log" => self.send_log(p.get_i64(1), p.get_str(2)),
             // the server's echo of one of our pings: measures the client->server round-trip.
             "ping_echo" => self.process_ping_echo(&p),
             "challenge" => self.process_challenge(event_loop, &mut p),
@@ -755,6 +775,18 @@ impl XpraClient {
                 if let Yaml::String(version_str) = version {
                     info!("server version {:?}", version_str);
                     self.server_version = version_str.to_string();
+                }
+                // The server advertises whether it accepts forwarded client logs as
+                // `remote-logging: {receive, send}` (xpra server/subsystem/logging.py). When it
+                // receives, drop our proxy into the shared sink so the global logger starts
+                // forwarding info-and-above records to the server (see remote_logging.rs); we skip
+                // it otherwise, so we never send `logging` packets a server would reject.
+                let receives_logs = hash.get(&Yaml::String("remote-logging".to_string()))
+                    .and_then(|rl| yaml_hash_bool(rl, "receive".to_string()))
+                    .unwrap_or(false);
+                if receives_logs {
+                    *self.log_sink.lock().unwrap() = Some(self.proxy.clone());
+                    info!("remote logging enabled");
                 }
             },
             _ => error!("unexpected hello data type: {:?}", hello),
