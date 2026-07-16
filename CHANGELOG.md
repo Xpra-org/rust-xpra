@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.2] 2026-07-16
+## [0.2.3] 2026-07-16
 * 🔧 Platforms, build and packaging:
   * [support dynamic linking against the system `libwebp`](https://github.com/Xpra-org/rust-xpra/commit/5540621c20f17504deb32344f174d95497dc2457)
 * 🖧 Network:
@@ -11,6 +11,7 @@
 * 🌈 Encodings:
   * [decode WebP images](https://github.com/Xpra-org/rust-xpra/commit/5540621c20f17504deb32344f174d95497dc2457)
 * ✨ Features:
+  * [basic text clipboard](https://github.com/Xpra-org/rust-xpra/commit/8e7f68359bd8c746da402e3d5112671ce8a9629f)
   * [handle server-initiated interactive window moves and resizes](https://github.com/Xpra-org/rust-xpra/commit/61c2f41ef9ff532b45c099a301bba05252bec600)
   * [handle `configure-override-redirect` packets](https://github.com/Xpra-org/rust-xpra/commit/65156ab5c482e46c29d5d68b5712736a5320a934)
   * [bring windows to the front on `raise-window`](https://github.com/Xpra-org/rust-xpra/commit/83876b11221c75f69c94aceb01b162101088ec4f)
