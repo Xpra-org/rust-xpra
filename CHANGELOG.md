@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.4] 2026-07-16
+* ✨ Features:
+  * [receive server lifecycle events](https://github.com/Xpra-org/rust-xpra/commit/a7956cb747a3a0ce079ccf887137a71d34b00c26)
+  * [support server-requested pointer grabs](https://github.com/Xpra-org/rust-xpra/commit/3cbcdb8b62628d2acb5421f78ccc11fdbbdc52fd)
+  * [honour window metadata updates](https://github.com/Xpra-org/rust-xpra/commit/718dc4852fefb9db1c05f7ac9b6170b3c064650a)
+
 ## [0.2.3] 2026-07-16
 * 🔧 Platforms, build and packaging:
   * [support dynamic linking against the system `libwebp`](https://github.com/Xpra-org/rust-xpra/commit/5540621c20f17504deb32344f174d95497dc2457)
