@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rust Xpra Feature Changelog"
+  short_description: "Generate feature-only Rust Xpra release notes"
+  default_prompt: "Use $rust-xpra-feature-changelog to update CHANGELOG.md with features added since the requested release."
