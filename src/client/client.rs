@@ -231,6 +231,10 @@ impl XpraClient {
             "mouse": true,
             "sharing": true,
             "bell": true,
+            // let the server forward "show the desktop" requests (EWMH _NET_SHOWING_DESKTOP); the
+            // server only sends `show-desktop` packets if we advertise this (server/source/display.py).
+            // We honour them by minimizing / restoring our windows (see process_show_desktop).
+            "show-desktop": true,
             // authentication: we only implement the hmac+sha256 password digest, so advertise
             // just that. The server picks the challenge digest from these lists (choose_digest,
             // xpra auth/sys_auth_base.py), so listing one forces both to hmac+sha256 - the one
@@ -542,6 +546,7 @@ impl XpraClient {
             "configure-override-redirect" => self.process_window_move_resize(&p),
             "initiate-moveresize" => self.process_initiate_moveresize(&p),
             "raise-window" => self.process_raise_window(&p),
+            "show-desktop" => self.process_show_desktop(&p),
             "lost-window" => {
                 self.process_lost_window(&p);
                 // forward to the decode thread so it can drop this window's persistent h264
@@ -926,6 +931,21 @@ impl XpraClient {
         };
         if !window.window.has_focus() {
             window.window.focus_window();
+        }
+    }
+
+    // ["show-desktop", show]: the server asks the client to show the desktop - xpra's own client
+    // forwards this to the local window manager as EWMH `_NET_SHOWING_DESKTOP` ("minimize
+    // everything to reveal the desktop"), a no-op stub off X11. We don't manage the whole client
+    // desktop, so the portable equivalent within winit is to minimize (show=true) or restore
+    // (show=false) our own windows; `set_minimized` works on X11, Wayland and Windows. Only arrives
+    // when the server session enables it (gated by `show_desktop_allowed` server-side). A short
+    // packet defaults to restore rather than indexing past the end (panic=abort).
+    fn process_show_desktop(&mut self, packet: &Packet) {
+        let show = packet.len() >= 2 && packet.get_bool(1);
+        debug!("show-desktop: {}", show);
+        for window in self.windows.values() {
+            window.window.set_minimized(show);
         }
     }
 

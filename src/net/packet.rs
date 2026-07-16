@@ -53,6 +53,10 @@ impl Packet {
         yaml_str(&self.main[index as usize])
     }
 
+    pub fn get_bool(&self, index: u8) -> bool {
+        yaml_bool(&self.main[index as usize])
+    }
+
     pub fn get_hash_i32(&self, index: u8, key: String) -> i32 {
         yaml_hash_i32(&self.main[index as usize], key)
     }
@@ -118,6 +122,16 @@ pub fn yaml_str(value: &Yaml) -> String {
         return String::from(s);
     }
     "".to_string()
+}
+
+
+pub fn yaml_bool(value: &Yaml) -> bool {
+    match value {
+        Yaml::Boolean(b) => *b,
+        // some senders use 0/1 rather than a yaml bool (as in yaml_hash_bool):
+        Yaml::Integer(i) => *i != 0,
+        _ => false,
+    }
 }
 
 
