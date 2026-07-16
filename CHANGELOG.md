@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.2.1] 2026-07-16
+## [0.2.2] 2026-07-16
 * 🔧 Platforms, build and packaging:
   * [support dynamic linking against the system `libwebp`](https://github.com/Xpra-org/rust-xpra/commit/5540621c20f17504deb32344f174d95497dc2457)
 * 🖧 Network:
