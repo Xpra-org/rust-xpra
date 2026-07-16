@@ -18,6 +18,10 @@ pub struct XpraWindow {
     pub height: u32,
     pub mapped: bool,
     pub override_redirect: bool,
+    // remembered window-level metadata. Updates often contain just one of "above" / "below",
+    // so retain both values to derive the effective winit WindowLevel after each partial update.
+    pub above: bool,
+    pub below: bool,
     pub paint_debug: bool,
     // absolute position of the pointer as of the last CursorMoved event:
     // button and wheel events don't carry a position of their own.
@@ -42,6 +46,8 @@ impl XpraWindow {
             height: rh,
             mapped: false,
             override_redirect,
+            above: false,
+            below: false,
             paint_debug: cfg!(debug_assertions),
             last_cursor: (0, 0),
         }

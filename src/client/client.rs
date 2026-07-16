@@ -20,7 +20,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{CursorGrabMode, CursorIcon, CustomCursor, Icon, ResizeDirection, Window, WindowId};
+use winit::window::{
+    CursorGrabMode, CursorIcon, CustomCursor, Fullscreen, Icon, ResizeDirection, Window,
+    WindowId, WindowLevel,
+};
 
 use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
@@ -42,6 +45,94 @@ use super::window::XpraWindow;
 // How often we send our own `ping` once the session is up. A few seconds keeps the server's view
 // of our latency fresh without being chatty; xpra's own client pings on a similar cadence.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Default, PartialEq)]
+struct WindowSizeConstraints {
+    minimum: Option<(u32, u32)>,
+    maximum: Option<(u32, u32)>,
+    increment: Option<(u32, u32)>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct WindowMetadataUpdate {
+    title: Option<String>,
+    decorations: Option<bool>,
+    fullscreen: Option<bool>,
+    maximized: Option<bool>,
+    iconic: Option<bool>,
+    above: Option<bool>,
+    below: Option<bool>,
+    size_constraints: Option<WindowSizeConstraints>,
+}
+
+impl WindowMetadataUpdate {
+    fn parse(metadata: &Yaml) -> Self {
+        WindowMetadataUpdate {
+            title: metadata_str(metadata, "title"),
+            decorations: metadata_bool(metadata, "decorations"),
+            fullscreen: metadata_bool(metadata, "fullscreen"),
+            maximized: metadata_bool(metadata, "maximized"),
+            iconic: metadata_bool(metadata, "iconic"),
+            above: metadata_bool(metadata, "above"),
+            below: metadata_bool(metadata, "below"),
+            size_constraints: metadata_hash(metadata, "size-constraints").map(|constraints| {
+                WindowSizeConstraints {
+                    minimum: metadata_pair(constraints, "minimum-size"),
+                    maximum: metadata_pair(constraints, "maximum-size"),
+                    increment: metadata_pair(constraints, "increment"),
+                }
+            }),
+        }
+    }
+}
+
+fn metadata_hash<'a>(metadata: &'a Yaml, key: &str) -> Option<&'a Yaml> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    let value = hash.get(&Yaml::String(key.to_string()))?;
+    matches!(value, Yaml::Hash(_)).then_some(value)
+}
+
+fn metadata_str(metadata: &Yaml, key: &str) -> Option<String> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    match hash.get(&Yaml::String(key.to_string())) {
+        Some(Yaml::String(value)) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn metadata_bool(metadata: &Yaml, key: &str) -> Option<bool> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    match hash.get(&Yaml::String(key.to_string())) {
+        Some(Yaml::Boolean(value)) => Some(*value),
+        Some(Yaml::Integer(value)) => Some(*value != 0),
+        _ => None,
+    }
+}
+
+fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    let Some(Yaml::Array(values)) = hash.get(&Yaml::String(key.to_string())) else {
+        return None;
+    };
+    if values.len() < 2 {
+        return None;
+    }
+    let (Yaml::Integer(width), Yaml::Integer(height)) = (&values[0], &values[1]) else {
+        return None;
+    };
+    if *width <= 0 || *height <= 0 || *width > u32::MAX as i64 || *height > u32::MAX as i64 {
+        return None;
+    }
+    Some((*width as u32, *height as u32))
+}
 
 
 pub struct XpraClient {
@@ -270,6 +361,14 @@ impl XpraClient {
             // The server only emits pointer-grab / pointer-ungrab when this nested capability is
             // present (server/source/window.py).
             "pointer": { "grabs": true },
+            // advertise only the window metadata keys we actually apply. Without this list, the
+            // server assumes the broad legacy default and sends properties this client ignores.
+            "metadata": {
+                "supported": [
+                    "title", "size-constraints", "fullscreen", "maximized", "iconic",
+                    "decorations", "above", "below",
+                ],
+            },
             // we don't render real desktop notifications; we just log them (see process_notify_show).
             // The server gates notification sending on this dict's "enabled" flag.
             "notifications": { "enabled": true },
@@ -1026,11 +1125,12 @@ impl XpraClient {
         let y = packet.get_i32(3);
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
-        let title = packet.get_hash_str(6, "title".to_string());
+        let metadata = WindowMetadataUpdate::parse(&packet.main[6]);
+        let title = metadata.title.clone().unwrap_or_default();
         // override-redirect windows are never decorated; otherwise honour the metadata flag
         // (absent means decorated, as in xpra's own client - see `client/gui/window_base.py`)
         let decorated = !override_redirect
-            && packet.get_hash_bool(6, "decorations".to_string()).unwrap_or(true);
+            && metadata.decorations.unwrap_or(true);
 
         #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
@@ -1061,6 +1161,7 @@ impl XpraClient {
 
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
         let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
+        Self::apply_window_metadata(&mut xpra_window, metadata);
         xpra_window.mapped = true;
         self.id_map.insert(window.id(), wid);
         self.windows.insert(wid, xpra_window);
@@ -1376,15 +1477,70 @@ impl XpraClient {
         let wid = packet.get_u64(1);
         let metadata = &packet.main[2];
         info!("window-metadata for {:#x}: {:?}", wid, metadata);
-        let window = match self.windows.get(&wid) {
+        let window = match self.windows.get_mut(&wid) {
             Some(window) => window,
             None => {
                 warn!("window {:#x} not found!", wid);
                 return;
             }
         };
-        if let Some(decorations) = packet.get_hash_bool(2, "decorations".to_string()) {
+        Self::apply_window_metadata(window, WindowMetadataUpdate::parse(metadata));
+    }
+
+    fn apply_window_metadata(window: &mut XpraWindow, update: WindowMetadataUpdate) {
+        if let Some(title) = update.title {
+            window.window.set_title(&title);
+        }
+        if let Some(decorations) = update.decorations {
             window.window.set_decorations(decorations && !window.override_redirect);
+        }
+        if let Some(constraints) = update.size_constraints {
+            window.window.set_min_inner_size(
+                constraints.minimum.map(|(w, h)| PhysicalSize::new(w, h)),
+            );
+            window.window.set_max_inner_size(
+                constraints.maximum.map(|(w, h)| PhysicalSize::new(w, h)),
+            );
+            window.window.set_resize_increments(
+                constraints.increment.map(|(w, h)| PhysicalSize::new(w, h)),
+            );
+            let fixed_size = constraints.minimum.is_some()
+                && constraints.minimum == constraints.maximum;
+            window.window.set_resizable(!window.override_redirect && !fixed_size);
+        }
+        if let Some(fullscreen) = update.fullscreen {
+            window.window.set_fullscreen(
+                fullscreen.then_some(Fullscreen::Borderless(None)),
+            );
+        }
+        if let Some(maximized) = update.maximized {
+            window.window.set_maximized(maximized);
+        }
+        if let Some(iconic) = update.iconic {
+            window.window.set_minimized(iconic);
+        }
+        let level_changed = update.above.is_some() || update.below.is_some();
+        if let Some(above) = update.above {
+            window.above = above;
+            if above {
+                window.below = false;
+            }
+        }
+        if let Some(below) = update.below {
+            window.below = below;
+            if below {
+                window.above = false;
+            }
+        }
+        if level_changed {
+            let level = if window.above {
+                WindowLevel::AlwaysOnTop
+            } else if window.below {
+                WindowLevel::AlwaysOnBottom
+            } else {
+                WindowLevel::Normal
+            };
+            window.window.set_window_level(level);
         }
     }
 
@@ -1641,5 +1797,73 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             _ => "",
         }.to_string(),
         _ => "".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WindowMetadataUpdate, WindowSizeConstraints};
+    use yaml_rust2::YamlLoader;
+
+    fn parse_metadata(yaml: &str) -> WindowMetadataUpdate {
+        let documents = YamlLoader::load_from_str(yaml).unwrap();
+        WindowMetadataUpdate::parse(&documents[0])
+    }
+
+    #[test]
+    fn parse_window_metadata_fields() {
+        let metadata = parse_metadata(
+            r#"{
+                title: "Terminal",
+                decorations: false,
+                fullscreen: true,
+                maximized: 1,
+                iconic: 0,
+                above: true,
+                below: false,
+                size-constraints: {
+                    minimum-size: [320, 200],
+                    maximum-size: [1920, 1080],
+                    increment: [8, 16]
+                }
+            }"#,
+        );
+        assert_eq!(
+            metadata,
+            WindowMetadataUpdate {
+                title: Some("Terminal".to_string()),
+                decorations: Some(false),
+                fullscreen: Some(true),
+                maximized: Some(true),
+                iconic: Some(false),
+                above: Some(true),
+                below: Some(false),
+                size_constraints: Some(WindowSizeConstraints {
+                    minimum: Some((320, 200)),
+                    maximum: Some((1920, 1080)),
+                    increment: Some((8, 16)),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_partial_window_metadata_preserves_absence() {
+        let metadata = parse_metadata(
+            r#"{
+                title: "Updated",
+                size-constraints: {
+                    minimum-size: [0, 0],
+                    maximum-size: [640]
+                }
+            }"#,
+        );
+        assert_eq!(metadata.title.as_deref(), Some("Updated"));
+        assert_eq!(metadata.fullscreen, None);
+        assert_eq!(metadata.decorations, None);
+        assert_eq!(
+            metadata.size_constraints,
+            Some(WindowSizeConstraints::default())
+        );
     }
 }
