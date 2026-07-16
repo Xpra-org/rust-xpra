@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use std::sync::mpsc::{Sender, Receiver};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use yaml_rust2::Yaml;
@@ -37,6 +37,11 @@ use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::window::XpraWindow;
 
 
+// How often we send our own `ping` once the session is up. A few seconds keeps the server's view
+// of our latency fresh without being chatty; xpra's own client pings on a similar cadence.
+const PING_INTERVAL: Duration = Duration::from_secs(5);
+
+
 pub struct XpraClient {
     pub hello_sent: bool,
     pub server_version: String,
@@ -48,6 +53,14 @@ pub struct XpraClient {
     pub softbuffer_ctx: Option<Context<OwnedDisplayHandle>>,
     pub modifiers: ModifiersState,
     pub startup_complete: bool,
+    // monotonic clock base for the timestamps in our own `ping` packets. The server echoes the
+    // value back untouched, so subtracting it from `start.elapsed()` on the echo recovers the
+    // round-trip time (both measured with this one clock, so absolute epoch is irrelevant).
+    pub start: Instant,
+    // the last client->server round-trip we measured from a `ping_echo`, in milliseconds (-1 until
+    // the first echo). This is what we report back in the `ping_echo` packets we send in reply to
+    // the server's own pings - the channel by which the server learns our network latency.
+    pub last_client_latency_ms: i64,
     // the current pointer cursor (xpra sends one cursor for the whole session, not per-window);
     // kept so it can be applied to windows created after the last "cursor" packet. `None` = the
     // platform default cursor.
@@ -144,6 +157,8 @@ impl XpraClient {
             softbuffer_ctx: None,
             modifiers: ModifiersState::empty(),
             startup_complete: false,
+            start: Instant::now(),
+            last_client_latency_ms: -1,
             current_cursor: None,
             auth_dialog: None,
             pending_challenge: None,
@@ -303,8 +318,19 @@ impl XpraClient {
     }
 
     fn send_ping_echo(&mut self, echotime: u64, sid: String) {
-        // no load average or client-side ping latency tracked (we don't send our own pings):
-        let packet = json!(["ping_echo", echotime, 0, 0, 0, -1, sid]);
+        // fields are echotime, three load averages (we don't report any, hence 0), our last
+        // measured client->server latency in ms (or -1 if we've not pinged yet), and the sid. The
+        // server stores that latency as its `client_ping_latency` (xpra network_state mixin).
+        let packet = json!(["ping_echo", echotime, 0, 0, 0, self.last_client_latency_ms, sid]);
+        self.write_json(packet);
+    }
+
+    // Send our own `ping` so the server can time the round-trip back to us. The payload is just a
+    // monotonic timestamp in ms (matching xpra's `int(1000*monotonic())`); the server echoes it in
+    // a `ping_echo` we then match up in process_ping_echo. Fired periodically by start_ping_loop.
+    fn send_ping(&mut self) {
+        let now_ms = self.start.elapsed().as_millis() as i64;
+        let packet = json!(["ping", now_ms]);
         self.write_json(packet);
     }
 
@@ -360,6 +386,21 @@ impl XpraClient {
         }).unwrap();
     }
 
+
+    // Fire a `ping` on a fixed cadence so the server can measure the round-trip to us. Like the
+    // reader and decode threads, this posts a synthesized client packet ("send-ping") to the UI
+    // thread rather than touching the socket itself - only the UI thread writes to the connection.
+    // The thread ends by itself once the event loop is gone (send_event then errors). Started at
+    // startup-complete so we never ping before the session is up.
+    fn start_ping_loop(&self) {
+        let proxy = self.proxy.clone();
+        thread::Builder::new().name("ping".to_string()).spawn(move || loop {
+            thread::sleep(PING_INTERVAL);
+            if proxy.send_event(client_packet("send-ping", "")).is_err() {
+                break;
+            }
+        }).unwrap();
+    }
 
     pub fn start_draw_decode_loop(proxy: EventLoopProxy<Packet>, receiver: Receiver<Packet>) {
         thread::Builder::new().name("decode".to_string()).spawn(move || {
@@ -466,7 +507,11 @@ impl XpraClient {
             "encodings" => debug!("got server encodings: {:?}", p.main[1]),
             "startup-complete" => {
                 info!("startup complete!");
-                self.startup_complete = true;
+                // the session is up: start pinging the server so it can track our latency.
+                if !self.startup_complete {
+                    self.startup_complete = true;
+                    self.start_ping_loop();
+                }
             }
             "new-window" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
@@ -505,6 +550,11 @@ impl XpraClient {
             "draw-decoded" => self.process_draw_decoded(&mut p),
             "draw-failed" => self.process_draw_failed(&p),
             "ping" => self.process_ping(&p),
+            // our own periodic ping, fired by the ping timer thread (start_ping_loop); "send-ping"
+            // is a client-side packet type like "draw-decoded", not something on the wire.
+            "send-ping" => self.send_ping(),
+            // the server's echo of one of our pings: measures the client->server round-trip.
+            "ping_echo" => self.process_ping_echo(&p),
             "challenge" => self.process_challenge(event_loop, &mut p),
             // ["challenge-password", pw] / ["challenge-cancel"]: synthesized locally by the
             // pinentry worker thread (see prompt_password_pinentry), delivered on the UI thread so
@@ -1025,6 +1075,18 @@ impl XpraClient {
         let sid = if packet.len() >= 4 { packet.get_str(3) } else { "".to_string() };
         debug!("got ping, sending echo time={:?}", echotime);
         self.send_ping_echo(echotime, sid);
+    }
+
+    // The server's echo of a `ping` we sent (see send_ping): field 1 is the monotonic timestamp we
+    // stamped it with, so `now - echoed` is the client->server round-trip. We keep it to report in
+    // the ping_echo replies we send back to the server (send_ping_echo).
+    fn process_ping_echo(&mut self, packet: &Packet) {
+        let echoedtime = packet.get_i64(1);
+        let rtt = self.start.elapsed().as_millis() as i64 - echoedtime;
+        if rtt >= 0 {
+            self.last_client_latency_ms = rtt;
+            debug!("ping echo: client round-trip {} ms", rtt);
+        }
     }
 
     fn handle_window_event(&mut self, wid: u64, event: WindowEvent) {
