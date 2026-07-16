@@ -547,6 +547,7 @@ impl XpraClient {
             "initiate-moveresize" => self.process_initiate_moveresize(&p),
             "raise-window" => self.process_raise_window(&p),
             "show-desktop" => self.process_show_desktop(&p),
+            "pointer-position" => self.process_pointer_position(&p),
             "lost-window" => {
                 self.process_lost_window(&p);
                 // forward to the decode thread so it can drop this window's persistent h264
@@ -947,6 +948,26 @@ impl XpraClient {
         for window in self.windows.values() {
             window.window.set_minimized(show);
         }
+    }
+
+    // ["pointer-position", wid, x, y, rx, ry]: the server reporting where the pointer is on its
+    // side. Shadow / desktop-forwarding sessions poll the real pointer and push its position here
+    // so the client can draw a "remote pointer" overlay (xpra's own show_pointer_overlay). We
+    // render no such overlay, so just log it; rx/ry (root-relative) are omitted by pre-v5 senders.
+    // Guarded against a short packet (panic=abort).
+    fn process_pointer_position(&self, packet: &Packet) {
+        if packet.len() < 4 {
+            debug!("pointer-position: {:?}", &packet.main[1..]);
+            return;
+        }
+        let wid = packet.get_u64(1);
+        let (x, y) = (packet.get_i32(2), packet.get_i32(3));
+        let (rx, ry) = if packet.len() >= 6 {
+            (packet.get_i32(4), packet.get_i32(5))
+        } else {
+            (-1, -1)
+        };
+        debug!("pointer-position: {},{} ({},{} relative to window {:#x})", x, y, rx, ry, wid);
     }
 
     // ["cursor", encoding, x, y, w, h, xhot, yhot, serial, pixels, name, ...sizes]: the pointer
