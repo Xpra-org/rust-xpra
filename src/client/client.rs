@@ -383,8 +383,9 @@ impl XpraClient {
                     "decorations", "above", "below",
                 ],
             },
-            // we don't render real desktop notifications; we just log them (see process_notify_show).
-            // The server gates notification sending on this dict's "enabled" flag.
+            // desktop notifications: shown as balloons on the system tray icon on Windows, logged
+            // everywhere else (see process_notify_show). The server gates notification sending on
+            // this dict's "enabled" flag.
             "notifications": { "enabled": true },
             // receive informational server lifecycle events such as "handshake-complete",
             // "startup-complete", "suspend", "resume" and "exit". Dedicated protocol packets
@@ -1421,9 +1422,15 @@ impl XpraClient {
     }
 
     // ["notify_show", dbus_id, nid, app_name, replaces_nid, app_icon, summary, body, expire_timeout,
-    // icon, actions, hints]: a server-forwarded desktop notification. We don't render real
-    // notifications (no notifier dependency), so - like xpra's own headless fallback - we just log
-    // the summary and body at info level. We advertised "notifications" so the server sends these.
+    // icon, actions, hints]: a server-forwarded desktop notification. We advertised "notifications"
+    // so the server sends these.
+    //
+    // On Windows the notification is shown as a balloon on the system tray icon (see tray.rs) -
+    // that icon is already there and `Shell_NotifyIconW` needs nothing else, so notifications come
+    // essentially for free. Everywhere else - and on Windows if the tray could not be created -
+    // they are only logged, like xpra's own headless fallback: there is no portable notifier
+    // without a D-Bus dependency, which this client avoids. The log line is kept on every platform
+    // since it is also what reaches the server through remote logging.
     fn process_notify_show(&mut self, packet: &Packet) {
         let app_name = packet.get_str(3);
         let summary = packet.get_str(6);
@@ -1436,12 +1443,21 @@ impl XpraClient {
         for line in body.lines() {
             info!("  {line}");
         }
+        #[cfg(windows)]
+        if let Some(tray) = &mut self.tray {
+            tray.show_notification(packet.get_u64(2), &app_name, &summary, &body);
+        }
     }
 
-    // ["notify_close", nid]: the server withdrawing a notification. We only logged it, so there is
-    // nothing to take back - just note it.
+    // ["notify_close", nid]: the server withdrawing a notification, by the same id `notify_show`
+    // carried. Only the Windows balloon can actually be taken back; the log line already went out.
     fn process_notify_close(&mut self, packet: &Packet) {
-        debug!("notification {:?} closed", packet.get_u64(1));
+        let notification_id = packet.get_u64(1);
+        debug!("notification {notification_id} closed");
+        #[cfg(windows)]
+        if let Some(tray) = &mut self.tray {
+            tray.close_notification(notification_id);
+        }
     }
 
     // ["bell", wid, device, percent, pitch, duration, bell_class, bell_id, bell_name]: the server

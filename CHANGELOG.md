@@ -3,6 +3,7 @@
 ## [0.3.0]
 * ✨ Features:
   * system tray icon with an `Exit` menu entry (MS Windows)
+  * show server-forwarded notifications as tray balloons (MS Windows)
 * 🔧 Platforms, build and packaging:
   * embed the application icon and the DPI-awareness manifest into the Windows executable
 

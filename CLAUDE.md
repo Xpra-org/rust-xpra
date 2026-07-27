@@ -6,12 +6,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
 Not usable yet: `tcp`/`ssl`/`ws`/`wss` connections (and `ssl`/`wss` don't verify certificates yet — see
-`README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard/notifications support. Password
+`README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard support. Password
 authentication *is* supported (the `hmac+sha256` challenge digest only — see the `challenge` flow below and
 `README.md`). See `README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock
 — all downstream of Wayland not letting clients query/set absolute desktop position or create truly unmanaged
-windows). MS Windows has a system tray icon with an `Exit` menu entry (`src/client/tray.rs`); Linux has no tray
-(StatusNotifierItem would need D-Bus, the XEmbed tray is X11-only).
+windows). MS Windows has a system tray icon with an `Exit` menu entry, which doubles as the notification
+backend (server notifications become tray balloons — `src/client/tray.rs`); Linux has no tray
+(StatusNotifierItem would need D-Bus, the XEmbed tray is X11-only) and therefore only logs notifications.
 
 ## Build / run
 
@@ -188,8 +189,9 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     or errors that set `exit_code` and make `write_json` a no-op — so a normal send never re-logs), and a
     thread-local `IN_FORWARD` flag stops a forward that itself logs from recursing. Level mapping is `log`→python:
     Error 40 / Warn 30 / Info 20.
-  - `tray.rs` (Windows-only, `#[cfg(windows)]`): the notification-area icon and its right-click menu (a greyed
-    header naming the session, a separator, `Exit`). Hand-rolled on `Shell_NotifyIconW` via the `windows` crate
+  - `tray.rs` (Windows-only, `#[cfg(windows)]`): the notification-area icon, its right-click menu (a greyed
+    header naming the session, a separator, `Exit`) and the balloon notifications it raises. Hand-rolled on
+    `Shell_NotifyIconW` via the `windows` crate
     Media Foundation already pulls in — no new crate, just the `Win32_UI_Shell`/`Win32_UI_WindowsAndMessaging`/
     `Win32_System_LibraryLoader`/`Win32_Graphics_Gdi` features (that last one only because `WNDCLASSW` and
     `RegisterClassW` are gated on it). Two non-obvious constraints, both easy to regress:
@@ -206,6 +208,20 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `TrackPopupMenu` runs a nested modal loop, so the session stops repainting while the menu is open; that is
     normal for a native app, not a bug. Cleanup is `impl Drop` (`NIM_DELETE` + `DestroyWindow`), which runs
     because `main::run` holds the `XpraClient` in a local and drops it on return, on the UI thread.
+    **Notifications** ride on the same icon and are therefore Windows-only: `show_notification` /
+    `close_notification` are `Shell_NotifyIconW(NIM_MODIFY, ..)` with `NIF_INFO` set on a *copy* of the stored
+    `NOTIFYICONDATAW` (the stored one keeps the `NIF_ICON|NIF_MESSAGE|NIF_TIP` flags the `TaskbarCreated`
+    re-add needs). `szInfoTitle` = the notification's summary, `szInfo` = its body — and since a balloon with an
+    empty `szInfo` is not shown at all, a body-less notification puts the summary in `szInfo` and the app name in
+    the title. `dwInfoFlags` is `NIIF_USER` (with `NIF_ICON` so `hIcon` is read), which uses our own xpra icon as
+    the balloon icon instead of the generic `NIIF_INFO` "i". Withdrawal is the same call with an empty `szInfo`,
+    guarded by a `shown_notification: Option<u64>` so a `notify_close` for a *different* xpra `nid` doesn't take
+    the current balloon down. Ignored by design (the user asked for the simple version): actions, hints, the
+    per-notification icon, and `expire_timeout` (`uTimeout` has been ignored since Vista). On Windows 10+ the
+    shell turns balloons into toasts and applies its own Focus-assist/notification policy, so one legitimately
+    landing in the Action Center rather than on screen is not a bug. `client.rs`'s `process_notify_show` still
+    logs every notification on every platform (that log line is also what remote logging sends the server); the
+    tray call is an extra `#[cfg(windows)]` step after it.
   - `window.rs`: `XpraWindow` owns a `winit::window::Window`, a `softbuffer::Surface`, and a persistent
     `framebuffer: Vec<u32>` (softbuffer only hands you the *live* to-be-presented buffer on each
     `buffer_mut()` call, not a persistently addressable store, so `XpraWindow` keeps its own full-window pixel

@@ -1,7 +1,8 @@
 // Windows system tray (notification area) icon, with a right-click menu whose only action is
-// "Exit". Hand-rolled on `Shell_NotifyIconW`, in the same spirit as `net/`'s hand-rolled websocket
-// and digests: the API surface needed here is small, and the `windows` crate is already a
-// dependency for Media Foundation, so this costs a few extra feature flags and no new crate.
+// "Exit", and the balloon notifications the same icon can raise. Hand-rolled on
+// `Shell_NotifyIconW`, in the same spirit as `net/`'s hand-rolled websocket and digests: the API
+// surface needed here is small, and the `windows` crate is already a dependency for Media
+// Foundation, so this costs a few extra feature flags and no new crate.
 //
 // **No extra thread.** Windows message delivery is thread-affine, and winit's Windows backend pumps
 // every window owned by the thread that called `run_app`: it dispatches with
@@ -23,7 +24,8 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_NONE, NIIF_USER, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu,
@@ -66,6 +68,10 @@ pub struct Tray {
     hwnd: HWND,
     icon: HICON,
     state: *mut TrayState,
+    // xpra's notification id (the `nid` field of a `notify_show` packet) for the balloon currently
+    // on screen, if any, so that a `notify_close` for a *different* notification doesn't take it
+    // down. The shell only ever shows one balloon per icon, so tracking one id is enough.
+    shown_notification: Option<u64>,
 }
 
 impl Tray {
@@ -143,7 +149,71 @@ impl Tray {
                 return Err("Shell_NotifyIcon(NIM_ADD) failed".to_string());
             }
             debug!("system tray icon added");
-            Ok(Tray { hwnd, icon, state })
+            Ok(Tray { hwnd, icon, state, shown_notification: None })
+        }
+    }
+
+    // Show a server-forwarded desktop notification as a balloon on the tray icon.
+    //
+    // `NIM_MODIFY` with `NIF_INFO` is the whole mechanism: `szInfo` is the text, `szInfoTitle` the
+    // title. On Windows 10 and later the shell turns these into toast notifications and applies its
+    // own Focus-assist / notification-settings policy, so a balloon may legitimately end up in the
+    // Action Center instead of on screen - that is the user's setting, not a failure here.
+    //
+    // Deliberately minimal, matching what the notification-area API can express: no actions (the
+    // balloon can be clicked but has no buttons), no hints, and no per-notification icon. The
+    // server's `expire_timeout` is ignored too - `NOTIFYICONDATAW`'s `uTimeout` has been ignored
+    // since Vista in favour of the system accessibility timeout.
+    pub fn show_notification(&mut self, notification_id: u64, app_name: &str, summary: &str, body: &str) {
+        // A balloon whose szInfo is empty is not displayed at all (that is how one is taken back -
+        // see close_notification), so when there is no body the summary becomes the text and the
+        // application name, if the server gave one, becomes the title.
+        let (title, text) = if body.is_empty() {
+            (if app_name.is_empty() { "Xpra" } else { app_name }, summary)
+        } else {
+            (if summary.is_empty() { app_name } else { summary }, body)
+        };
+        if text.is_empty() {
+            debug!("notification {notification_id} has no text, not showing a balloon");
+            return;
+        }
+        unsafe {
+            // a copy: the stored NOTIFYICONDATAW keeps the icon/message/tooltip flags it was added
+            // with, which is what the TaskbarCreated re-add needs.
+            let mut nid = (*self.state).nid;
+            // NIF_ICON so hIcon is read: NIIF_USER shows the icon's own image (our xpra icon)
+            // as the balloon's title icon, rather than the generic "i" NIIF_INFO would give.
+            nid.uFlags = NIF_INFO | NIF_ICON;
+            nid.dwInfoFlags = NIIF_USER;
+            write_wide(&mut nid.szInfo, text);
+            write_wide(&mut nid.szInfoTitle, title);
+            if Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
+                debug!("notification {notification_id} shown as a tray balloon");
+                self.shown_notification = Some(notification_id);
+            } else {
+                warn!("failed to show notification {notification_id} as a tray balloon");
+            }
+        }
+    }
+
+    // The server withdrawing a notification: blank the balloon out again, but only if it is the one
+    // we are actually showing. On Windows 10 and later, where balloons are toasts, the shell may
+    // well have moved it to the Action Center already and keep it there - there is no notification-
+    // area API to recall a toast, so this is best-effort.
+    pub fn close_notification(&mut self, notification_id: u64) {
+        if self.shown_notification != Some(notification_id) {
+            return;
+        }
+        self.shown_notification = None;
+        debug!("withdrawing the tray balloon for notification {notification_id}");
+        unsafe {
+            let mut nid = (*self.state).nid;
+            nid.uFlags = NIF_INFO;
+            nid.dwInfoFlags = NIIF_NONE;
+            // an empty szInfo is documented as "remove the balloon"
+            nid.szInfo[0] = 0;
+            nid.szInfoTitle[0] = 0;
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
         }
     }
 }

@@ -10,9 +10,11 @@ It builds on MS Windows and Linux (X11 and Wayland).
 It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). Password
 authentication is supported (HMAC digest challenges — see [Authentication](#authentication) below).
 
-No server, no audio, no clipboard, no notifications, etc..
+No server, no audio, no clipboard, etc..
 
-On MS Windows there is a system tray icon with an **Exit** menu entry — see [System tray](#system-tray).
+On MS Windows there is a system tray icon with an **Exit** menu entry, and server-forwarded
+notifications are shown as balloons on it — see [System tray](#system-tray). Elsewhere notifications are only
+written to the client log.
 
 ### Known Linux limitations
 
@@ -36,7 +38,8 @@ bell (`^G`) to stderr - there is no portable desktop bell without an X11 or audi
 client avoids - so a bell is only audible when the client was started from a terminal whose bell is enabled.
 
 There is no system tray icon on Linux either (see [System tray](#system-tray) below): the freedesktop
-StatusNotifierItem protocol needs a D-Bus dependency, and the older XEmbed tray is X11-only.
+StatusNotifierItem protocol needs a D-Bus dependency, and the older XEmbed tray is X11-only. Server-forwarded
+notifications are shown as balloons on that tray icon, so they too are Windows-only and are merely logged here.
 
 ## Usage
 
@@ -79,7 +82,21 @@ per-monitor-V2 DPI manifest, so it is the executable's icon in Explorer too). It
 dependency and no extra thread — the tray window is created on the UI thread and winit's own message loop pumps
 it.
 
-There is no tray on Linux or macOS.
+### Notifications
+
+The same icon also carries **desktop notifications**: a notification forwarded by the server becomes a balloon
+on the tray icon, with the notification's summary as the title and its body as the text. This needs no notifier
+library — it is one more `Shell_NotifyIconW` call — which is why it is Windows-only. On Windows 10 and later the
+shell renders these as toasts, so they follow the user's notification settings and Focus assist, and may land in
+the Action Center instead of appearing on screen.
+
+Only the text is used: notification *actions* (buttons) and hints are ignored, as are per-notification icons and
+the server's expiry timeout (Windows has ignored the requested balloon timeout since Vista, in favour of the
+system accessibility timeout). A notification the server withdraws is taken back, if it is still the one being
+shown.
+
+There is no tray, and therefore no notifications, on Linux or macOS — the client just logs them (both platforms
+would need a D-Bus dependency this client avoids).
 
 ## Authentication
 
