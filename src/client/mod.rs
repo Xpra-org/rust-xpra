@@ -7,4 +7,6 @@ pub mod pinentry;
 pub mod remote_logging;
 #[cfg(windows)]
 pub mod mediafoundation;
+#[cfg(windows)]
+pub mod tray;
 pub mod window;

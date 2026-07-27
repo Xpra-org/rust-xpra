@@ -12,6 +12,8 @@ authentication is supported (HMAC digest challenges — see [Authentication](#au
 
 No server, no audio, no clipboard, no notifications, etc..
 
+On MS Windows there is a system tray icon with an **Exit** menu entry — see [System tray](#system-tray).
+
 ### Known Linux limitations
 
 The windowing/painting layer is built on [winit](https://github.com/rust-windowing/winit) +
@@ -32,6 +34,9 @@ Running under XWayland (the X11 backend) instead of native Wayland avoids all of
 Server-forwarded bells (`bell`) play a real tone on Windows, but on Linux fall back to writing the terminal
 bell (`^G`) to stderr - there is no portable desktop bell without an X11 or audio-server dependency, which this
 client avoids - so a bell is only audible when the client was started from a terminal whose bell is enabled.
+
+There is no system tray icon on Linux either (see [System tray](#system-tray) below): the freedesktop
+StatusNotifierItem protocol needs a D-Bus dependency, and the older XEmbed tray is X11-only.
 
 ## Usage
 
@@ -60,6 +65,21 @@ or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the r
 not require interactive input on stdin (stdin carries the xpra protocol, not a terminal), so use key-based auth
 via an ssh-agent or a passphrase-less key; host-key confirmation and password prompts still work normally since
 OpenSSH reads those from the controlling terminal, not stdin.
+
+## System tray
+
+On MS Windows the client puts an icon in the notification area for as long as it is connected. Right-clicking it
+opens a menu naming the session (`xpra @ HOST:PORT`) with an **Exit** entry, which is the only way to shut the
+client down from the GUI — closing a window only tells the server to close that window. Exiting this way sends a
+`disconnect` to the server first and exits with status `0`.
+
+The icon is `assets/xpra.ico`, embedded into the executable by `build.rs` (which also embeds `exe.manifest`, the
+per-monitor-V2 DPI manifest, so it is the executable's icon in Explorer too). It is implemented directly on
+`Shell_NotifyIconW` through the `windows` crate that Media Foundation already requires, so it adds no new
+dependency and no extra thread — the tray window is created on the UI thread and winit's own message loop pumps
+it.
+
+There is no tray on Linux or macOS.
 
 ## Authentication
 

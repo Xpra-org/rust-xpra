@@ -68,7 +68,9 @@ fn run(log_sink: LogSink) -> ExitCode {
     let proxy = event_loop.create_proxy();
     XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx);
 
-    let mut client = XpraClient::new(connection, proxy, decode_tx, log_sink);
+    // args[1] as typed, rather than the parsed target: it is what the user will recognise in the
+    // system tray's tooltip and menu header (see client/tray.rs).
+    let mut client = XpraClient::new(connection, proxy, decode_tx, log_sink, args[1].clone());
     if let Err(e) = event_loop.run_app(&mut client) {
         error!("event loop error: {}", e);
         return ExitCode::InternalError;

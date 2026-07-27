@@ -42,8 +42,9 @@ default = []
 # this file changes.
 webp-dylib = ["libwebp-sys/system-dylib"]
 
-# Windows-only: H.264 video decode via Media Foundation (see src/client/mediafoundation.rs).
-# The decoder itself lives in the OS; this only pulls in the thin COM/MF bindings.
+# Windows-only: H.264 video decode via Media Foundation (see src/client/mediafoundation.rs) and the
+# system tray icon (see src/client/tray.rs). Both live in the OS; this only pulls in the thin
+# COM/MF/Win32 bindings.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -51,7 +52,22 @@ windows = { version = "0.58", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_Media_MediaFoundation",
     "Win32_Security_Cryptography",
+    # system tray: Shell_NotifyIconW + NOTIFYICONDATAW / the hidden window, popup menu and icon
+    # loading it needs / GetModuleHandleW for the module the icon resource lives in. Gdi is not
+    # used directly - `WNDCLASSW` and `RegisterClassW` are gated on it because the class struct
+    # carries an `HBRUSH` background and an `HCURSOR`.
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
 ] }
+
+# Embeds the application icon and the DPI manifest into the .exe (see build.rs). Build-time only -
+# pure Rust, and nothing of it is linked into the binary. Not restricted to `cfg(windows)` because
+# Cargo resolves target-specific build-dependencies against the *host*, which would break a
+# Linux -> Windows cross build; build.rs checks the real target itself.
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 strip = true

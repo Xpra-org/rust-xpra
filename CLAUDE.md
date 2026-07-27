@@ -10,13 +10,16 @@ Not usable yet: `tcp`/`ssl`/`ws`/`wss` connections (and `ssl`/`wss` don't verify
 authentication *is* supported (the `hmac+sha256` challenge digest only — see the `challenge` flow below and
 `README.md`). See `README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock
 — all downstream of Wayland not letting clients query/set absolute desktop position or create truly unmanaged
-windows).
+windows). MS Windows has a system tray icon with an `Exit` menu entry (`src/client/tray.rs`); Linux has no tray
+(StatusNotifierItem would need D-Bus, the XEmbed tray is X11-only).
 
 ## Build / run
 
 Cross-platform: builds on Windows and Linux via `winit` + `softbuffer` (no native GTK/Qt dependency). CI builds
 both (see `.github/workflows/rust.yml`). On Linux, building needs `pkg-config` and X11/Wayland/xkbcommon dev
-headers (see the `build-linux` job for the exact package list).
+headers (see the `build-linux` job for the exact package list). Windows builds additionally want a resource
+compiler on `PATH` (`rc.exe` from the Windows SDK, which the CI runners have) to embed the icon and manifest —
+see `build.rs` under "Known repo quirks"; without one the build still succeeds, just with a warning.
 
 ```shell
 cargo build
@@ -185,6 +188,24 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     or errors that set `exit_code` and make `write_json` a no-op — so a normal send never re-logs), and a
     thread-local `IN_FORWARD` flag stops a forward that itself logs from recursing. Level mapping is `log`→python:
     Error 40 / Warn 30 / Info 20.
+  - `tray.rs` (Windows-only, `#[cfg(windows)]`): the notification-area icon and its right-click menu (a greyed
+    header naming the session, a separator, `Exit`). Hand-rolled on `Shell_NotifyIconW` via the `windows` crate
+    Media Foundation already pulls in — no new crate, just the `Win32_UI_Shell`/`Win32_UI_WindowsAndMessaging`/
+    `Win32_System_LibraryLoader`/`Win32_Graphics_Gdi` features (that last one only because `WNDCLASSW` and
+    `RegisterClassW` are gated on it). Two non-obvious constraints, both easy to regress:
+    (1) **no extra thread, by design.** Windows message delivery is thread-affine and winit's Windows backend
+    pumps every window owned by the thread that called `run_app` — `PeekMessageW(&msg, 0, ..)` + `DispatchMessageW`
+    (`0` = any window of the calling thread; dispatch goes to *that window's* class wndproc, ours not winit's),
+    waiting in `MsgWaitForMultipleObjectsEx(.., QS_ALLINPUT, ..)`, which wakes on the shell's posted callback.
+    So `Tray::new` is called from `XpraClient::resumed` on the UI thread and winit pumps it for free. The wndproc
+    can't reach the `ActiveEventLoop` that `quit` needs, so `Exit` posts a synthesized client-side `tray-exit`
+    packet through the `EventLoopProxy` — same pattern as `send-ping`/`draw-decoded`. The wndproc must never call
+    `PostQuitMessage`: it shares winit's message queue.
+    (2) the window is a never-shown *top-level* window, **not** `HWND_MESSAGE` — message-only windows don't
+    receive broadcasts, and `TaskbarCreated` (re-add the icon after an explorer restart) is broadcast.
+    `TrackPopupMenu` runs a nested modal loop, so the session stops repainting while the menu is open; that is
+    normal for a native app, not a bug. Cleanup is `impl Drop` (`NIM_DELETE` + `DestroyWindow`), which runs
+    because `main::run` holds the `XpraClient` in a local and drops it on return, on the UI thread.
   - `window.rs`: `XpraWindow` owns a `winit::window::Window`, a `softbuffer::Surface`, and a persistent
     `framebuffer: Vec<u32>` (softbuffer only hands you the *live* to-be-presented buffer on each
     `buffer_mut()` call, not a persistently addressable store, so `XpraWindow` keeps its own full-window pixel
@@ -268,8 +289,14 @@ non-idle "timeout") is a failure, everything else ("server shutdown", "new clien
 
 ## Known repo quirks
 
-- `exe.manifest` (Windows DPI-awareness manifest) is Windows-build-specific and harmless to leave as-is on
-  Linux; nothing in the current `winit`-based code references it.
+- `build.rs` embeds the Windows resources: `assets/xpra.ico` (name id `1` — the executable's icon in Explorer,
+  and what `tray.rs` loads back at runtime with `LoadImageW`) and `exe.manifest` (the per-monitor-V2 DPI
+  manifest, which used to be carried in the repo unreferenced). It gates on `CARGO_CFG_TARGET_OS`, **not**
+  `cfg!(windows)`: a build script runs on the *host*, so `cfg!` asks the wrong question and would silently drop
+  the resources from a Linux→Windows cross build. For the same reason `winresource` is a plain
+  `[build-dependencies]` — Cargo resolves target-specific build-deps against the host too. A failed resource
+  compile only warns; `tray.rs` then falls back to `IDI_APPLICATION`. The manifest asks for the same DPI
+  awareness winit sets programmatically (`become_dpi_aware`), so embedding it changes no behaviour.
 - **Do not enable `libwebp-sys`'s `sse41` / `avx2` features.** They look like free speed and are neither free nor
   speed. `libwebp-sys`' `build.rs` puts `-msse4.1`/`-mavx2` on the *whole* `cc::Build` — every vendored `.c` file,
   unlike libwebp's own CMake, which applies them per-file precisely so that the generic and SSE2 paths stay

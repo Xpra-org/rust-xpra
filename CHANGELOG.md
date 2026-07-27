@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.0]
+* ✨ Features:
+  * system tray icon with an `Exit` menu entry (MS Windows)
+* 🔧 Platforms, build and packaging:
+  * embed the application icon and the DPI-awareness manifest into the Windows executable
+
 ## [0.2.4] 2026-07-16
 * ✨ Features:
   * [receive server lifecycle events](https://github.com/Xpra-org/rust-xpra/commit/a7956cb747a3a0ce079ccf887137a71d34b00c26)

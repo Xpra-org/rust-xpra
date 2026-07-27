@@ -39,6 +39,8 @@ use super::clipboard::start_clipboard_loop;
 use super::draw_decoder;
 use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::remote_logging::LogSink;
+#[cfg(windows)]
+use super::tray;
 use super::window::XpraWindow;
 
 
@@ -187,6 +189,15 @@ pub struct XpraClient {
     // the last plain-text value synced in either direction, used to break the copy<->paste feedback
     // loop: a value we just wrote locally is not re-sent to the server, and vice-versa.
     pub last_clipboard: String,
+    // the connection string as the user typed it, kept to name the session in the system tray's
+    // tooltip and menu header. Only read on Windows, which is the only platform with a tray.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub target: String,
+    // the Windows notification-area icon and its "Exit" menu (see tray.rs), created in `resumed`
+    // and removed when this client is dropped. `None` if the tray could not be created, which is
+    // not fatal - the client just has no tray.
+    #[cfg(windows)]
+    pub tray: Option<tray::Tray>,
 }
 
 
@@ -256,7 +267,7 @@ impl fmt::Debug for XpraClient {
 
 impl XpraClient {
 
-    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink) -> Self {
+    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink, target: String) -> Self {
         XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
@@ -279,6 +290,9 @@ impl XpraClient {
             clipboard: None,
             clipboard_enabled: false,
             last_clipboard: String::new(),
+            target,
+            #[cfg(windows)]
+            tray: None,
         }
     }
 
@@ -798,6 +812,16 @@ impl XpraClient {
             "clipboard-contents-none" => debug!("clipboard-contents-none"),
             "clipboard-pending-requests" => {} // server-side request count; nothing to render
             "clipboard-changed" => self.process_clipboard_changed(&p),
+            // ["tray-exit"]: the "Exit" item of the Windows system tray menu (see tray.rs). A
+            // client-side packet type like "send-ping": the tray's window procedure runs on the UI
+            // thread but has no `ActiveEventLoop`, so it posts this and the quit happens here.
+            "tray-exit" => {
+                info!("exit requested from the system tray");
+                // say goodbye the way xpra's own client does. This has to come before quit(),
+                // which sets exit_code and turns write_json into a no-op.
+                self.write_json(json!(["disconnect", "client exit"]));
+                self.quit(event_loop, ExitCode::Ok);
+            }
             "disconnect" => self.process_disconnect(event_loop, &p),
             "connection-lost" => {
                 // synthesized locally (see `client_packet`): the write path has already logged
@@ -1699,6 +1723,16 @@ impl ApplicationHandler<Packet> for XpraClient {
             let context = Context::new(event_loop.owned_display_handle())
                 .expect("failed to create softbuffer context");
             self.softbuffer_ctx = Some(context);
+        }
+        // the tray window has to be created on this (the UI) thread, whose message loop winit runs
+        // and which therefore pumps it - see tray.rs. Not having a tray is not fatal, the same
+        // stance clipboard.rs takes when there is no usable clipboard.
+        #[cfg(windows)]
+        if self.tray.is_none() {
+            match tray::Tray::new(self.proxy.clone(), &self.target) {
+                Ok(tray) => self.tray = Some(tray),
+                Err(e) => warn!("system tray unavailable: {}", e),
+            }
         }
         if !self.hello_sent {
             self.start_read_loop();
