@@ -35,12 +35,19 @@ use xpra::net::packet::{Packet, yaml_hash_bool};
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
 use super::auth_dialog::{AuthDialog, DialogAction};
+#[cfg(windows)]
+use super::audio::{
+    self, AudioProtocol, IncomingAudio, LatencyReporter, OpusHeader,
+    AUDIO_CAPABILITIES_PACKET, CODEC,
+};
 use super::clipboard::start_clipboard_loop;
 use super::draw_decoder;
 use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::remote_logging::LogSink;
 #[cfg(windows)]
 use super::tray;
+#[cfg(windows)]
+use super::windows_audio::{AudioWorker, EnqueueError};
 use super::window::XpraWindow;
 
 
@@ -198,6 +205,16 @@ pub struct XpraClient {
     // not fatal - the client just has no tray.
     #[cfg(windows)]
     pub tray: Option<tray::Tray>,
+    // Windows speaker forwarding. The handle only owns a bounded command sender; every COM,
+    // Media Foundation and WASAPI object remains on the worker thread.
+    #[cfg(windows)]
+    pub audio_worker: Option<AudioWorker>,
+    #[cfg(windows)]
+    pub audio_protocol: AudioProtocol,
+    #[cfg(windows)]
+    pub audio_sync_reporter: LatencyReporter,
+    #[cfg(windows)]
+    pub audio_queue_warned: bool,
 }
 
 
@@ -268,6 +285,16 @@ impl fmt::Debug for XpraClient {
 impl XpraClient {
 
     pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink, target: String) -> Self {
+        #[cfg(windows)]
+        let audio_worker = match AudioWorker::start(proxy.clone()) {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                // One warning only: speaker forwarding is optional and the rest of the session is
+                // fully usable when Media Foundation or the default endpoint is unavailable.
+                warn!("speaker forwarding unavailable: {error}");
+                None
+            }
+        };
         XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
@@ -293,6 +320,14 @@ impl XpraClient {
             target,
             #[cfg(windows)]
             tray: None,
+            #[cfg(windows)]
+            audio_worker,
+            #[cfg(windows)]
+            audio_protocol: AudioProtocol::default(),
+            #[cfg(windows)]
+            audio_sync_reporter: LatencyReporter::default(),
+            #[cfg(windows)]
+            audio_queue_warned: false,
         }
     }
 
@@ -423,6 +458,13 @@ impl XpraClient {
             // padding so a passive observer can't infer the password length from the packet size
             // (only meaningful over ssl/wss); a throwaway random-hex string, like xpra's own.
             caps["challenge_padding"] = json!(secure_hex(64));
+        }
+        // Audio probing happened before this hello was built. Advertise only the asynchronous
+        // request here; the decoder list is sent later in `audio-capabilities`.
+        #[cfg(windows)]
+        if self.audio_worker.is_some() {
+            packet[1]["audio"] = audio::hello_capabilities();
+            packet[1]["av-sync"] = audio::av_sync_capabilities();
         }
         self.write_json(packet);
     }
@@ -724,6 +766,22 @@ impl XpraClient {
                 assert!(p.len() > 1);
                 self.process_hello(&p.main[1]);
             }
+            #[cfg(windows)]
+            AUDIO_CAPABILITIES_PACKET => {
+                if p.len() > 1 {
+                    self.process_audio_capabilities(&p.main[1]);
+                } else {
+                    warn!("ignoring malformed audio-capabilities packet");
+                }
+            }
+            // `sound-data` is the incoming compatibility alias only. All packets we emit use the
+            // canonical `audio-*` names.
+            #[cfg(windows)]
+            packet_type if audio::is_audio_data_type(packet_type) => self.process_audio_data(&mut p),
+            #[cfg(windows)]
+            "audio-latency" => self.report_audio_latency(p.get_u32(1)),
+            #[cfg(windows)]
+            "audio-worker-failed" => self.disable_audio(&p.get_str(1)),
             "encodings" => debug!("got server encodings: {:?}", p.main[1]),
             "startup-complete" => {
                 info!("startup complete!");
@@ -1047,9 +1105,253 @@ impl XpraClient {
                     self.clipboard_enabled = true;
                     info!("clipboard sync enabled");
                 }
+                #[cfg(windows)]
+                if self.audio_worker.is_some()
+                    && !self.audio_protocol.capabilities_sent
+                    && audio::async_requested(hello)
+                {
+                    self.audio_protocol.server_av_sync = audio::server_av_sync_enabled(hello);
+                    self.write_json(json!([
+                        AUDIO_CAPABILITIES_PACKET,
+                        audio::receive_capabilities(),
+                    ]));
+                    self.audio_protocol.capabilities_sent = true;
+                    debug!("sent asynchronous Opus receive capabilities");
+                }
             },
             _ => error!("unexpected hello data type: {:?}", hello),
         }
+    }
+
+    // Windows speaker forwarding -------------------------------------------------------------
+
+    #[cfg(windows)]
+    fn process_audio_capabilities(&mut self, capabilities: &Yaml) {
+        if self.audio_worker.is_none()
+            || !self.audio_protocol.capabilities_sent
+            || self.audio_protocol.negotiated
+        {
+            return;
+        }
+        if !audio::server_can_send_opus(capabilities) {
+            debug!("server cannot send bare Opus audio");
+            return;
+        }
+        self.audio_protocol.negotiated = true;
+        self.send_audio_control("start", json!(CODEC));
+        self.audio_sync_reporter = LatencyReporter::default();
+        self.report_audio_latency(0);
+        info!("Opus speaker forwarding negotiated");
+    }
+
+    #[cfg(windows)]
+    fn process_audio_data(&mut self, packet: &mut Packet) {
+        if !self.audio_protocol.negotiated || self.audio_worker.is_none() {
+            return;
+        }
+        let incoming = match IncomingAudio::parse(packet) {
+            Ok(incoming) => incoming,
+            Err(error) => {
+                warn!("ignoring malformed audio-data packet: {error}");
+                return;
+            }
+        };
+        if !self.audio_protocol.accepts_sequence(incoming.metadata.sequence) {
+            debug!(
+                "ignoring audio data for old sequence {:?} (current is {})",
+                incoming.metadata.sequence,
+                self.audio_protocol.sequence,
+            );
+            return;
+        }
+
+        if incoming.metadata.start_of_stream {
+            let stream_codec = incoming.metadata.codec.as_deref()
+                .filter(|codec| !codec.is_empty())
+                .unwrap_or(&incoming.codec);
+            match self.audio_protocol.begin(stream_codec, incoming.metadata.sequence) {
+                Ok(sequence) => {
+                    let result = self.audio_worker.as_ref()
+                        .map(|worker| worker.reset(sequence))
+                        .unwrap_or(Err(EnqueueError::Stopped));
+                    if !self.handle_audio_enqueue(result, "reset", true) {
+                        return;
+                    }
+                    self.audio_sync_reporter = LatencyReporter::default();
+                    self.report_audio_latency(0);
+                    debug!("starting Opus audio sequence {sequence}");
+                }
+                Err(error) => {
+                    warn!("rejecting audio stream: {error}");
+                    self.stop_audio_stream(true);
+                    return;
+                }
+            }
+        } else if !self.audio_protocol.active {
+            debug!("dropping audio data outside an active stream");
+            return;
+        }
+
+        if incoming.metadata.end_of_stream {
+            let sequence = self.audio_protocol.sequence;
+            let result = self.audio_worker.as_ref()
+                .map(|worker| worker.end(sequence))
+                .unwrap_or(Err(EnqueueError::Stopped));
+            if !self.handle_audio_enqueue(result, "end-of-stream", true) {
+                return;
+            }
+            let new_sequence = self.audio_protocol.finish();
+            self.send_audio_control("new-sequence", json!(new_sequence));
+            self.report_audio_latency(0);
+            debug!("audio sequence {sequence} ended");
+            return;
+        }
+
+        if incoming.codec != CODEC {
+            warn!(
+                "audio codec changed from {CODEC:?} to {:?}; stopping the stream",
+                incoming.codec,
+            );
+            self.stop_audio_stream(true);
+            return;
+        }
+
+        // Bundled stream headers must be submitted before this packet's main payload.
+        for header in incoming.headers {
+            if !self.process_opus_buffer(header, None, None) {
+                return;
+            }
+        }
+        if !incoming.data.is_empty() {
+            self.process_opus_buffer(
+                incoming.data,
+                incoming.metadata.timestamp_ns,
+                incoming.metadata.duration_ns,
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    fn process_opus_buffer(
+        &mut self,
+        data: Vec<u8>,
+        timestamp_ns: Option<i64>,
+        duration_ns: Option<i64>,
+    ) -> bool {
+        if data.starts_with(b"OpusHead") {
+            let header = match OpusHeader::parse(&data) {
+                Ok(header) => header,
+                Err(error) => {
+                    warn!("invalid Opus stream header: {error}");
+                    self.stop_audio_stream(true);
+                    return false;
+                }
+            };
+            let sequence = self.audio_protocol.sequence;
+            let result = self.audio_worker.as_ref()
+                .map(|worker| worker.configure(sequence, header, data))
+                .unwrap_or(Err(EnqueueError::Stopped));
+            if self.handle_audio_enqueue(result, "OpusHead", true) {
+                self.audio_protocol.header_seen = true;
+                return true;
+            }
+            return false;
+        }
+        if audio::is_opus_tags(&data) {
+            return true;
+        }
+        if !self.audio_protocol.header_seen {
+            debug!("dropping Opus payload received before OpusHead");
+            return true;
+        }
+        let sequence = self.audio_protocol.sequence;
+        let result = self.audio_worker.as_ref()
+            .map(|worker| worker.packet(
+                sequence,
+                data,
+                timestamp_ns,
+                duration_ns,
+                self.start.elapsed().as_millis() as u64,
+            ))
+            .unwrap_or(Err(EnqueueError::Stopped));
+        self.handle_audio_enqueue(result, "packet", false)
+    }
+
+    #[cfg(windows)]
+    fn handle_audio_enqueue(
+        &mut self,
+        result: Result<(), EnqueueError>,
+        operation: &str,
+        critical: bool,
+    ) -> bool {
+        match result {
+            Ok(()) => true,
+            Err(EnqueueError::Full) => {
+                if critical {
+                    self.disable_audio(&format!(
+                        "audio worker queue was full while queuing {operation}",
+                    ));
+                    return false;
+                }
+                if !self.audio_queue_warned {
+                    warn!("audio worker queue is full; dropping audio packets until it catches up");
+                    self.audio_queue_warned = true;
+                }
+                false
+            }
+            Err(EnqueueError::Stopped) => {
+                self.disable_audio(&format!("audio worker stopped while queuing {operation}"));
+                false
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn send_audio_control(&mut self, command: &str, argument: Value) {
+        self.write_json(audio::control_packet(command, argument));
+    }
+
+    #[cfg(windows)]
+    fn report_audio_latency(&mut self, total_ms: u32) {
+        if !self.audio_protocol.negotiated || !self.audio_protocol.server_av_sync {
+            return;
+        }
+        if let Some(total_ms) = self.audio_sync_reporter.update(total_ms) {
+            self.send_audio_control("sync", json!(total_ms));
+        }
+    }
+
+    #[cfg(windows)]
+    fn stop_audio_stream(&mut self, tell_server: bool) {
+        let sequence = self.audio_protocol.sequence;
+        let result = self.audio_worker.as_ref()
+            .map(|worker| worker.end(sequence))
+            .unwrap_or(Err(EnqueueError::Stopped));
+        if !self.handle_audio_enqueue(result, "stop", true) {
+            return;
+        }
+        if tell_server {
+            self.send_audio_control("stop", json!(sequence));
+        }
+        let new_sequence = self.audio_protocol.finish();
+        self.send_audio_control("new-sequence", json!(new_sequence));
+        self.audio_sync_reporter = LatencyReporter::default();
+        self.report_audio_latency(0);
+    }
+
+    #[cfg(windows)]
+    fn disable_audio(&mut self, error: &str) {
+        if self.audio_worker.is_none() {
+            return;
+        }
+        warn!("speaker forwarding disabled for this session: {error}");
+        // Recovery failures must explicitly stop the server source even if no SOS arrived yet.
+        let sequence = self.audio_protocol.sequence;
+        self.send_audio_control("stop", json!(sequence));
+        let new_sequence = self.audio_protocol.finish();
+        self.send_audio_control("new-sequence", json!(new_sequence));
+        self.audio_protocol.negotiated = false;
+        self.audio_worker = None;
     }
 
     // Clipboard handlers (plain text). See send_clipboard_* for the outbound side and clipboard.rs

@@ -10,11 +10,22 @@ It builds on MS Windows and Linux (X11 and Wayland).
 It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). Password
 authentication is supported (HMAC digest challenges — see [Authentication](#authentication) below).
 
-No server, no audio, no clipboard, etc..
+There is no server implementation. Plain-text clipboard synchronization is supported, as is automatic
+server-to-client speaker forwarding on Windows.
 
 On MS Windows there is a system tray icon with an **Exit** menu entry, and server-forwarded
 notifications are shown as balloons on it — see [System tray](#system-tray). Elsewhere notifications are only
 written to the client log.
+
+### Windows speaker forwarding
+
+On Windows 10 and later, server audio is enabled automatically when the system Media Foundation Opus decoder and
+the default WASAPI output endpoint are available. The client negotiates only the bare `opus` codec (no Matroska
+or Ogg container), receives audio asynchronously, and renders it through a bounded adaptive jitter buffer. If
+the native probe or output-device recovery fails, audio is disabled for that session without disconnecting it.
+
+Speaker forwarding is receive-only in this milestone: microphone forwarding, non-Opus codecs, and audio output
+on Linux/macOS are not implemented.
 
 ### Known Linux limitations
 
@@ -134,5 +145,4 @@ to be able to patch, so there is a feature to link the system `libwebp` shared l
 ```shell
 cargo build --release --features webp-dylib
 ```
-
 
