@@ -1,4 +1,7 @@
+<img src="assets/xpra.png" alt="Xpra logo" width="256">
+
 # rust-xpra
+
 Xpra client implemented in [rust](https://www.rust-lang.org/), for MS Windows and Linux.
 
 ## Status
@@ -145,4 +148,3 @@ to be able to patch, so there is a feature to link the system `libwebp` shared l
 ```shell
 cargo build --release --features webp-dylib
 ```
-
