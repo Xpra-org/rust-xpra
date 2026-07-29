@@ -26,6 +26,7 @@ see `build.rs` under "Known repo quirks"; without one the build still succeeds, 
 cargo build
 ./target/debug/xpra HOST:PORT     # xpra.exe on Windows
 ./target/debug/xpra wss://HOST:PORT/
+./target/debug/xpra               # no argument: ask for the details (src/client/connect_dialog.rs)
 ```
 
 `.cargo/config.toml` sets `TURBOJPEG_SOURCE=pkg-config` + `TURBOJPEG_STATIC=1` so that `turbojpeg` links against
@@ -168,12 +169,27 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `xor`/`des`/other digests fail cleanly. **Verify against a real server** (no test harness for this):
       `xpra start :N --bind-tcp=127.0.0.1:PORT --tcp-auth=password:value=PW`, then connect with `XPRA_PASSWORD=PW`
       (env path) or without it (pinentry / dialog path) and confirm `startup complete!`.
-  - `auth_dialog.rs` + `font8x8.rs`: the built-in password prompt (`AuthDialog`) used when there is no
+  - `auth_dialog.rs`: the built-in password prompt (`AuthDialog`) used when there is no
     `XPRA_PASSWORD` and no `pinentry` — a plain `winit`+`softbuffer` window drawn like `XpraWindow` but
     self-contained: it collects a password (echoing only `*`) and reports `Submit`/`Cancel` to `client.rs`, which
-    routes its events in `window_event` *before* the `id_map` lookup (the dialog has no `wid`). There is no text
-    dependency, so `font8x8.rs` is a public-domain 8x8 bitmap font (printable ASCII) blitted by hand into the
-    framebuffer. Works on every platform, so it is the universal fallback (Windows without GnuPG in particular).
+    routes its events in `window_event` *before* the `id_map` lookup (the dialog has no `wid`).
+    Works on every platform, so it is the universal fallback (Windows without GnuPG in particular).
+  - `connect_dialog.rs`: the **connection dialog** (`ConnectDialog`), shown when the binary is started with no
+    argument at all — protocol drop-down (`tcp`/`ssl`/`ws`/`wss`/`ssh`, each pre-filling the port with its
+    default: 10000, or 22 for ssh), host, port, optional username and password, plus `Cancel`/`Connect`. It only
+    *collects*: `handle_key`/`handle_mouse` return a `ConnectAction`, whose `Connect(ConnectDetails)` carries a
+    URI in exactly the form `parse_target` takes on the command line (`build_uri`, unit-tested against
+    `parse_target`) plus the username/password. Connecting, and the state machine around it, live in `main.rs`.
+    Two things it does that `auth_dialog.rs` does not: it is **DPI-aware** (a logical-size window, with the
+    layout written in the units of a 100% display and scaled through `px()`/`font_scale()`), and it hit-tests the
+    pointer itself (`Rect::contains` against rectangles computed in *physical* pixels, the same ones used to
+    draw, so the two cannot drift apart). Fields freeze while a connection attempt is in flight (`Status`).
+  - `font.rs` + `paint.rs`: what both dialogs draw with, since there is no text or widget dependency here.
+    `font.rs` is Spleen 8x16 (BSD-2-Clause, credited in the file and in `README.md`), printable ASCII only,
+    converted from the upstream BDF with the bit order reversed so bit 0 is the leftmost column; it replaced a
+    public-domain 8x8 font that had to be drawn at double size and looked it. `paint.rs` is `fill_rect` and
+    `outline`. Both dialogs measure text by counting characters, which only works because the font is monospaced
+    (`font::GLYPH_W`/`GLYPH_H`, `font::text_width`).
   - `remote_logging.rs`: **client→server log forwarding** (xpra's `--remote-logging=send`). `RemoteLogger` is
     the global `log::Log`: it wraps a `SimpleLogger` for unchanged local output *and* forwards info-and-above
     records to the server as `logging` packets, so they land in the server's log file (handy when the client runs
@@ -259,8 +275,24 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     same channel as draws (so still-queued draws for that window drain first), and the decode loop drops that
     `wid`'s `H264Decoder`.
 
-- `src/main.rs`: binary entry point. Connects the `TcpStream`, builds a `winit::event_loop::EventLoop<Packet>`,
-  spawns the decode thread, constructs `XpraClient`, and runs `event_loop.run_app(&mut client)`.
+- `src/main.rs`: binary entry point. Builds a `winit::event_loop::EventLoop<Packet>`, spawns the decode thread,
+  and runs `event_loop.run_app(&mut app)`. `App` — **not** `XpraClient` — is the `ApplicationHandler` for the
+  process, because **winit allows one event loop per process** (`EventLoopError::RecreationAttempt`), so the
+  connection dialog cannot be a throwaway loop run before the client's. `App` is therefore a two-state machine:
+  - `AppState::Session(XpraClient)`, entered immediately when a target was given on the command line (parsed and
+    connected *before* the event loop exists, so a bad address still exits with the right code and no window),
+    or later from the dialog. Every `ApplicationHandler` callback `XpraClient` implements is delegated to it,
+    which is a thing to keep in sync when adding one there.
+  - `AppState::Prompt(Option<ConnectDialog>)` otherwise: the dialog is created in `resumed` (creating a window
+    needs the `ActiveEventLoop`). `Connect` runs `connect()` on a **worker thread** — a dropped SYN takes tens of
+    seconds to time out and the dialog must keep drawing — which hands the `Connection` back over a channel and
+    posts a synthesized client-side `connect-result` packet, the same pattern as `pinentry`/`draw-decoded`.
+    A failure is shown in the dialog and retried, not exited on. On success `start_session` builds the client,
+    passes it the dialog's softbuffer `Context` and the collected username/password, and **calls `resumed` on it
+    by hand**: winit only fires `resumed` once, back when the dialog was up.
+
+  `XpraClient::username`/`password` are `None` on the command-line path; when the dialog filled them in, the
+  username overrides the environment's in `hello` and the password is the first source `process_challenge` tries.
 
 ### Threading model
 

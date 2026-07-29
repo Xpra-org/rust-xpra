@@ -200,6 +200,12 @@ pub struct XpraClient {
     // tooltip and menu header. Only read on Windows, which is the only platform with a tray.
     #[cfg_attr(not(windows), allow(dead_code))]
     pub target: String,
+    // credentials collected by the connection dialog (see connect_dialog.rs), when the client was
+    // started without a target on the command line. `username` overrides the one we would otherwise
+    // take from the environment in `hello`; `password` answers an authentication challenge without
+    // prompting a second time (see process_challenge). Both `None` on the command-line path.
+    pub username: Option<String>,
+    pub password: Option<String>,
     // the Windows notification-area icon and its "Exit" menu (see tray.rs), created in `resumed`
     // and removed when this client is dropped. `None` if the tray could not be created, which is
     // not fatal - the client just has no tray.
@@ -318,6 +324,8 @@ impl XpraClient {
             clipboard_enabled: false,
             last_clipboard: String::new(),
             target,
+            username: None,
+            password: None,
             #[cfg(windows)]
             tray: None,
             #[cfg(windows)]
@@ -354,7 +362,11 @@ impl XpraClient {
             "macos" => "darwin",
             other => other,
         };
-        let username = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_default();
+        // the username typed in the connection dialog wins over the one we are running as: it is
+        // the account the *session* belongs to, which is what a server authenticating per-user
+        // matches against (and what its password prompt names).
+        let env_username = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_default();
+        let username = self.username.clone().unwrap_or(env_username);
         // h264 is decoded via Media Foundation, which is Windows-only:
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut encodings = vec!["jpeg", "png", "webp"];
@@ -975,7 +987,14 @@ impl XpraClient {
         }
         self.pending_challenge = Some(server_salt);
 
-        // password source 1: XPRA_PASSWORD, for non-interactive (scripted / tested) runs.
+        // password source 1: the connection dialog, when the user filled its (optional) password
+        // field - they have already been asked, so do not ask again.
+        if let Some(pw) = self.password.clone().filter(|pw| !pw.is_empty()) {
+            info!("authenticating with the password from the connection dialog");
+            self.answer_challenge(&pw);
+            return;
+        }
+        // source 2: XPRA_PASSWORD, for non-interactive (scripted / tested) runs.
         if let Ok(pw) = env::var("XPRA_PASSWORD") {
             if !pw.is_empty() {
                 info!("authenticating with the password from XPRA_PASSWORD");
@@ -986,14 +1005,14 @@ impl XpraClient {
         // the server's prompt is usually descriptive already (e.g. "password for user 'foo'"),
         // so just prefix it, mirroring xpra's own "Please enter the {prompt}".
         let prompt_text = format!("Enter {prompt}");
-        // source 2: pinentry when it is on PATH - a native secure prompt. It blocks while the user
+        // source 3: pinentry when it is on PATH - a native secure prompt. It blocks while the user
         // types, so it runs on a worker thread that posts the result back (see spawn_pinentry).
         if let Some(prog) = find_pinentry() {
             debug!("prompting for the password via {prog}");
             spawn_pinentry(prog, prompt_text, self.proxy.clone());
             return;
         }
-        // source 3: the built-in dialog - the universal fallback (e.g. Windows without GnuPG).
+        // source 4: the built-in dialog - the universal fallback (e.g. Windows without GnuPG).
         self.show_auth_dialog(event_loop, prompt_text);
     }
 
@@ -1041,6 +1060,9 @@ impl XpraClient {
                 }
             }
             WindowEvent::CloseRequested => self.cancel_auth(event_loop),
+            // as in the connection dialog: the presses winit synthesizes for keys already held
+            // when the window takes focus are not typed input, and would end up in the password.
+            WindowEvent::KeyboardInput { is_synthetic: true, .. } => {}
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 let action = match self.auth_dialog.as_mut() {
                     Some(dialog) => dialog.handle_key(&key_event),

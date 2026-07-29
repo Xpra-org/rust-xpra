@@ -2,6 +2,7 @@
 
 ## [0.3.0]
 * ✨ Features:
+  * connection dialog when started without any arguments
   * [system tray icon with an `Exit` menu entry (MS Windows)](https://github.com/Xpra-org/rust-xpra/issues/8)
   * [show server-forwarded notifications as tray balloons (MS Windows)](https://github.com/Xpra-org/rust-xpra/issues/10)
 * 🔧 Platforms, build and packaging:

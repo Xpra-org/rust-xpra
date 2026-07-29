@@ -9,7 +9,8 @@ use winit::event_loop::{ActiveEventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::Window;
 
-use super::font8x8;
+use super::font;
+use super::paint::outline;
 
 // What a key press did to the dialog, reported back to the event loop.
 pub enum DialogAction {
@@ -88,23 +89,20 @@ impl AuthDialog {
         for px in self.framebuffer.iter_mut() {
             *px = BG;
         }
-        // prompt text at scale 2, dropping to scale 1 if it wouldn't fit (long usernames), so it
-        // is never clipped mid-word:
-        let max_w = self.width as i32 - 24;
-        let prompt_scale = if self.prompt.len() as i32 * 8 * 2 <= max_w { 2 } else { 1 };
-        font8x8::blit_str(&mut self.framebuffer, fbw, 12, 18, prompt_scale, &self.prompt, FG);
+        // the prompt (a long one - the server names the user in it - is clipped at the edge):
+        font::blit_str(&mut self.framebuffer, fbw, 12, 16, 1, &self.prompt, FG);
         // password field outline + one '*' per typed character (never the text):
         let (fx, fy) = (12i32, 56i32);
         let (fwid, fhei) = (self.width as i32 - 24, 26i32);
         outline(&mut self.framebuffer, fbw, fx, fy, fwid, fhei, FG);
         let mask = "*".repeat(self.password.chars().count());
-        font8x8::blit_str(&mut self.framebuffer, fbw, fx + 8, fy + 6, 2, &mask, FG);
+        font::blit_str(&mut self.framebuffer, fbw, fx + 8, fy + 5, 1, &mask, FG);
         // hint line along the bottom:
-        font8x8::blit_str(
+        font::blit_str(
             &mut self.framebuffer,
             fbw,
             12,
-            self.height as i32 - 20,
+            self.height as i32 - 26,
             1,
             "Enter = OK     Esc = cancel",
             HINT,
@@ -155,23 +153,5 @@ impl AuthDialog {
 
     pub fn into_password(self) -> String {
         self.password
-    }
-}
-
-// Draw a 1px rectangle outline into a `fbw`-wide framebuffer, clipped to it.
-fn outline(fb: &mut [u32], fbw: usize, x: i32, y: i32, w: i32, h: i32, color: u32) {
-    let fbh = (fb.len() / fbw.max(1)) as i32;
-    let mut put = |px: i32, py: i32| {
-        if px >= 0 && px < fbw as i32 && py >= 0 && py < fbh {
-            fb[py as usize * fbw + px as usize] = color;
-        }
-    };
-    for px in x..x + w {
-        put(px, y);
-        put(px, y + h - 1);
-    }
-    for py in y..y + h {
-        put(x, py);
-        put(x + w - 1, py);
     }
 }

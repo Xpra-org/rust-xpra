@@ -2,8 +2,10 @@ pub mod auth_dialog;
 pub mod audio;
 pub mod client;
 pub mod clipboard;
+pub mod connect_dialog;
 pub mod draw_decoder;
-pub mod font8x8;
+pub mod font;
+pub mod paint;
 pub mod pinentry;
 pub mod remote_logging;
 #[cfg(windows)]

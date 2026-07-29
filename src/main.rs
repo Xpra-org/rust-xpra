@@ -3,9 +3,14 @@ extern crate alloc;
 use std::env;
 use std::net::TcpStream;
 use std::process;
-use std::sync::mpsc::channel;
-use log::{error, LevelFilter};
-use winit::event_loop::EventLoop;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
+use log::{debug, error, info, LevelFilter};
+use softbuffer::Context;
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy, OwnedDisplayHandle};
+use winit::window::WindowId;
 use xpra::exit_codes::ExitCode;
 use xpra::net::connection::Connection;
 use xpra::net::packet::Packet;
@@ -13,7 +18,8 @@ use xpra::net::uri::{host_only, parse_target, Scheme, Target};
 use xpra::net::{ssh, tls, websocket};
 
 mod client;
-use client::client::XpraClient;
+use client::client::{client_packet, XpraClient};
+use client::connect_dialog::{ConnectAction, ConnectDetails, ConnectDialog};
 use client::remote_logging::{self, LogSink};
 
 
@@ -34,24 +40,33 @@ fn main() {
 
 fn run(log_sink: LogSink) -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
+    if args.len() > 2 {
         error!("invalid number of arguments: {:?}", args.len());
-        error!("usage: {:?} HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/ | ssh://[USER@]HOST[:PORT]/[DISPLAY]", args[0]);
+        error!("usage: {:?} [HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/ | ssh://[USER@]HOST[:PORT]/[DISPLAY]]", args[0]);
+        error!("with no argument at all, a dialog asks for the connection details");
         return ExitCode::ArgumentMismatch;
     }
-    let target = match parse_target(&args[1]) {
-        Ok(target) => target,
-        Err(message) => {
-            error!("{}", message);
-            return ExitCode::ArgumentMismatch;
+    // with a target on the command line we connect before doing anything else, so that a bad
+    // address is reported (and exited on) without ever opening a window. With no argument, the
+    // connection dialog collects one instead - see AppState below.
+    let session = match args.get(1) {
+        Some(target_str) => {
+            let target = match parse_target(target_str) {
+                Ok(target) => target,
+                Err(message) => {
+                    error!("{}", message);
+                    return ExitCode::ArgumentMismatch;
+                }
+            };
+            match connect(&target) {
+                Ok(connection) => Some((connection, target_str.clone())),
+                Err((exit_code, message)) => {
+                    error!("{}", message);
+                    return exit_code;
+                }
+            }
         }
-    };
-    let connection = match connect(&target) {
-        Ok(connection) => connection,
-        Err((exit_code, message)) => {
-            error!("{}", message);
-            return exit_code;
-        }
+        None => None,
     };
 
     let event_loop = match EventLoop::<Packet>::with_user_event().build() {
@@ -68,15 +83,265 @@ fn run(log_sink: LogSink) -> ExitCode {
     let proxy = event_loop.create_proxy();
     XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx);
 
-    // args[1] as typed, rather than the parsed target: it is what the user will recognise in the
-    // system tray's tooltip and menu header (see client/tray.rs).
-    let mut client = XpraClient::new(connection, proxy, decode_tx, log_sink, args[1].clone());
-    if let Err(e) = event_loop.run_app(&mut client) {
+    let mut app = App::new(proxy, decode_tx, log_sink);
+    if let Some((connection, target)) = session {
+        // args[1] as typed, rather than the parsed target: it is what the user will recognise in
+        // the system tray's tooltip and menu header (see client/tray.rs).
+        app.state = AppState::Session(app.new_client(connection, target, None, None));
+    }
+    if let Err(e) = event_loop.run_app(&mut app) {
         error!("event loop error: {}", e);
         return ExitCode::InternalError;
     }
-    // whatever ended the session: a server `disconnect`, a lost connection, or a clean exit.
-    client.exit_code.unwrap_or(ExitCode::Ok)
+    app.exit_code()
+}
+
+
+// The `ApplicationHandler` for the whole process. winit allows a single event loop per process, so
+// the connection dialog cannot run its own before the client's: both are states of this one
+// handler, which starts in `Prompt` when there was no target on the command line and switches to
+// `Session` once a connection is up. Everything it does beyond that is delegation to XpraClient -
+// which implements `ApplicationHandler` itself, and must keep having every callback it implements
+// forwarded here.
+struct App {
+    state: AppState,
+    // the softbuffer context, created for the dialog and handed over to the client with the rest of
+    // its window state; `None` once the session owns it (or until `resumed` runs).
+    context: Option<Context<OwnedDisplayHandle>>,
+    proxy: EventLoopProxy<Packet>,
+    decode_sender: Sender<Packet>,
+    log_sink: LogSink,
+    // the connection attempt started from the dialog: what the user asked for, and the channel the
+    // worker thread hands the outcome back on (see start_connect / finish_connect).
+    pending: Option<ConnectDetails>,
+    connect_rx: Option<Receiver<Result<Connection, (ExitCode, String)>>>,
+    // set when the dialog is cancelled or cannot be shown; the session's own exit code wins.
+    exit_code: Option<ExitCode>,
+}
+
+enum AppState {
+    // no target on the command line: the dialog collects one. `None` until `resumed` creates the
+    // window, which needs the `ActiveEventLoop` we only get there.
+    Prompt(Option<ConnectDialog>),
+    Session(XpraClient),
+}
+
+// A client-side packet type (like "draw-decoded" or "send-ping"): the connect worker thread posts
+// it to tell the UI thread that its result is waiting on the channel.
+const CONNECT_RESULT: &str = "connect-result";
+
+impl App {
+    fn new(proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink) -> Self {
+        App {
+            state: AppState::Prompt(None),
+            context: None,
+            proxy,
+            decode_sender,
+            log_sink,
+            pending: None,
+            connect_rx: None,
+            exit_code: None,
+        }
+    }
+
+    fn new_client(
+        &self,
+        connection: Connection,
+        target: String,
+        username: Option<String>,
+        password: Option<String>,
+    ) -> XpraClient {
+        let mut client = XpraClient::new(
+            connection,
+            self.proxy.clone(),
+            self.decode_sender.clone(),
+            self.log_sink.clone(),
+            target,
+        );
+        client.username = username;
+        client.password = password;
+        client
+    }
+
+    fn dialog(&mut self) -> Option<&mut ConnectDialog> {
+        match &mut self.state {
+            AppState::Prompt(dialog) => dialog.as_mut(),
+            AppState::Session(_) => None,
+        }
+    }
+
+    fn quit(&mut self, event_loop: &ActiveEventLoop, exit_code: ExitCode) {
+        if self.exit_code.is_none() {
+            self.exit_code = Some(exit_code);
+        }
+        event_loop.exit();
+    }
+
+    // whatever ended the session: a server `disconnect`, a lost connection, a clean exit - or, if
+    // we never got that far, whatever ended the dialog.
+    fn exit_code(&self) -> ExitCode {
+        match &self.state {
+            AppState::Session(client) => client.exit_code,
+            AppState::Prompt(_) => None,
+        }
+        .or(self.exit_code)
+        .unwrap_or(ExitCode::Ok)
+    }
+
+    fn show_dialog(&mut self, event_loop: &ActiveEventLoop) {
+        let context = match Context::new(event_loop.owned_display_handle()) {
+            Ok(context) => context,
+            Err(e) => {
+                error!("failed to create the softbuffer context: {:?}", e);
+                self.quit(event_loop, ExitCode::InternalError);
+                return;
+            }
+        };
+        match ConnectDialog::new(event_loop, &context) {
+            Ok(dialog) => {
+                self.context = Some(context);
+                self.state = AppState::Prompt(Some(dialog));
+            }
+            Err(e) => {
+                error!("{e}");
+                self.quit(event_loop, ExitCode::InternalError);
+            }
+        }
+    }
+
+    fn handle_dialog_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        let Some(dialog) = self.dialog() else {
+            return;
+        };
+        if dialog.window.id() != window_id {
+            return;
+        }
+        let action = match event {
+            // the dialog re-reads its size and the display's scale factor on every draw, so a
+            // resize or a move to a differently-scaled monitor only needs one:
+            WindowEvent::RedrawRequested
+            | WindowEvent::Resized(_)
+            | WindowEvent::ScaleFactorChanged { .. } => {
+                dialog.draw();
+                return;
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                dialog.set_modifiers(modifiers.state());
+                return;
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                dialog.set_pointer(position);
+                return;
+            }
+            WindowEvent::MouseInput { state, button, .. } => dialog.handle_mouse(state, button),
+            // winit synthesizes a press for every key already held when a window takes focus, and
+            // starting the client from a shell routinely leaves one down: typing those would put a
+            // stray character in the focused field.
+            WindowEvent::KeyboardInput { is_synthetic: true, .. } => return,
+            WindowEvent::KeyboardInput { event: key_event, .. } => dialog.handle_key(&key_event),
+            WindowEvent::CloseRequested => ConnectAction::Cancel,
+            _ => return,
+        };
+        match action {
+            ConnectAction::None => {}
+            ConnectAction::Cancel => {
+                info!("connection cancelled");
+                self.quit(event_loop, ExitCode::Ok);
+            }
+            ConnectAction::Connect(details) => self.start_connect(details),
+        }
+    }
+
+    // Connect on a worker thread: `connect` blocks (a dropped SYN takes tens of seconds to time
+    // out, and ssh may be waiting on a host-key confirmation), and the UI thread must keep drawing
+    // the dialog. The outcome comes back the way the pinentry and decode threads report theirs -
+    // over a channel, with a synthesized client-side packet to wake the UI thread up.
+    fn start_connect(&mut self, details: ConnectDetails) {
+        let target = match parse_target(&details.uri) {
+            Ok(target) => target,
+            Err(message) => {
+                if let Some(dialog) = self.dialog() {
+                    dialog.set_error(message);
+                }
+                return;
+            }
+        };
+        info!("connecting to {}", details.uri);
+        if let Some(dialog) = self.dialog() {
+            dialog.set_connecting(&details.uri);
+        }
+        let (tx, rx) = channel();
+        self.connect_rx = Some(rx);
+        self.pending = Some(details);
+        let proxy = self.proxy.clone();
+        thread::Builder::new().name("connect".to_string()).spawn(move || {
+            let _ = tx.send(connect(&target));
+            let _ = proxy.send_event(client_packet(CONNECT_RESULT, ""));
+        }).unwrap();
+    }
+
+    fn finish_connect(&mut self, event_loop: &ActiveEventLoop) {
+        let (Some(rx), Some(details)) = (self.connect_rx.take(), self.pending.take()) else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(connection)) => self.start_session(event_loop, connection, details),
+            Ok(Err((_exit_code, message))) => {
+                // unlike the command-line path this is not fatal: report it in the dialog and let
+                // the user correct the details and try again.
+                error!("{message}");
+                if let Some(dialog) = self.dialog() {
+                    dialog.set_error(message);
+                }
+            }
+            Err(e) => error!("no connection result: {e}"),
+        }
+    }
+
+    fn start_session(&mut self, event_loop: &ActiveEventLoop, connection: Connection, details: ConnectDetails) {
+        let mut client = self.new_client(connection, details.uri, details.username, details.password);
+        // hand over the dialog's softbuffer context rather than making a second one; dropping the
+        // dialog below closes its window.
+        client.softbuffer_ctx = self.context.take();
+        self.state = AppState::Session(client);
+        // winit only calls `resumed` once, at startup - by which time we were still showing the
+        // dialog - so the client's own startup (read loop, hello, system tray) happens here.
+        if let AppState::Session(client) = &mut self.state {
+            client.resumed(event_loop);
+        }
+    }
+}
+
+
+impl ApplicationHandler<Packet> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        match &mut self.state {
+            AppState::Session(client) => client.resumed(event_loop),
+            AppState::Prompt(Some(_)) => {}
+            AppState::Prompt(None) => self.show_dialog(event_loop),
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, packet: Packet) {
+        if let AppState::Session(client) = &mut self.state {
+            client.user_event(event_loop, packet);
+            return;
+        }
+        // nothing generates packets before there is a session, bar the connect worker:
+        if packet.len() > 0 && packet.get_str(0) == CONNECT_RESULT {
+            self.finish_connect(event_loop);
+        } else {
+            debug!("ignoring {:?} received before the session started", packet);
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: WindowId, event: WindowEvent) {
+        if let AppState::Session(client) = &mut self.state {
+            client.window_event(event_loop, window_id, event);
+            return;
+        }
+        self.handle_dialog_event(event_loop, window_id, event);
+    }
 }
 
 

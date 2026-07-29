@@ -59,6 +59,7 @@ notifications are shown as balloons on that tray icon, so they too are Windows-o
 
 ```shell
 cargo build
+./target/debug/xpra                 # asks for the connection details, see below
 ./target/debug/xpra HOST:PORT
 ./target/debug/xpra tcp://HOST:PORT/
 ./target/debug/xpra ssl://HOST:PORT/
@@ -66,6 +67,23 @@ cargo build
 ./target/debug/xpra wss://HOST:PORT/
 ./target/debug/xpra ssh://[USER@]HOST[:PORT]/[DISPLAY]
 ```
+
+Started **without any argument**, the client opens a small connection dialog instead of exiting: a protocol
+drop-down (which pre-fills the port with that protocol's default — 10000, or 22 for `ssh`), a host, a port, and
+an optional username and password, plus **Cancel** and **Connect**. `Tab` moves between the fields, the arrow
+keys pick the protocol, `Enter` connects and `Esc` cancels (exit status `0`). The connection is made in the
+background, so the dialog stays responsive and reports a failure (wrong port, no server, bad certificate, ...)
+in place, ready for another attempt, rather than exiting.
+
+The username is only part of the connection itself for `ssh` (`ssh://USER@HOST/`); for the other protocols it is
+sent in the client's `hello`, which is what a server authenticating per-user matches against. The password is
+the *session* password — it answers the server's authentication challenge (see [Authentication](#authentication))
+without prompting again — and never the ssh password: `ssh` asks for its own credentials on the terminal.
+
+Like the password prompt, the dialog is drawn with the same `winit`/`softbuffer` stack as the rest of the client
+(there is no widget toolkit here — windows are server-rendered pixels), with its text blitted from a bundled
+bitmap font: [Spleen](https://github.com/fcambus/spleen) 8x16, Copyright (c) 2018-2026, Frederic Cambus,
+BSD-2-Clause.
 
 Only the `tcp`, `ssl`, `ws`, `wss` and `ssh` protocols are supported; any other protocol in the URI is rejected.
 `ws` support (HTTP upgrade handshake and frame framing) is hand-rolled against `std` only, to avoid pulling in a
@@ -118,11 +136,12 @@ Servers that require a password (xpra's `password`/`file`/`multifile`/`sqlite`/`
 `challenge`; the client answers it with an HMAC-SHA256 digest of the password. When a challenge arrives, the
 password is obtained from — in order:
 
-1. the `XPRA_PASSWORD` environment variable, if set (non-interactive; handy for scripts);
-2. [`pinentry`](https://www.gnupg.org/related_software/pinentry/), if one is found on `PATH` (honouring
+1. the connection dialog's password field, when the client was started without arguments and it was filled in;
+2. the `XPRA_PASSWORD` environment variable, if set (non-interactive; handy for scripts);
+3. [`pinentry`](https://www.gnupg.org/related_software/pinentry/), if one is found on `PATH` (honouring
    `PINENTRY_PROGRAM`) — the same native, secure prompt GnuPG uses (GTK/Qt/curses on Linux, `pinentry-mac` on
    macOS);
-3. otherwise a small built-in password dialog (drawn with the same `winit`/`softbuffer` stack as the rest of the
+4. otherwise a small built-in password dialog (drawn with the same `winit`/`softbuffer` stack as the rest of the
    client), so a prompt is always available — including on Windows, where `pinentry` is normally absent.
 
 Only the `hmac+sha256` digest is implemented (it is the only one advertised, so the server always picks it);
