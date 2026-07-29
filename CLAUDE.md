@@ -106,22 +106,37 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
   - `net/io.rs`: packet framing over a `Connection` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
     `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload, written
     as a single `Connection::write_all` call. We write only YAML-encoded, uncompressed, unchunked packets (the
-    header's compression/chunk bytes are always 0 outbound), and reject any non-YAML or chunked packet on read.
-    **Inbound lz4 is supported**, though: the client advertises `compressors=["lz4"]` + a non-zero
+    header's compression/chunk bytes are always 0 outbound), and reject a non-YAML main packet on read.
+    **Out-of-band chunks are supported inbound** (hello capability `chunks: true`): rather than base64-inlining a
+    large binary item into the YAML payload, the server sends it as its own packet whose header's chunk byte is
+    the index of the packet field it belongs to — pixel data (index 7 of a `draw`), window icons, cursors. The
+    chunks come first, the main packet last with index 0, so `read_packet` loops until it sees index 0 and returns
+    a `RawPacket { payload, chunks }`; `serde::parse_packet` moves the chunks into `Packet.raw`, where `get_bytes`
+    reads them in preference to the empty placeholder the sender left in the YAML. A chunk header names no packet
+    encoder (its flags byte is 0), so the `FLAGS_YAML` check applies to the main packet only — which also sets
+    `FLAGS_FLUSH` (0x8) alongside it, hence a mask rather than an equality test. The limits mirror xpra's own
+    receive loop (`process_payload`): chunk index < 16, at most 4 chunks, no duplicate index.
+    **Inbound lz4 is supported**, too: the client advertises `compressors=["lz4"]` + a non-zero
     `compression_level` in its hello (see `send_hello`), so the server compresses its packets to us — including,
     right away, the large hello reply. When the header's compression byte is non-zero, `read_packet` decompresses
     the payload before returning it (`decompress`): the algorithm is in the byte's high bits (`0x10`=lz4,
     `0x40`=brotli, `0x80`=zstd, low nibble = level; xpra `net/protocol/header.py`) and only lz4 is accepted, since
-    it's the only compressor we advertise. xpra's lz4 framing is a 4-byte little-endian uncompressed-size prefix +
+    it's the only compressor we advertise. A chunk can carry its own compression the same way (xpra's
+    `LevelCompressed`); an unsupported algorithm there is *not* fatal — the chunk is dropped with a warning and
+    the field reads back empty, because the server brotli-compresses clipboard payloads over ~380 bytes without
+    negotiating it (`server/source/clipboard.py`), and losing a paste beats losing the session. xpra's lz4 framing
+    is a 4-byte little-endian uncompressed-size prefix +
     a raw lz4 block, which is exactly `lz4_flex`'s size-prepended block format (pure-Rust, `default-features` off
     so no xxhash/frame dependency; `safe-decode` for memory safety on adversarial input). Outbound packets stay
     uncompressed — they're small input events, all below the server's `MIN_COMPRESS_SIZE`, so there's nothing to
     gain and no compressor is linked for the write path.
-  - `net/serde.rs`: parses the YAML payload into a `Packet`.
+  - `net/serde.rs`: `parse_packet` turns a `RawPacket` into a `Packet` — the YAML payload gives the positional
+    fields, the out-of-band chunks become `raw`.
   - `net/packet.rs`: `Packet { main: Vec<Yaml>, raw: HashMap<u8, Vec<u8>> }` — `main` holds the positional fields
     of an Xpra packet (`main[0]` is always the packet type string); `raw` holds binary payloads that get spliced
-    in by index (used for decoded pixel data). Accessors (`get_u32`, `get_str`, `get_bytes`, `get_hash_str`, ...)
-    index into `main` by position, matching the Xpra packet spec for each packet type. `Packet` is `Send` (plain
+    in by index (the wire's out-of-band chunks, and the decode thread's decoded pixel data). Accessors
+    (`get_u32`, `get_str`, `get_bytes`, `get_hash_str`, ...) index into `main` by position — except `get_bytes`,
+    which returns the `raw` entry for that index when there is one — matching the Xpra packet spec per packet type. `Packet` is `Send` (plain
     owned data) — it's passed directly across threads via `EventLoopProxy`, see below.
 
 - `src/client/` (declared via `mod client;` in `main.rs`, submodules listed in `src/client/mod.rs`): the GUI

@@ -1,16 +1,21 @@
 use std::io::{Error, ErrorKind};
 use std::result::{Result};
 use std::{str};
-use std::collections::HashMap;
 use log::{error};
 use yaml_rust2::{YamlLoader, Yaml};
+use crate::net::io::RawPacket;
 use crate::net::packet::Packet;
 
 
 pub const VERSION_KEY_STR: &str = "version";
 
 
-pub fn parse_payload(mut payload: Vec<u8>) -> Result<Packet, Error> {
+// Turn one packet read off the wire into a `Packet`: its YAML payload gives the positional
+// fields, and any out-of-band chunks that came with it are kept aside in `raw`, keyed by the
+// field index they belong to. `Packet::get_bytes` reads those in preference to the (empty)
+// placeholder the sender left in the YAML - see net::io.
+pub fn parse_packet(raw: RawPacket) -> Result<Packet, Error> {
+    let RawPacket{ mut payload, chunks } = raw;
     let payload_buf: &mut [u8] = payload.as_mut_slice();
     let payload_str = match str::from_utf8(payload_buf) {
         Ok(payload_str) => payload_str,
@@ -29,7 +34,7 @@ pub fn parse_payload(mut payload: Vec<u8>) -> Result<Packet, Error> {
     // error!("packet = {:?}", packet);
     match packet {
         Yaml::Array(array) => {
-            Ok(Packet{ main: array.to_vec(), raw: HashMap::new(), decode_time_us: None })
+            Ok(Packet{ main: array.to_vec(), raw: chunks, decode_time_us: None })
         },
         _ => {
             error!("packet is not an array: {:?}", packet);

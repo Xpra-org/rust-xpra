@@ -30,7 +30,7 @@ use xpra::net::serde::VERSION_KEY_STR;
 use xpra::VERSION;
 use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
-use xpra::net::serde::parse_payload;
+use xpra::net::serde::parse_packet;
 use xpra::net::packet::{Packet, yaml_hash_bool};
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
@@ -397,7 +397,11 @@ impl XpraClient {
             // the packet encoders we can read, negotiated against the server's own list
             // (enable_encoder_from_caps, xpra net/protocol/socket_handler.py).
             "encoders": ["yaml"],
-            "chunks": false,
+            // out-of-band chunks: let the server send large binary items (pixel data, window
+            // icons, cursors, clipboard payloads) as their own packets instead of base64-inlining
+            // them in the YAML payload - which costs a third more bytes and a decode pass on our
+            // side. See net::io's read_packet for the reassembly.
+            "chunks": true,
             // packet compression: advertise lz4 (the only algorithm we decompress, see net::io)
             // and a non-zero level so the server actually compresses its packets to us - it falls
             // back to "none" when compression_level is 0 (xpra server/core.py). This is inbound
@@ -668,8 +672,8 @@ impl XpraClient {
         let mut stream = self.stream.try_clone().unwrap();
         thread::Builder::new().name("reader".to_string()).spawn(move || loop {
             let t0 = Instant::now();
-            let payload = match read_packet(&mut stream) {
-                Ok(payload) => payload,
+            let raw = match read_packet(&mut stream) {
+                Ok(raw) => raw,
                 Err(e) => {
                     // the server closed the connection (or died): hand the reason to the UI
                     // thread, which logs it and exits the event loop.
@@ -679,8 +683,10 @@ impl XpraClient {
                 }
             };
             let read_elapsed = t0.elapsed();
-            let payload_len = payload.len();
-            let packet = match parse_payload(payload) {
+            // payload + out-of-band chunks: with `chunks` enabled the bulk of a draw packet
+            // (the pixel data) arrives as a chunk rather than in the payload.
+            let payload_len = raw.size();
+            let packet = match parse_packet(raw) {
                 Ok(packet) => packet,
                 Err(e) => {
                     let _ = proxy.send_event(client_packet("invalid-packet", &e.to_string()));
