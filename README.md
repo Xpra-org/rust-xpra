@@ -13,6 +13,11 @@ It builds on MS Windows and Linux (X11 and Wayland).
 It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). Password
 authentication is supported (HMAC digest challenges — see [Authentication](#authentication) below).
 
+It requires an **xpra 6.6 or later** server: every packet it sends uses the packet types introduced in
+xpra 6.5, two of which (`clipboard-data`, and the argument order of `window-draw-ack`) only settled in
+6.6. The server must be left in its default backwards-compatible mode, since the packets the client
+*receives* are still the pre-6.5 ones.
+
 There is no server implementation. Plain-text clipboard synchronization is supported, as is automatic
 server-to-client speaker forwarding on Windows.
 
@@ -40,7 +45,7 @@ itself does not let clients query or set their absolute desktop position:
   unlike true override-redirect).
 - Server-initiated window moves (`window-move-resize`) only apply the size on Wayland; the position component is
   silently skipped.
-- Outgoing window geometry (`map-window`/`configure-window`) reports `(0, 0)` as the position on Wayland, since
+- Outgoing window geometry (`window-map`/`window-configure`) reports `(0, 0)` as the position on Wayland, since
   there is no OS API to query it.
 - NumLock state is not reported to the server (winit does not expose toggle/lock key state, only held
   modifiers).

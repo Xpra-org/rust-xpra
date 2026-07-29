@@ -174,7 +174,7 @@ impl XpraWindow {
 
     // convert a position relative to the client area into the absolute coordinates
     // xpra expects, using the same window origin as get_geometry() (which is what
-    // map-window / configure-window told the server) so the two stay consistent -
+    // window-map / window-configure told the server) so the two stay consistent -
     // on Wayland both fall back to (0,0) and the server sees window-relative values.
     pub fn absolute_position(&self, position: PhysicalPosition<f64>) -> (i32, i32) {
         let origin = self.window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));

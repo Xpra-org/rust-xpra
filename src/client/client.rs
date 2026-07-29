@@ -387,9 +387,16 @@ impl XpraClient {
             encoding_caps["full_csc_modes"] = json!({ "h264": ["YUV420P"] });
             encoding_caps["h264"] = json!({ "YUV420P.profile": "high" });
         }
+        // the picture encodings we can decode (parse_encoding_caps, xpra server/source/encoding.py).
+        // The two lists are identical here: every encoding we advertise is one draw_decoder.rs
+        // handles directly, none is a container for another.
+        encoding_caps["options"] = json!(encodings);
+        encoding_caps["core"] = json!(encodings);
         let mut packet = json!(["hello", {
             "version": VERSION,
-            "yaml": true,
+            // the packet encoders we can read, negotiated against the server's own list
+            // (enable_encoder_from_caps, xpra net/protocol/socket_handler.py).
+            "encoders": ["yaml"],
             "chunks": false,
             // packet compression: advertise lz4 (the only algorithm we decompress, see net::io)
             // and a non-zero level so the server actually compresses its packets to us - it falls
@@ -452,7 +459,6 @@ impl XpraClient {
                 "preferred-targets": ["UTF8_STRING", "STRING", "text/plain"],
             },
             "ping": true,
-            "encodings": encodings,
             "encoding": encoding_caps,
             "client_type": "rust",
             "platform": platform,
@@ -482,14 +488,14 @@ impl XpraClient {
     }
 
     pub fn send_focus(&mut self, wid: u64) {
-        let packet = json!(["focus", wid]);
+        let packet = json!(["window-focus", wid]);
         self.write_json(packet);
     }
 
     fn send_pointer_position(&mut self, wid: u64, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
-        let packet = json!(["pointer", device_id, sequence, wid, [x, y], {}]);
+        let packet = json!(["pointer-motion", device_id, sequence, wid, [x, y], {}]);
         self.write_json(packet);
     }
 
@@ -500,10 +506,21 @@ impl XpraClient {
         self.write_json(packet);
     }
 
+    // `keyboard-event` replaced the positional `key-action` packet: everything after `pressed` is
+    // now a single attributes dict, so a client can leave out what it doesn't know (the server
+    // defaults each key - xpra server/subsystem/keyboard.py do_process_keyboard_event). We fill in
+    // the same five keys xpra's own clients send; `keyval` stays 0 because we derive the keyname
+    // from winit rather than from an X11 keysym.
     fn send_key_event(&mut self, wid: u64, keycode: u32, keyname: &str, keystr: &str, pressed: bool) {
         let modifiers = self.get_modifier_state();
         let group = 0;
-        let packet = json!(["key-action", wid, keyname, pressed, modifiers, 0, keystr, keycode, group]);
+        let packet = json!(["keyboard-event", wid, keyname, pressed, {
+            "modifiers": modifiers,
+            "keyval": 0,
+            "string": keystr,
+            "keycode": keycode,
+            "group": group,
+        }]);
         self.write_json(packet);
     }
 
@@ -522,17 +539,22 @@ impl XpraClient {
     }
 
     fn send_window_map(&mut self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
-        let packet = json!(["map-window", wid, x, y, w, h, {}, {}]);
+        let packet = json!(["window-map", wid, x, y, w, h, {}, {}]);
         self.write_json(packet);
     }
 
+    // `window-configure` replaced the positional `configure-window` packet: the geometry, client
+    // properties, window state and pointer data all moved into one dict, keyed by name, and every
+    // key is optional (xpra server/subsystem/window.py _process_window_configure). We only ever had
+    // a geometry to report, so that is all we put in it - omitting "state"/"properties" is the same
+    // as the empty dicts the old packet had to carry.
     fn send_window_configure(&mut self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
-        let packet = json!(["configure-window", wid, x, y, w, h, {}]);
+        let packet = json!(["window-configure", wid, { "geometry": [x, y, w, h] }]);
         self.write_json(packet);
     }
 
     fn send_window_close(&mut self, wid: u64) {
-        let packet = json!(["close-window", wid]);
+        let packet = json!(["window-close", wid]);
         self.write_json(packet);
     }
 
@@ -540,16 +562,24 @@ impl XpraClient {
 
     // Announce that we now own the clipboard and hand the copied text over in the same packet
     // (greedy), so a remote app can paste it without a follow-up request. The server does
-    // `str(data)` on the wire value (xpra gtk/clipboard.py got_token), so the text goes out as a
-    // plain JSON string - our JSON-as-YAML writer can't emit raw binary, and doesn't need to here
-    // (same reasoning as challenge_client_salt). Legacy `clipboard-token` layout: selection,
-    // targets, target, dtype, dformat, wire_encoding, wire_data. Stopping at wire_data (len 8)
-    // lets the server default claim=true and keep the greedy flag we advertised in hello
-    // (xpra clipboard/core.py _process_clipboard_token).
-    fn send_clipboard_token(&mut self, text: &str) {
+    // `str(data)` on the wire value (xpra clipboard/core.py), so the text goes out as a plain JSON
+    // string - our JSON-as-YAML writer can't emit raw binary, and doesn't need to here (same
+    // reasoning as challenge_client_salt).
+    //
+    // `clipboard-data` replaced the positional `clipboard-token` packet: selection, then one dict.
+    // Unlike the old layout - which could only ever carry a single target's data - `data` maps each
+    // target to its own [dtype, dformat, wire_encoding, wire_data] tuple; we still only offer text.
+    // `claim` and `greedy` were implicit before (the old packet stopped short of them, so the
+    // server defaulted claim=true and kept the greedy flag from our hello); they are now named
+    // fields, so we state both (xpra clipboard/core.py _process_clipboard_data).
+    fn send_clipboard_data(&mut self, text: &str) {
         let targets = ["UTF8_STRING", "TEXT", "STRING", "text/plain;charset=utf-8", "text/plain"];
-        let packet = json!(["clipboard-token", "CLIPBOARD", targets,
-                            "UTF8_STRING", "UTF8_STRING", 8, "bytes", text]);
+        let packet = json!(["clipboard-data", "CLIPBOARD", {
+            "claim": true,
+            "greedy": true,
+            "targets": targets,
+            "data": { "UTF8_STRING": ["UTF8_STRING", 8, "bytes", text] },
+        }]);
         self.write_json(packet);
     }
 
@@ -575,8 +605,13 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    fn send_damage_sequence(&mut self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
-        let packet = json!(["damage-sequence", seq, wid, w, h, decode_time, message]);
+    // Acknowledge a `draw` packet, which is what paces the server's damage output. `window-draw-ack`
+    // replaced `damage-sequence`, and it does *not* just rename it: the packet sequence moved from
+    // the front to after the geometry, so the fields now read wid, w, h, seq (xpra
+    // server/subsystem/window.py _process_window_draw_ack). Sending the legacy order under the new
+    // name would have the server read our sequence number as the window id.
+    fn send_draw_ack(&mut self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
+        let packet = json!(["window-draw-ack", wid, w, h, seq, decode_time, message]);
         self.write_json(packet);
     }
 
@@ -597,14 +632,15 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    // Forward one of our own log records to the server as a `logging` packet. `level` is a python
-    // logging level and `message` the formatted text (both prepared by remote_logging.rs); `dtime`
-    // is ms since our monotonic start, which the server uses to prefix each line. Only reached once
-    // forwarding is switched on in process_hello, so this never fires against a server that would
-    // reject it. Mirrors the client->server half of xpra's client/subsystem/logging.py.
+    // Forward one of our own log records to the server as a `logging-event` packet (the packet
+    // formerly known as `logging`). `level` is a python logging level and `message` the formatted
+    // text (both prepared by remote_logging.rs); `dtime` is ms since our monotonic start, which the
+    // server uses to prefix each line. Only reached once forwarding is switched on in process_hello,
+    // so this never fires against a server that would reject it. Mirrors the client->server half of
+    // xpra's client/subsystem/logging.py.
     fn send_log(&mut self, level: i64, message: String) {
         let dtime = self.start.elapsed().as_millis() as i64;
-        let packet = json!(["logging", level, message, dtime]);
+        let packet = json!(["logging-event", level, message, dtime]);
         self.write_json(packet);
     }
 
@@ -888,9 +924,10 @@ impl XpraClient {
             // thread but has no `ActiveEventLoop`, so it posts this and the quit happens here.
             "tray-exit" => {
                 info!("exit requested from the system tray");
-                // say goodbye the way xpra's own client does. This has to come before quit(),
-                // which sets exit_code and turns write_json into a no-op.
-                self.write_json(json!(["disconnect", "client exit"]));
+                // say goodbye the way xpra's own client does (`disconnect` is now `connection-close`).
+                // This has to come before quit(), which sets exit_code and turns write_json into a
+                // no-op.
+                self.write_json(json!(["connection-close", "client exit"]));
                 self.quit(event_loop, ExitCode::Ok);
             }
             "disconnect" => self.process_disconnect(event_loop, &p),
@@ -1438,7 +1475,7 @@ impl XpraClient {
             return;
         }
         self.last_clipboard = text.clone();
-        self.send_clipboard_token(&text);
+        self.send_clipboard_data(&text);
     }
 
     // Decode a plain-text clipboard payload. xpra sends 8-bit text with wire encoding "bytes" (the
@@ -1924,7 +1961,7 @@ impl XpraClient {
             Some(window) => window,
             None => {
                 let message = "window not found!".to_string();
-                self.send_damage_sequence(seq, wid, w, h, -1, message);
+                self.send_draw_ack(seq, wid, w, h, -1, message);
                 return;
             }
         };
@@ -1935,7 +1972,7 @@ impl XpraClient {
         }
 
         let message = "".to_string();
-        self.send_damage_sequence(seq, wid, w, h, decode_time_us, message);
+        self.send_draw_ack(seq, wid, w, h, decode_time_us, message);
     }
 
     fn process_draw_failed(&mut self, packet: &Packet) {
@@ -1945,7 +1982,7 @@ impl XpraClient {
         let h = p.get_u32(5);
         let message = p.get_str(7);
         let seq = p.get_u64(8);
-        self.send_damage_sequence(seq, wid, w, h, -1, message);
+        self.send_draw_ack(seq, wid, w, h, -1, message);
     }
 
     fn process_ping(&mut self, packet: &Packet) {

@@ -12,7 +12,7 @@ pub struct Packet {
     pub main: Vec<Yaml>,
     pub raw: HashMap<u8, Vec<u8>>,
     // measured locally by the decode thread for "draw-decoded" packets (microseconds);
-    // not part of the xpra wire format, only used to fill in `damage-sequence`'s decode_time.
+    // not part of the xpra wire format, only used to fill in `window-draw-ack`'s decode_time.
     pub decode_time_us: Option<i64>,
 }
 

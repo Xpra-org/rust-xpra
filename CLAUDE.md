@@ -135,11 +135,35 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `&mut self` straight into `resumed`/`user_event`/`window_event`. `do_process_packet` dispatches incoming
     packets by their type string (`hello`, `new-window`, `new-override-redirect`, `window-move-resize`,
     `lost-window`, `window-metadata`, `draw`, `draw-decoded`, `draw-failed`, `disconnect`, ...); outgoing packets
-    are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`, `focus`,
-    `pointer`, `pointer-button`, `key-action`, `map-window`, `configure-window`, `close-window`,
-    `damage-sequence`, `ping`, `ping_echo`, `logging`). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
+    are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
+    `window-focus`, `pointer-motion`, `pointer-button`, `keyboard-event`, `window-map`, `window-configure`,
+    `window-close`, `window-draw-ack`, `ping`, `ping_echo`, `logging-event`, `connection-close`, the
+    `clipboard-*` family and the `audio-*` family). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
+    - **Packet names are the post-6.5 ones** — the outgoing side uses no legacy packet type. xpra 6.5
+      renamed most client→server packets and put the old names behind `add_legacy_alias(...)` calls that
+      only run when the server has `BACKWARDS_COMPATIBLE` (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
+      authoritative old→new table is xpra's `net/packet_type.py`. Three of the renames are *not* plain
+      renames and must not be "simplified" back into positional packets: `keyboard-event` moved
+      everything after `pressed` into an attributes dict, `window-configure` moved geometry/state/
+      properties into a config dict, and `clipboard-data` (which replaced `clipboard-token`) moved the
+      targets and per-target payloads into an options dict. `window-draw-ack` is the sharp edge:
+      it replaced `damage-sequence` *and* reordered the fields to `wid, w, h, seq` — sending the old
+      order under the new name has the server read the packet sequence as a window id, which silently
+      wrecks its damage/batching bookkeeping. To check for regressions, run a server with
+      `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy name outright.
+      Two hello capabilities are part of the same move: the packet encoder (`encoders: ["yaml"]`) and
+      the picture encodings (`encoding.options`/`encoding.core`). Each replaced a pre-6.5 spelling —
+      a bare `yaml: true` and a top-level `encodings` list — that the server reads only in
+      backwards-compatible mode *and* only when the modern form is absent, which makes both pure
+      dead weight; neither is sent any more. Without `encoders` a non-backwards-compatible server
+      drops the connection with "failed to negotiate a packet encoder", and without
+      `encoding.options` with "client failed to specify any supported encodings".
+      The *incoming* side is still on the legacy names (`new-window`, `draw`, `lost-window`, `notify_show`,
+      ...), which is why the client only works against a server left in its default backwards-compatible
+      mode; against `XPRA_BACKWARDS_COMPATIBLE=0` the handshake and input now succeed but no window is
+      created (the server sends `window-create`/`encoding-set`, which `do_process_packet` doesn't know).
     - **Server events**: the hello advertises `events: true`, enabling informational
       `server-event` packets for lifecycle events such as `handshake-complete`, `startup-complete`,
       `suspend`, `resume`, and `exit`. `process_server_event` logs the event name and optional
@@ -192,15 +216,16 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     (`font::GLYPH_W`/`GLYPH_H`, `font::text_width`).
   - `remote_logging.rs`: **client→server log forwarding** (xpra's `--remote-logging=send`). `RemoteLogger` is
     the global `log::Log`: it wraps a `SimpleLogger` for unchanged local output *and* forwards info-and-above
-    records to the server as `logging` packets, so they land in the server's log file (handy when the client runs
+    records to the server as `logging-event` packets, so they land in the server's log file (handy when the client runs
     headless / its stderr isn't visible). `init()` (called from `main`, replacing the plain `SimpleLogger` init)
     returns a `LogSink = Arc<Mutex<Option<EventLoopProxy<Packet>>>>` that starts empty; `XpraClient::process_hello`
     drops the proxy into it **only when the server's hello advertises `remote-logging.receive`** (a nested
-    `{receive, send}` dict, xpra `server/subsystem/logging.py`), so we never send `logging` packets to a server
+    `{receive, send}` dict, xpra `server/subsystem/logging.py`), so we never send `logging-event` packets to a server
     that would reject them (verified against both `--remote-logging` default and `=no`). Forwarding, like the
     ping timer, doesn't touch the socket: the logger posts a synthesized client-side `send-log` packet (carrying
     the python logging level + text) via the proxy from *whatever* thread logged, and the UI thread turns it into
-    the wire `logging` packet (`send_log` → `["logging", level, msg, dtime]`, `dtime` = ms since `start`). Two
+    the wire `logging-event` packet (`send_log` → `["logging-event", level, msg, dtime]`, `dtime` = ms since
+    `start`). Two
     loop guards, mirroring xpra's own handler: only Info+ is forwarded (the write path only logs at debug/trace,
     or errors that set `exit_code` and make `write_json` a no-op — so a normal send never re-logs), and a
     thread-local `IN_FORWARD` flag stops a forward that itself logs from recursing. Level mapping is `log`→python:
@@ -245,7 +270,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     softbuffer's `0x00RRGGBB` `u32` format per-pixel and writes the damaged sub-rect into `framebuffer`;
     `draw_screen()` (on `WindowEvent::RedrawRequested`) copies the whole `framebuffer` into the surface buffer
     and presents it; `resize()` reallocates `framebuffer` (zero-filled — relies on the server re-sending damage
-    after a `configure-window` round-trip rather than preserving old contents).
+    after a `window-configure` round-trip rather than preserving old contents).
   - `draw_decoder.rs`: decodes `jpeg` (via `turbojpeg`), `png` (via `spng`) and `webp` (via `libwebp-sys`)
     payloads into raw pixel buffers — platform-independent, unchanged by the GUI backend. These are *stateless*
     (one packet in, one image out). `webp` uses `WebPDecodeBGRA`, which both allocates its output (so the pixels
@@ -260,7 +285,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     (these COM objects never cross threads, so nothing is `Send`). `H264Decoder::decode` returns
     `Ok(Some(bgra))` (frame ready), `Ok(None)` (input consumed, decoder still warming up — the sequence is still
     acked, painting is skipped), or `Err`. Advertising is Windows-only and needs *two* things for the server to
-    actually send video: `h264` in the top-level `encodings` list, **and** a nested `encoding` caps dict with
+    actually send video: `h264` in the advertised encoding lists (`encoding.options`/`encoding.core`, which
+    `send_hello` fills from one `encodings` vec), **and** a nested `encoding` caps dict with
     `full_csc_modes = {"h264": ["YUV420P"]}` (the server reads `hello["encoding"]["full_csc_modes"]` and only
     offers a video encoding whose listed colourspaces intersect its encoder's — see xpra
     `server/source/encoding.py`). We list only `YUV420P` and pin `encoding.h264 = {"YUV420P.profile": "high"}`
