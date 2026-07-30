@@ -6,8 +6,6 @@ Xpra client implemented in [rust](https://www.rust-lang.org/), for MS Windows an
 
 ## Status
 
-This is a proof of concept only and is not usable at this point.
-
 It builds on MS Windows and Linux (X11 and Wayland).
 
 It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). Password
