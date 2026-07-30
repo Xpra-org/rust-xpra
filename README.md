@@ -69,6 +69,8 @@ cargo build
 ./target/debug/xpra ws://HOST:PORT/
 ./target/debug/xpra wss://HOST:PORT/
 ./target/debug/xpra ssh://[USER@]HOST[:PORT]/[DISPLAY]
+./target/debug/xpra --help          # or -h: the same list, plus the environment variables
+./target/debug/xpra --version       # this client's own version (not the xpra protocol version)
 ```
 
 Started **without any argument**, the client opens a small connection dialog instead of exiting: a protocol

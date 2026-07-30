@@ -2,6 +2,7 @@ extern crate alloc;
 
 use std::env;
 use std::net::TcpStream;
+use std::path::Path;
 use std::process;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -11,6 +12,7 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::window::WindowId;
+use xpra::CLIENT_VERSION;
 use xpra::exit_codes::ExitCode;
 use xpra::net::connection::Connection;
 use xpra::net::packet::Packet;
@@ -38,12 +40,64 @@ fn main() {
 }
 
 
+// The body of `--help`, minus the usage line, which needs the program name. Kept in step with the
+// man page (packaging/rust-xpra.1), which is the long form of the same thing.
+const HELP: &str = "\
+Xpra client: connects to an xpra server and shows the windows of the applications
+running there on the local desktop.
+
+With no TARGET at all, a dialog asks for the connection details.
+
+Targets:
+  HOST:PORT                           plain tcp, the same as tcp://HOST:PORT/
+  tcp://HOST:PORT/                    plain tcp
+  ssl://HOST:PORT/                    tcp with TLS (certificates are NOT verified)
+  ws://HOST:PORT/                     websocket over http
+  wss://HOST:PORT/                    websocket over https (certificates are NOT verified)
+  ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through the system 'ssh' (port 22 by default)
+
+Options:
+  -h, --help                          show this help and exit
+      --version                       show the version and exit
+
+Environment:
+  XPRA_PASSWORD     the session password, used to answer the server's authentication
+                    challenge without prompting
+  PINENTRY_PROGRAM  the pinentry binary to prompt with, when there is no XPRA_PASSWORD
+  NO_COLOR          never colour the log output
+
+See rust-xpra(1), or https://github.com/Xpra-org/rust-xpra, for the full documentation.
+";
+
+// The name to show in the usage message: the distribution packages install the binary as
+// `rust-xpra` (see packaging/README.md) while cargo builds an `xpra`, so take it from argv[0].
+fn program_name(args: &[String]) -> &str {
+    args.first()
+        .and_then(|arg0| Path::new(arg0).file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("xpra")
+}
+
 fn run(log_sink: LogSink) -> ExitCode {
     let args: Vec<String> = env::args().collect();
+    let program = program_name(&args);
+    // asking for help wins over anything else on the command line, however invalid the rest is.
+    // Printed rather than logged: it is the output the user asked for, not a log record.
+    if args.iter().skip(1).any(|arg| arg == "-h" || arg == "--help") {
+        println!("usage: {program} [TARGET]");
+        print!("\n{HELP}");
+        return ExitCode::Ok;
+    }
+    // this client's own version, and only that: the protocol version announced to the server
+    // (`xpra::VERSION`) is a different thing entirely and has no business here.
+    if args.iter().skip(1).any(|arg| arg == "--version") {
+        println!("{program} {CLIENT_VERSION}");
+        return ExitCode::Ok;
+    }
     if args.len() > 2 {
-        error!("invalid number of arguments: {:?}", args.len());
-        error!("usage: {:?} [HOST:PORT | tcp://HOST:PORT/ | ssl://HOST:PORT/ | ws://HOST:PORT/ | wss://HOST:PORT/ | ssh://[USER@]HOST[:PORT]/[DISPLAY]]", args[0]);
-        error!("with no argument at all, a dialog asks for the connection details");
+        error!("invalid number of arguments: {}", args.len() - 1);
+        error!("usage: {program} [TARGET]");
+        error!("try '{program} --help' for more information");
         return ExitCode::ArgumentMismatch;
     }
     // with a target on the command line we connect before doing anything else, so that a bad
@@ -55,6 +109,7 @@ fn run(log_sink: LogSink) -> ExitCode {
                 Ok(target) => target,
                 Err(message) => {
                     error!("{}", message);
+                    error!("try '{program} --help' for more information");
                     return ExitCode::ArgumentMismatch;
                 }
             };

@@ -11,6 +11,12 @@ rust\-xpra \- Xpra client written in Rust
 .SH SYNOPSIS
 .B rust\-xpra
 .RI [ HOST : PORT " | " URI ]
+.br
+.B rust\-xpra
+.BR \-h | \-\-help
+.br
+.B rust\-xpra
+.B \-\-version
 .SH DESCRIPTION
 .B rust\-xpra
 connects to an
@@ -34,9 +40,29 @@ unset or
 .BR 1 ).
 There is no server implementation: this program is a client only.
 .PP
-The client takes at most one argument, the connection target, and has no options.
+The client takes at most one argument, the connection target, and has no options
+beyond
+.B \-\-help
+and
+.BR \-\-version .
 More than one argument, or a target that cannot be parsed, is an error (exit
 status 34).
+.SH OPTIONS
+Both options are honoured wherever they appear on the command line, even alongside
+arguments that would otherwise be rejected. Each prints to standard output and
+exits successfully.
+.TP
+.BR \-h ", " \-\-help
+Print a short summary of the usage, the connection targets and the environment
+variables below.
+.TP
+.B \-\-version
+Print the version of this client. This is the version of
+.B rust\-xpra
+itself, and not the version of the
+.B xpra
+protocol it announces to the server, which follows the xpra release whose protocol
+it implements.
 .SH CONNECTION TARGET
 The target is either a bare
 .IR HOST : PORT ,

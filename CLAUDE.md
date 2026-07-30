@@ -27,7 +27,13 @@ cargo build
 ./target/debug/xpra HOST:PORT     # xpra.exe on Windows
 ./target/debug/xpra wss://HOST:PORT/
 ./target/debug/xpra               # no argument: ask for the details (src/client/connect_dialog.rs)
+./target/debug/xpra --help        # or -h: the target forms and the environment variables
+./target/debug/xpra --version     # `CLIENT_VERSION` only (= the crate version)
 ```
+
+`src/lib.rs` holds both versions and they must not be conflated: `VERSION` ("6.4") is the *xpra
+protocol* version announced to the server in the hello, `CLIENT_VERSION` is this crate's own
+(`env!("CARGO_PKG_VERSION")`) and is the only one `--version` prints.
 
 `.cargo/config.toml` sets `TURBOJPEG_SOURCE=pkg-config` + `TURBOJPEG_STATIC=1` so that `turbojpeg` links against
 the system libjpeg-turbo (needs its dev headers, and version >= 3.0) instead of compiling `turbojpeg-sys`' vendored
