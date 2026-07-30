@@ -412,10 +412,13 @@ client's), `packaging/rpm/`
 
 - **The binary installs as `/usr/bin/rust-xpra`**, not `xpra` — that path belongs to the python `xpra` package
   and the two must be co-installable. Both builds rename it; the cargo binary is still called `xpra`.
-- **`spng-sys` forces `libz-sys/static`**, so zlib is always compiled from source and bundled. The spec therefore
-  has to set `%global _lto_cflags %{nil}`: Fedora's global `-flto` reaches every C file the `cc` crate compiles
+- **`spng-sys` forces `libz-sys/static`**, so zlib is always compiled from source and bundled. Both builds
+  therefore have to turn the distribution's LTO off — `%global _lto_cflags %{nil}` in the spec, `optimize=-lto`
+  in `debian/rules`' `DEB_BUILD_MAINT_OPTIONS`: a global `-flto` reaches every C file the `cc` crate compiles
   through `$CFLAGS`, and the resulting LTO objects break archive member resolution — the link fails on
-  `undefined reference to inflateInit_`. Do not "clean this up".
+  `undefined reference to inflateInit_`. Do not "clean this up". Fedora and Ubuntu both enable it by default
+  (Ubuntu through dpkg's `optimize=+lto`, which Debian leaves off — hence a failure that only showed up on
+  Ubuntu). The Rust-side `lto = true` in `Cargo.toml` is unrelated and stays on.
 - **`TURBOJPEG_SOURCE` and `TURBOJPEG_STATIC` must move together.** Both builds probe with
   `pkg-config --atleast-version=3.0 libturbojpeg` and fall back to the crate's vendored copy where the system one
   is too old (EL9 ships 2.0.90 in CRB, Debian trixie and Ubuntu 24.04 ship 2.1.5) — which is what `cmake` and

@@ -1,6 +1,16 @@
 #!/usr/bin/make -f
 
-export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+# `optimize=-lto` turns off the distribution's link-time optimization: Ubuntu enables
+# `optimize=+lto` by default (Debian does not), which adds `-flto=auto` to `$CFLAGS` and
+# so to every C file the `cc` crate compiles. `spng-sys` forces `libz-sys/static`, so
+# zlib is always built from source and bundled into the rlib, and it does not survive
+# that: the linker plugin claims the LTO objects and the final link fails on
+# `undefined reference to inflateInit_` (`-ffat-lto-objects`, which dpkg passes too, does
+# not help - a plugin-capable linker uses the IR anyway). The spec file turns the same
+# thing off with `%global _lto_cflags %{nil}`. `Cargo.toml` sets `lto = true` for the
+# Rust side, which is unaffected by this.
+# The `optimize` feature area needs dpkg >= 1.21 (bookworm); older ones just warn.
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all optimize=-lto
 
 # keep cargo's registry cache inside the build tree rather than in $HOME:
 export CARGO_HOME = $(CURDIR)/.cargo-home

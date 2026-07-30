@@ -65,10 +65,14 @@ there is no need for any while the package list is this short.
   is 2.0.90) they probe and fall back to `TURBOJPEG_SOURCE=vendor`, which is why
   `cmake` and `nasm` are build dependencies.
 * **One vendored library is unavoidable:** `spng-sys` forces `libz-sys/static`, so
-  zlib is always compiled from source and bundled into the binary. The RPM has to set
-  `%global _lto_cflags %{nil}` because of it — Fedora's global `-flto` in `$CFLAGS`
-  reaches every C file the `cc` crate compiles and breaks that static zlib's link
-  (`undefined reference to inflateInit_`).
+  zlib is always compiled from source and bundled into the binary. **Both builds have
+  to turn the distribution's link-time optimization off** because of it — a global
+  `-flto` in `$CFLAGS` reaches every C file the `cc` crate compiles and breaks that
+  static zlib's link (`undefined reference to inflateInit_`). The spec sets
+  `%global _lto_cflags %{nil}` for Fedora's, `debian/rules` sets
+  `DEB_BUILD_MAINT_OPTIONS = ... optimize=-lto` for Ubuntu's (Ubuntu enables
+  `optimize=+lto` by default, Debian does not, so this only ever bit on Ubuntu).
+  The Rust-side `lto = true` in `Cargo.toml` is a different thing and stays on.
 * Runtime dependencies on `libX11`, `libXcursor`, `libXi`, `libxcb`, `libxkbcommon`
   and `libwayland-client` are listed by hand: winit, softbuffer and x11rb `dlopen`
   them, so neither `dh_shlibdeps` nor rpm's dependency generator can see them.
