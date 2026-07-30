@@ -4,12 +4,37 @@ Priority: optional
 Maintainer: Antoine Martin <antoine@xpra.org>
 Build-Depends: debhelper-compat (= 13)
               ,pkgconf
-# `edition = "2024"` needs rust 1.85. `Cargo.lock` is not in the source tree, so cargo
-# resolves the newest dependencies that still work on the toolchain it finds - which it
-# can only do for crates that declare a `rust-version`. Committing a lockfile upstream
-# would make this exact, rather than merely correct.
-              ,cargo
-              ,rustc (>= 1.85)
+# `edition = "2024"` needs rust 1.85, and - the part that matters here - it implies
+# `resolver = "3"`. With no `rust-version` in `Cargo.toml` and no `Cargo.lock` in the
+# source tree, that makes cargo resolve the newest dependencies the toolchain it finds
+# can actually build, per distribution and with no pinning on our side: a 1.85 toolchain
+# gets dependency versions that still declare 1.85, a current one gets the latest. Only
+# crates that declare a `rust-version` can be placed, and an incompatible version is
+# still chosen when nothing else matches the requirement (`fallback`, not a rule), so
+# this is correct rather than exact. Committing a lockfile would make it exact - at the
+# price of pinning every distribution to the oldest toolchain we support.
+# Do not "simplify" this to `edition = "2021"`: that silently selects `resolver = "2"`,
+# which is not rust-version aware at all, and every distribution would then resolve the
+# very newest dependencies regardless of its toolchain.
+#
+# Three spellings of the toolchain, because the older releases keep a modern rustc under
+# a different package name while their default `rustc`/`cargo` are far too old:
+#   trixie, sid       `rustc`/`cargo` are 1.85 / 1.95 - the plain names are right
+#   bookworm          `rustc` is 1.63, but `rustc-web`/`cargo-web` (in main, so that
+#                     Firefox can be built) are 1.85, and `rustc-web` Provides
+#                     `rustc (= 1.85...)`. `cargo-web` must be preferred over `cargo`:
+#                     bookworm's `cargo` is 0.66 and only Depends on `rustc (>= 1.24)`,
+#                     so apt would happily pair it with rustc-web - and cargo is what
+#                     parses the manifest, so it rejects edition 2024 on its own.
+#   jammy, noble      `rustc`/`cargo` are 1.75; `rustc-1.85`/`cargo-1.85` are in
+#                     <release>-updates/universe. They install into
+#                     /usr/lib/rust-1.85/bin rather than /usr/bin and Provide nothing,
+#                     which is what `debian/rules` puts on $PATH.
+# `cargo` is left unversioned on purpose: Debian numbered it 0.66 in bookworm and only
+# lined it up with rustc from trixie onwards, so `cargo (>= 1.85)` would be unsatisfiable
+# on exactly the release that needs the constraint.
+              ,cargo-web | cargo-1.85 | cargo
+              ,rustc-web | rustc-1.85 | rustc (>= 1.85)
 # `spng-sys` and `libz-sys` compile C sources with the `cc` crate:
               ,gcc
               ,zlib1g-dev

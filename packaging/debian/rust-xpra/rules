@@ -15,6 +15,14 @@ export DEB_BUILD_MAINT_OPTIONS = hardening=+all optimize=-lto
 # keep cargo's registry cache inside the build tree rather than in $HOME:
 export CARGO_HOME = $(CURDIR)/.cargo-home
 
+# Ubuntu jammy and noble default to rustc/cargo 1.75, which is too old for both
+# `edition = "2024"` and the rust-version aware resolver it turns on. Their
+# `rustc-1.85`/`cargo-1.85` packages (see the Build-Depends alternatives in
+# debian/control) install here instead of into /usr/bin and are not registered as
+# alternatives, so they have to be put on the path by hand. A no-op on Debian, where the
+# toolchain that satisfies the build dependency is already the one in /usr/bin.
+export PATH := $(if $(wildcard /usr/lib/rust-1.85/bin/cargo),/usr/lib/rust-1.85/bin:,)$(PATH)
+
 # Link `turbojpeg-sys` against the system libjpeg-turbo, unless it is older than the 3.0
 # the crate requires (Debian trixie and Ubuntu 24.04 ship 2.1.5) - then build the crate's
 # vendored copy (cmake + nasm) instead of failing. `webp-dylib` does the same for

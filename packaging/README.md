@@ -58,6 +58,27 @@ there is no need for any while the package list is this short.
   dependency against live crates.io at build time — two builds of the same tarball can
   use different versions. Committing the lockfile upstream would fix that, and would
   also make the declared rust version exact rather than merely correct.
+* **That re-resolution is what keeps old distributions building, so keep `edition =
+  "2024"`.** The edition implies `resolver = "3"`, and with no `rust-version` in
+  `Cargo.toml` cargo takes the MSRV from the toolchain it is running under: a 1.85
+  toolchain resolves to dependency versions that still declare 1.85, a current one
+  resolves to the latest. Nothing is pinned, and Fedora is not held back by Debian.
+  `edition = "2021"` would silently drop to `resolver = "2"`, which is not
+  rust-version aware, and every distribution would then try the newest dependencies
+  regardless of its toolchain. It is a preference and not a rule — cargo still picks an
+  incompatible version when a requirement has no compatible one — so this is correct
+  rather than exact.
+* **Three of the target releases need a toolchain that is not the default `rustc`.**
+  Debian trixie and sid are fine as they are (1.85 / 1.95). Bookworm's `rustc` is 1.63,
+  but `rustc-web`/`cargo-web` — the 1.85 toolchain Debian keeps in *main* so that
+  Firefox can be built — satisfy the dependency, and `rustc-web` even `Provides:
+  rustc (= 1.85…)`. Ubuntu jammy and noble default to 1.75 and have `rustc-1.85`/
+  `cargo-1.85` in `<release>-updates/universe`. `debian/control` lists all three
+  spellings as build-dependency alternatives, most specific first; `debian/rules` puts
+  `/usr/lib/rust-1.85/bin` on `$PATH` when it exists, because the Ubuntu packages
+  install there rather than into `/usr/bin` and register no alternative. Note that
+  `cargo` has to be left unversioned: Debian numbered it 0.66 in bookworm and only
+  lined it up with rustc from trixie onwards.
 * **Vendored C libraries are avoided where the distribution has a usable one.** Both
   builds pass `--features webp-dylib` so `libwebp-sys` links the system libwebp, and
   set `TURBOJPEG_SOURCE=pkg-config` — except that the `turbojpeg` crate needs
