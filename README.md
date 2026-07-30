@@ -58,6 +58,23 @@ There is no system tray icon on Linux either (see [System tray](#system-tray) be
 StatusNotifierItem protocol needs a D-Bus dependency, and the older XEmbed tray is X11-only. Server-forwarded
 notifications are shown as balloons on that tray icon, so they too are Windows-only and are merely logged here.
 
+## Downloads
+
+Pre-built binaries for MS Windows and Linux are attached to each
+[release](https://github.com/Xpra-org/rust-xpra/releases) on GitHub.
+
+Linux packages (RPM and DEB) are also published to the xpra repositories, under the package name
+`rust-xpra` — see [Download](https://github.com/Xpra-org/xpra/wiki/Download) for how to add the repository for
+your distribution, then:
+
+```shell
+dnf install rust-xpra     # or: apt install rust-xpra
+```
+
+These packages are currently published to the `beta` repository. They install the client as
+**`/usr/bin/rust-xpra`** rather than `/usr/bin/xpra`, so that they can be installed alongside the python `xpra`
+package (which owns that path); everything below that calls the binary `xpra` refers to a locally built one.
+
 ## Usage
 
 ```shell
