@@ -1,0 +1,1671 @@
+<title>rust-xpra dependency graph</title>
+
+<style>
+  :root {
+    --ground: #f7f4ef;
+    --panel: #fffdfa;
+    --sunk: #f0ece5;
+    --rule: #e0d9cf;
+    --rule-strong: #c9bfb1;
+    --text: #1a1d22;
+    --text-dim: #6a7079;
+    --text-faint: #9aa0a8;
+    --oxide: #a83c0a;
+    --oxide-soft: #d98a5f;
+    --graphite: #7e8894;
+    --verdigris: #0f6f74;
+    --focus: #a83c0a;
+
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "IBM Plex Mono",
+            "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0f1216;
+      --panel: #161a20;
+      --sunk: #12161b;
+      --rule: #252b33;
+      --rule-strong: #3a434e;
+      --text: #e6e2db;
+      --text-dim: #949cA6;
+      --text-faint: #6b737d;
+      --oxide: #d65a24;
+      --oxide-soft: #8a4525;
+      --graphite: #78838f;
+      --verdigris: #2e9ba0;
+      --focus: #d65a24;
+    }
+  }
+
+  :root[data-theme="light"] {
+    --ground: #f7f4ef;
+    --panel: #fffdfa;
+    --sunk: #f0ece5;
+    --rule: #e0d9cf;
+    --rule-strong: #c9bfb1;
+    --text: #1a1d22;
+    --text-dim: #6a7079;
+    --text-faint: #9aa0a8;
+    --oxide: #a83c0a;
+    --oxide-soft: #d98a5f;
+    --graphite: #7e8894;
+    --verdigris: #0f6f74;
+    --focus: #a83c0a;
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1216;
+    --panel: #161a20;
+    --sunk: #12161b;
+    --rule: #252b33;
+    --rule-strong: #3a434e;
+    --text: #e6e2db;
+    --text-dim: #949ca6;
+    --text-faint: #6b737d;
+    --oxide: #d65a24;
+    --oxide-soft: #8a4525;
+    --graphite: #78838f;
+    --verdigris: #2e9ba0;
+    --focus: #d65a24;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+
+  /* ---------- top bar ---------- */
+
+  .bar {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 0;
+    border-bottom: 1px solid var(--rule);
+    background: var(--panel);
+  }
+
+  .bar-id {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 18px;
+    border-right: 1px solid var(--rule);
+    min-width: 250px;
+  }
+
+  .bar-id b {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .bar-id b span { color: var(--oxide); }
+
+  .bar-id small {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.01em;
+  }
+
+  .bar-seg {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 18px;
+    border-right: 1px solid var(--rule);
+  }
+
+  .eyebrow {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .switch {
+    display: flex;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .switch button {
+    appearance: none;
+    border: 0;
+    border-right: 1px solid var(--rule-strong);
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 12px;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+  }
+
+  .switch button:last-child { border-right: 0; }
+  .switch button:hover { color: var(--text); background: var(--sunk); }
+
+  .switch button[aria-pressed="true"] {
+    background: var(--oxide);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .counts {
+    display: flex;
+    gap: 26px;
+    padding: 8px 18px;
+    margin-right: auto;
+  }
+
+  .count {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .count-n {
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .count-l {
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .count.is-oxide .count-n { color: var(--oxide); }
+  .count.is-graphite .count-n { color: var(--graphite); }
+
+  /* ---------- shell ---------- */
+
+  .shell {
+    display: grid;
+    grid-template-columns: 336px minmax(0, 1fr);
+    height: calc(100vh - 68px);
+    min-height: 560px;
+  }
+
+  /* ---------- left rail ---------- */
+
+  .rail {
+    border-right: 1px solid var(--rule);
+    background: var(--panel);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .rail-head {
+    padding: 13px 16px 11px;
+    border-bottom: 1px solid var(--rule);
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    z-index: 2;
+  }
+
+  .rail-head p {
+    margin: 6px 0 0;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    max-width: 46ch;
+  }
+
+  .dep {
+    display: block;
+    width: 100%;
+    text-align: left;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--rule);
+    border-left: 2px solid transparent;
+    color: inherit;
+    font: inherit;
+    padding: 9px 16px 10px;
+    cursor: pointer;
+  }
+
+  .dep:hover { background: var(--sunk); }
+
+  .dep[aria-pressed="true"] {
+    background: var(--sunk);
+    border-left-color: var(--oxide);
+  }
+
+  .dep-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .dep-name {
+    font-weight: 600;
+    font-size: 12.5px;
+    letter-spacing: -0.005em;
+  }
+
+  .dep-ver {
+    font-size: 10.5px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dep-n {
+    margin-left: auto;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+  }
+
+  .dep-bar {
+    display: flex;
+    height: 7px;
+    margin-top: 6px;
+    background: var(--sunk);
+    border: 1px solid var(--rule);
+  }
+
+  .dep[aria-pressed="true"] .dep-bar { background: var(--ground); }
+
+  .dep-bar i { display: block; height: 100%; }
+  .dep-bar .ex { background: var(--oxide); }
+  .dep-bar .sh { background: var(--oxide-soft); opacity: 0.55; }
+
+  .dep-legend {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+    font-size: 10px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rail-note {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: var(--text-faint);
+    margin: 0;
+    padding: 12px 16px 20px;
+    max-width: 44ch;
+  }
+
+  .rail-note code {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    overflow-wrap: anywhere;
+  }
+
+  .dep-tag {
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--graphite);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 0 4px;
+  }
+
+  /* ---------- stage ---------- */
+
+  /* min-height:0 matters: without it this grid item grows to fit the tree/table
+     and shoves the detail card below the fold */
+  .stage {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    background: var(--ground);
+  }
+
+  .stage-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--panel);
+  }
+
+  .legend {
+    display: flex;
+    gap: 14px;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    align-items: center;
+  }
+
+  .key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .key i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: block;
+  }
+
+  .key .k-oxide { background: var(--oxide); }
+  .key .k-graphite { background: var(--graphite); }
+  .key .k-direct { background: var(--ground); border: 3px solid var(--oxide); }
+  .key .k-dup { background: transparent; border: 2px solid var(--verdigris); }
+
+  .search {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .search input {
+    appearance: none;
+    background: var(--sunk);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 8px;
+    width: 168px;
+  }
+
+  .search input::placeholder { color: var(--text-faint); }
+
+  .stage-body {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .view { display: none; height: 100%; position: relative; }
+  .view.is-on { display: block; }
+
+  #cv {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  #cv.is-drag { cursor: grabbing; }
+
+  .hint {
+    position: absolute;
+    left: 14px;
+    bottom: 12px;
+    font-size: 10.5px;
+    color: var(--text-faint);
+    pointer-events: none;
+  }
+
+  /* ---------- tree view ---------- */
+
+  .tree {
+    height: 100%;
+    overflow: auto;
+    padding: 14px 16px 40px;
+    font-size: 12.5px;
+    line-height: 1.62;
+    white-space: pre;
+  }
+
+  .tw { display: block; min-width: max-content; }
+
+  .row {
+    display: block;
+    color: var(--text-faint);
+  }
+
+  .row-hit {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--text);
+    cursor: pointer;
+    border-radius: 2px;
+  }
+
+  .row-hit:hover { background: var(--sunk); color: var(--oxide); }
+  .row.is-build .row-hit { color: var(--graphite); }
+  .row.is-sel .row-hit { background: var(--oxide); color: #fff; }
+  .row .v { color: var(--text-faint); }
+  .row .note { color: var(--graphite); font-size: 11px; }
+  .row .dup { color: var(--verdigris); }
+
+  /* ---------- table view ---------- */
+
+  .tablewrap {
+    height: 100%;
+    overflow: auto;
+    padding-bottom: 40px;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 720px;
+    font-size: 12px;
+  }
+
+  thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--rule-strong);
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 9.5px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  thead th:hover { color: var(--text); }
+  thead th[aria-sort] { color: var(--oxide); }
+
+  tbody td {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+
+  tbody tr:hover td { background: var(--sunk); }
+  tbody tr.is-sel td { background: var(--sunk); }
+  tbody tr.is-sel td:first-child { box-shadow: inset 2px 0 0 var(--oxide); }
+
+  .cell-name {
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .cell-name:hover { color: var(--oxide); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .muted { color: var(--text-dim); }
+
+  .cell-kind { white-space: nowrap; }
+
+  .pill {
+    display: inline-block;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 2px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+
+  .pill.p-linked { color: var(--oxide); }
+  .pill.p-build { color: var(--graphite); }
+  .pill.p-dup { color: var(--verdigris); }
+
+  /* ---------- detail card ---------- */
+
+  .detail {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    width: 320px;
+    max-height: calc(100% - 28px);
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 12px 14px 13px;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16);
+  }
+
+  .detail h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .detail h3 span {
+    font-weight: 400;
+    color: var(--text-faint);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .detail .desc {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    margin: 7px 0 0;
+    max-width: 42ch;
+  }
+
+  .detail dl {
+    margin: 11px 0 0;
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 5px 10px;
+    font-size: 11.5px;
+  }
+
+  .detail dt {
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 700;
+    padding-top: 2px;
+  }
+
+  .detail dd {
+    margin: 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  .detail dd a { color: var(--oxide); }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .chip {
+    appearance: none;
+    border: 1px solid var(--rule-strong);
+    background: transparent;
+    border-radius: 2px;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 10.5px;
+    padding: 1px 5px;
+    cursor: pointer;
+  }
+
+  .chip:hover { border-color: var(--oxide); color: var(--oxide); }
+
+  .detail-empty {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  .detail-close {
+    float: right;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--text-faint);
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+
+  .detail-close:hover { color: var(--oxide); }
+
+  @media (max-width: 900px) {
+    .shell {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+
+    .rail { border-right: 0; border-bottom: 1px solid var(--rule); max-height: 300px; }
+    .stage-body { height: 70vh; min-height: 420px; }
+    .detail { position: static; width: auto; margin: 12px; max-height: none; }
+  }
+</style>
+
+<header class="bar">
+  <div class="bar-id">
+    <b>rust-<span>xpra</span> &middot; dependency graph</b>
+    <small>Every crate cargo pulls in, and which direct dependency drags it there.</small>
+  </div>
+
+  <div class="bar-seg">
+    <span class="eyebrow">Target</span>
+    <div class="switch" id="target-switch">
+      <button type="button" data-target="linux" aria-pressed="true">Linux</button>
+      <button type="button" data-target="windows" aria-pressed="false">Windows</button>
+    </div>
+  </div>
+
+  <div class="counts">
+    <div class="count">
+      <span class="count-n" id="c-total">&mdash;</span>
+      <span class="count-l">crates</span>
+    </div>
+    <div class="count is-oxide">
+      <span class="count-n" id="c-linked">&mdash;</span>
+      <span class="count-l">in the binary</span>
+    </div>
+    <div class="count is-graphite">
+      <span class="count-n" id="c-build">&mdash;</span>
+      <span class="count-l">build&#8209;time only</span>
+    </div>
+    <div class="count">
+      <span class="count-n" id="c-direct">&mdash;</span>
+      <span class="count-l">declared by us</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="rail-head">
+      <span class="eyebrow">Direct dependencies</span>
+      <p>
+        Bar length is the full transitive closure. The solid part is what
+        <em>only</em> this dependency reaches &mdash; what dropping it would
+        actually remove.
+      </p>
+    </div>
+    <div id="dep-list"></div>
+
+    <p class="rail-note">
+      Read from <code>cargo tree --edges normal,build</code> per target, against the
+      working tree at __STAMP__. Feature-resolved, so optional dependencies nothing
+      turns on are absent; dev-dependencies are excluded.
+      Regenerate with <code>python3 docs/dependency-graph.py</code>.
+    </p>
+  </aside>
+
+  <section class="stage">
+    <div class="stage-head">
+      <div class="switch" id="view-switch">
+        <button type="button" data-view="graph" aria-pressed="true">Graph</button>
+        <button type="button" data-view="tree" aria-pressed="false">Tree</button>
+        <button type="button" data-view="table" aria-pressed="false">Table</button>
+      </div>
+
+      <div class="legend">
+        <span class="key"><i class="k-oxide"></i>linked into the binary</span>
+        <span class="key"><i class="k-graphite"></i>build script / proc&#8209;macro</span>
+        <span class="key"><i class="k-direct"></i>declared by us</span>
+        <span class="key"><i class="k-dup"></i>duplicate version</span>
+      </div>
+
+      <div class="search">
+        <label class="eyebrow" for="q">Find</label>
+        <input id="q" type="search" placeholder="crate name&hellip;" autocomplete="off" />
+      </div>
+    </div>
+
+    <div class="stage-body">
+      <div class="view is-on" id="view-graph">
+        <canvas id="cv"></canvas>
+        <p class="hint">drag to pan &middot; scroll to zoom &middot; click a crate for detail &middot; rings = steps from Cargo.toml</p>
+      </div>
+      <div class="view tree" id="view-tree"></div>
+      <div class="view tablewrap" id="view-table"></div>
+    </div>
+
+    <div class="detail" id="detail"></div>
+  </section>
+</div>
+
+<script type="application/json" id="graph-data">__DATA__</script>
+
+<script>
+  (function () {
+    "use strict";
+
+    var DATA = JSON.parse(document.getElementById("graph-data").textContent);
+
+    var state = {
+      target: "linux",
+      view: "graph",
+      focus: null,    // a direct dependency key: dims everything outside its closure
+      sel: null,      // the crate shown in the detail card
+      query: "",
+      sort: { col: "name", dir: 1 }
+    };
+
+    var G = null;     // derived model for the active target
+    var sim = null;   // laid-out node positions
+
+    // ---------------------------------------------------------------- model
+
+    function buildModel(target) {
+      var raw = DATA[target];
+      var keys = Object.keys(raw.nodes);
+      var nodes = {};
+
+      keys.forEach(function (k) {
+        var s = raw.nodes[k];
+        nodes[k] = {
+          key: k, name: s.n, ver: s.v, pm: s.pm, linked: s.linked,
+          direct: s.direct, owners: s.owners, lic: s.lic, desc: s.desc,
+          repo: s.repo, out: [], in: [], depth: Infinity
+        };
+      });
+
+      raw.edges.forEach(function (e) {
+        nodes[e.a].out.push({ to: e.b, kind: e.k });
+        nodes[e.b].in.push({ from: e.a, kind: e.k });
+      });
+
+      // depth = fewest hops from the root package
+      var queue = [raw.root];
+      nodes[raw.root].depth = 0;
+      while (queue.length) {
+        var cur = nodes[queue.shift()];
+        cur.out.forEach(function (e) {
+          if (nodes[e.to].depth > cur.depth + 1) {
+            nodes[e.to].depth = cur.depth + 1;
+            queue.push(e.to);
+          }
+        });
+      }
+
+      // closure / exclusive tallies per direct dependency
+      var tally = {};
+      raw.direct.forEach(function (d) { tally[d] = { closure: 0, exclusive: 0 }; });
+      keys.forEach(function (k) {
+        var o = nodes[k].owners;
+        o.forEach(function (d) {
+          if (tally[d]) {
+            tally[d].closure++;
+            if (o.length === 1) tally[d].exclusive++;
+          }
+        });
+      });
+
+      var dupes = raw.dupes || {};
+
+      return {
+        root: raw.root, nodes: nodes, keys: keys, edges: raw.edges,
+        direct: raw.direct.slice().sort(function (a, b) {
+          return tally[b].closure - tally[a].closure || a.localeCompare(b);
+        }),
+        tally: tally, dupes: dupes, stats: raw.stats,
+        maxClosure: raw.direct.reduce(function (m, d) {
+          return Math.max(m, tally[d].closure);
+        }, 1)
+      };
+    }
+
+    function isDup(n) {
+      return Object.prototype.hasOwnProperty.call(G.dupes, n.name);
+    }
+
+    function inFocus(key) {
+      if (!state.focus) return true;
+      if (key === G.root) return true;
+      return G.nodes[key].owners.indexOf(state.focus) !== -1;
+    }
+
+    function matchesQuery(key) {
+      return state.query && G.nodes[key].name.toLowerCase().indexOf(state.query) !== -1;
+    }
+
+    // ------------------------------------------------------------ layout
+
+    // Deterministic seed so the picture is identical on every reload.
+    function hash(s) {
+      var h = 2166136261;
+      for (var i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return (h >>> 0) / 4294967296;
+    }
+
+    var RING = 118;
+    var HUB = 96;      // empty core, so the 14 direct dependencies get a real circle
+    var GAP = 26;      // world-space breathing room between two crates on a ring
+
+    function ringRadius(d) {
+      return HUB + d * RING;
+    }
+
+    // circular relaxation: push neighbours apart until each has `need` radians
+    function spread(list, angle, need) {
+      list.sort(function (a, b) { return angle[a] - angle[b]; });
+      if (list.length < 2 || need * list.length >= Math.PI * 2) return;
+      for (var pass = 0; pass < 90; pass++) {
+        for (var i = 0; i < list.length; i++) {
+          var j = (i + 1) % list.length;
+          var gap = angle[list[j]] - angle[list[i]];
+          if (j === 0) gap += Math.PI * 2;
+          if (gap < need) {
+            var push = (need - gap) / 2;
+            angle[list[i]] -= push;
+            angle[list[j]] += push;
+          }
+        }
+      }
+    }
+
+    // Radial layout. Each direct dependency owns an angular wedge whose width is
+    // proportional to the number of crates *only it* reaches, so the picture is a
+    // pie of who costs what; radius is hops from Cargo.toml. Crates several
+    // dependencies share sit at the average bearing of their owners' wedges, which
+    // lands them between the wedges they bridge.
+    function layout() {
+      var P = {}, wedges = {};
+      var weight = 0;
+
+      G.direct.forEach(function (d) { weight += G.tally[d].exclusive + 1; });
+
+      var at = -Math.PI / 2;
+      G.direct.forEach(function (d) {
+        var w = ((G.tally[d].exclusive + 1) / weight) * Math.PI * 2;
+        wedges[d] = { start: at, end: at + w, mid: at + w / 2 };
+        at += w;
+      });
+
+      // crates a single direct dependency owns, spread evenly across its wedge
+      var owned = {};
+      G.direct.forEach(function (d) { owned[d] = []; });
+      G.keys.forEach(function (k) {
+        var o = G.nodes[k].owners;
+        if (o.length === 1 && owned[o[0]] && k !== o[0]) owned[o[0]].push(k);
+      });
+
+      var angle = {};
+      G.direct.forEach(function (d) {
+        angle[d] = wedges[d].mid;
+        var list = owned[d].sort(function (a, b) {
+          return (G.nodes[a].depth - G.nodes[b].depth) || a.localeCompare(b);
+        });
+        var span = wedges[d].end - wedges[d].start;
+        list.forEach(function (k, i) {
+          angle[k] = wedges[d].start + span * ((i + 0.5) / list.length);
+        });
+      });
+
+      G.keys.forEach(function (k) {
+        if (k === G.root || angle[k] !== undefined) return;
+        var o = G.nodes[k].owners.filter(function (d) { return wedges[d]; });
+        var sx = 0, sy = 0;
+        o.forEach(function (d) { sx += Math.cos(wedges[d].mid); sy += Math.sin(wedges[d].mid); });
+        var m = Math.sqrt(sx * sx + sy * sy);
+        angle[k] = m > 0.08 ? Math.atan2(sy, sx) : hash(k) * Math.PI * 2;
+      });
+
+      // pull apart crates that landed on top of each other on the same ring
+      var rings = {};
+      G.keys.forEach(function (k) {
+        if (k === G.root) return;
+        var d = isFinite(G.nodes[k].depth) ? G.nodes[k].depth : 5;
+        (rings[d] = rings[d] || []).push(k);
+      });
+
+      Object.keys(rings).forEach(function (d) {
+        spread(rings[d], angle, GAP / ringRadius(Number(d)));
+      });
+
+      G.keys.forEach(function (k) {
+        if (k === G.root) { P[k] = { x: 0, y: 0 }; return; }
+        var r = ringRadius(isFinite(G.nodes[k].depth) ? G.nodes[k].depth : 5);
+        P[k] = { x: Math.cos(angle[k]) * r, y: Math.sin(angle[k]) * r };
+      });
+
+      G.wedges = wedges;
+      G.maxDepth = Math.max.apply(null, Object.keys(rings).map(Number));
+
+      // rim labels start at their crate's bearing, then get their own breathing room
+      var rim = {};
+      G.direct.forEach(function (d) { rim[d] = angle[d]; });
+      spread(G.direct.slice(), rim, 46 / rimRadius());
+      G.rimAngle = rim;
+
+      return P;
+    }
+
+    // ------------------------------------------------------------ canvas
+
+    var cv = document.getElementById("cv");
+    var ctx = cv.getContext("2d");
+    var view = { k: 1, tx: 0, ty: 0 };
+    var hover = null;
+    var css = {};
+    var needFit = true;
+    var faceStack = "monospace";
+
+    function readTheme() {
+      var s = getComputedStyle(document.documentElement);
+      ["oxide", "graphite", "verdigris", "rule", "rule-strong", "text",
+       "text-dim", "text-faint", "panel", "ground"].forEach(function (v) {
+        css[v] = s.getPropertyValue("--" + v).trim();
+      });
+      faceStack = getComputedStyle(document.body).fontFamily || "monospace";
+    }
+
+    function radius(n) {
+      if (n.key === G.root) return 10;
+      if (n.direct) return 7.5 + 1.2 * Math.sqrt(n.in.length);
+      return 3.4 + 1.9 * Math.sqrt(n.in.length);
+    }
+
+    function rimRadius() {
+      return ringRadius(G.maxDepth) + 54;
+    }
+
+    // leave a margin for the rim labels, which stick out radially in every direction
+    function fitView() {
+      var w = cv.clientWidth || 800, h = cv.clientHeight || 600;
+      view.k = Math.max(0.15, (Math.min(w, h) / 2 - 104) / rimRadius());
+      view.tx = w / 2;
+      view.ty = h / 2;
+    }
+
+    function resize() {
+      var dpr = window.devicePixelRatio || 1;
+      var w = cv.clientWidth, h = cv.clientHeight;
+      if (!w || !h) return;
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (needFit) { fitView(); needFit = false; }
+      draw();
+    }
+
+    function toScreen(p) {
+      return { x: p.x * view.k + view.tx, y: p.y * view.k + view.ty };
+    }
+
+    function draw() {
+      if (!sim) return;
+      var w = cv.clientWidth, h = cv.clientHeight;
+      ctx.clearRect(0, 0, w, h);
+
+      // one ring per hop from Cargo.toml
+      ctx.strokeStyle = css.rule;
+      ctx.lineWidth = 1;
+      for (var d = 1; d <= G.maxDepth; d++) {
+        ctx.beginPath();
+        ctx.arc(view.tx, view.ty, ringRadius(d) * view.k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // rim bracket per direct dependency: arc length = crates only it reaches
+      var rimR = rimRadius() * view.k;
+      ctx.lineCap = "butt";
+      G.direct.forEach(function (dk) {
+        var wg = G.wedges[dk];
+        var lit = state.focus === dk;
+        var la = G.rimAngle[dk];
+        ctx.globalAlpha = state.focus ? (lit ? 1 : 0.12) : 0.5;
+        ctx.strokeStyle = css.oxide;
+        ctx.lineWidth = lit ? 5 : 3;
+        ctx.beginPath();
+        ctx.arc(view.tx, view.ty, rimR, wg.start + 0.008, wg.end - 0.008);
+        ctx.stroke();
+
+        // leader from the crate out to its name on the rim
+        var p = toScreen(sim[dk]);
+        ctx.globalAlpha = state.focus ? (lit ? 0.5 : 0.06) : 0.18;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(view.tx + Math.cos(la) * rimR, view.ty + Math.sin(la) * rimR);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // set radially, so neighbouring names fan out instead of colliding
+        var right = Math.cos(la) >= 0;
+        ctx.globalAlpha = state.focus ? (lit ? 1 : 0.3) : 0.95;
+        ctx.font = (lit ? "700 " : "600 ") + "11.5px " + faceStack;
+        ctx.fillStyle = lit ? css.oxide : css["text-dim"];
+        ctx.save();
+        ctx.translate(view.tx + Math.cos(la) * (rimR + 9),
+                      view.ty + Math.sin(la) * (rimR + 9));
+        ctx.rotate(right ? la : la + Math.PI);
+        ctx.textAlign = right ? "left" : "right";
+        ctx.textBaseline = "middle";
+        ctx.fillText(G.nodes[dk].name, 0, 0);
+        ctx.restore();
+      });
+      ctx.globalAlpha = 1;
+
+      var active = state.sel || hover;
+      var near = {};
+      if (active && G.nodes[active]) {
+        near[active] = true;
+        G.nodes[active].out.forEach(function (e) { near[e.to] = true; });
+        G.nodes[active].in.forEach(function (e) { near[e.from] = true; });
+      }
+
+      // edges, bowed toward the hub so long chords bundle instead of slicing
+      // across the rings (the bow is proportional to the angular distance)
+      G.edges.forEach(function (e) {
+        var a = toScreen(sim[e.a]), b = toScreen(sim[e.b]);
+        var lit = active ? (near[e.a] && near[e.b]) : false;
+        var dim = !(inFocus(e.a) && inFocus(e.b));
+        ctx.globalAlpha = lit ? 0.95 : dim ? 0.05 : (active ? 0.11 : 0.33);
+        ctx.strokeStyle = lit ? css.oxide : css["rule-strong"];
+        ctx.lineWidth = lit ? 1.6 : 1;
+        ctx.setLineDash(e.k === "build" ? [3, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        if (e.a === G.root) {
+          ctx.lineTo(b.x, b.y);
+        } else {
+          var wa = sim[e.a], wb = sim[e.b];
+          var arcSpan = Math.abs(Math.atan2(wa.y, wa.x) - Math.atan2(wb.y, wb.x));
+          if (arcSpan > Math.PI) arcSpan = Math.PI * 2 - arcSpan;
+          var t = Math.cos(arcSpan / 2) * 0.92;
+          ctx.quadraticCurveTo(
+            view.tx + ((a.x + b.x) / 2 - view.tx) * t,
+            view.ty + ((a.y + b.y) / 2 - view.ty) * t,
+            b.x, b.y);
+        }
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+
+      // nodes
+      var labels = [];
+      G.keys.forEach(function (k) {
+        var n = G.nodes[k];
+        var p = toScreen(sim[k]);
+        var r = radius(n) * Math.max(0.62, Math.min(view.k, 1.5));
+        var dim = !inFocus(k) || (active && !near[k]);
+        var hit = matchesQuery(k);
+
+        ctx.globalAlpha = dim ? (hit ? 0.55 : 0.16) : 1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = k === G.root ? css.text : n.linked ? css.oxide : css.graphite;
+        ctx.fill();
+
+        // the crates we declare ourselves are drawn hollow
+        if (n.direct) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r * 0.44, 0, Math.PI * 2);
+          ctx.fillStyle = css.ground;
+          ctx.fill();
+        }
+
+        if (isDup(n)) {
+          ctx.strokeStyle = css.verdigris;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        if (k === active || hit) {
+          ctx.strokeStyle = css.oxide;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r + 4.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = 1;
+
+        // direct dependencies are named on the rim, so they need no label here
+        var rank = k === G.root ? 100
+                 : k === active ? 95
+                 : hit ? 88
+                 : n.in.length >= 4 ? 20 + n.in.length
+                 : view.k > 1.4 ? 5
+                 : 0;
+        if (rank && !dim) labels.push({ n: n, p: p, r: r, rank: rank });
+      });
+
+      // labels last, best first, and never stacked on top of each other
+      var taken = [];
+      labels.sort(function (a, b) { return b.rank - a.rank; }).forEach(function (l) {
+        var strong = l.rank >= 70;
+        ctx.font = (strong ? "600 " : "") + (strong ? 12 : 11) + "px " + faceStack;
+        var t = l.n.name;
+        var tw = ctx.measureText(t).width;
+        var box = { x: l.p.x - tw / 2 - 3, y: l.p.y - l.r - 15, w: tw + 6, h: 14 };
+
+        if (box.x + box.w < -20 || box.x > w + 20 || box.y + box.h < -20 || box.y > h + 20) return;
+        for (var i = 0; i < taken.length; i++) {
+          var o = taken[i];
+          if (box.x < o.x + o.w && o.x < box.x + box.w &&
+              box.y < o.y + o.h && o.y < box.y + box.h) return;
+        }
+        taken.push(box);
+
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = css.panel;
+        ctx.fillRect(box.x, box.y, box.w, box.h);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = strong ? css.text : css["text-dim"];
+        ctx.fillText(t, box.x + 3, box.y + 11);
+      });
+    }
+
+    function pick(mx, my) {
+      var best = null, bestD = 18 * 18;
+      G.keys.forEach(function (k) {
+        if (!inFocus(k)) return;
+        var p = toScreen(sim[k]);
+        var dx = p.x - mx, dy = p.y - my;
+        var d2 = dx * dx + dy * dy;
+        if (d2 < bestD) { bestD = d2; best = k; }
+      });
+      return best;
+    }
+
+    var drag = null;
+
+    cv.addEventListener("pointerdown", function (ev) {
+      cv.setPointerCapture(ev.pointerId);
+      drag = { x: ev.offsetX, y: ev.offsetY, moved: false };
+      cv.classList.add("is-drag");
+    });
+
+    cv.addEventListener("pointermove", function (ev) {
+      if (drag) {
+        var dx = ev.offsetX - drag.x, dy = ev.offsetY - drag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+        view.tx += dx; view.ty += dy;
+        drag.x = ev.offsetX; drag.y = ev.offsetY;
+        draw();
+        return;
+      }
+      var h = pick(ev.offsetX, ev.offsetY);
+      if (h !== hover) { hover = h; draw(); }
+    });
+
+    cv.addEventListener("pointerup", function (ev) {
+      var wasDrag = drag && drag.moved;
+      drag = null;
+      cv.classList.remove("is-drag");
+      if (wasDrag) return;
+      var k = pick(ev.offsetX, ev.offsetY);
+      select(k);
+    });
+
+    cv.addEventListener("pointerleave", function () {
+      drag = null;
+      cv.classList.remove("is-drag");
+      if (hover) { hover = null; draw(); }
+    });
+
+    cv.addEventListener("wheel", function (ev) {
+      ev.preventDefault();
+      var f = Math.exp(-ev.deltaY * 0.0015);
+      var nk = Math.max(0.12, Math.min(6, view.k * f));
+      f = nk / view.k;
+      view.tx = ev.offsetX - (ev.offsetX - view.tx) * f;
+      view.ty = ev.offsetY - (ev.offsetY - view.ty) * f;
+      view.k = nk;
+      draw();
+    }, { passive: false });
+
+    // -------------------------------------------------------------- rail
+
+    function renderRail() {
+      var host = document.getElementById("dep-list");
+      host.textContent = "";
+
+      G.direct.forEach(function (k) {
+        var n = G.nodes[k];
+        var t = G.tally[k];
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "dep";
+        b.setAttribute("aria-pressed", state.focus === k ? "true" : "false");
+
+        var exW = (t.exclusive / G.maxClosure) * 100;
+        var shW = ((t.closure - t.exclusive) / G.maxClosure) * 100;
+
+        b.innerHTML =
+          '<span class="dep-top">' +
+            '<span class="dep-name"></span>' +
+            '<span class="dep-ver"></span>' +
+            (n.linked ? "" : '<span class="dep-tag">build</span>') +
+            '<span class="dep-n">' + t.closure + "</span>" +
+          "</span>" +
+          '<span class="dep-bar">' +
+            '<i class="ex" style="width:' + exW.toFixed(2) + '%"></i>' +
+            '<i class="sh" style="width:' + shW.toFixed(2) + '%"></i>' +
+          "</span>" +
+          '<span class="dep-legend">' +
+            "<span>" + t.exclusive + " only here</span>" +
+            "<span>" + (t.closure - t.exclusive) + " shared</span>" +
+          "</span>";
+
+        b.querySelector(".dep-name").textContent = n.name;
+        b.querySelector(".dep-ver").textContent = n.ver;
+
+        b.addEventListener("click", function () {
+          state.focus = state.focus === k ? null : k;
+          state.sel = state.focus ? k : null;
+          renderRail();
+          renderTree();
+          renderTable();
+          renderDetail();
+          draw();
+        });
+
+        host.appendChild(b);
+      });
+    }
+
+    // -------------------------------------------------------------- tree
+
+    function childrenOf(key) {
+      return G.nodes[key].out.slice().sort(function (a, b) {
+        if ((a.kind === "build") !== (b.kind === "build")) return a.kind === "build" ? 1 : -1;
+        return a.to.localeCompare(b.to);
+      });
+    }
+
+    function renderTree() {
+      var host = document.getElementById("view-tree");
+      host.textContent = "";
+      var wrap = document.createElement("div");
+      wrap.className = "tw";
+
+      var seen = {};
+      var rootKey = state.focus || G.root;
+      var lines = 0;
+
+      function walk(key, prefix, connector, kind) {
+        if (lines++ > 4000) return;
+        var n = G.nodes[key];
+        var repeat = seen[key];
+        seen[key] = true;
+
+        var row = document.createElement("span");
+        row.className = "row" + (kind === "build" ? " is-build" : "") +
+                        (state.sel === key ? " is-sel" : "");
+
+        row.appendChild(document.createTextNode(prefix + connector));
+
+        var hit = document.createElement("button");
+        hit.type = "button";
+        hit.className = "row-hit";
+        hit.textContent = n.name;
+        hit.addEventListener("click", function () { select(key); });
+        row.appendChild(hit);
+
+        var meta = document.createElement("span");
+        meta.className = "v";
+        meta.textContent = " v" + n.ver;
+        row.appendChild(meta);
+
+        if (n.pm) {
+          var pm = document.createElement("span");
+          pm.className = "note";
+          pm.textContent = " (proc-macro)";
+          row.appendChild(pm);
+        }
+        if (kind === "build") {
+          var bd = document.createElement("span");
+          bd.className = "note";
+          bd.textContent = " (build)";
+          row.appendChild(bd);
+        }
+        if (isDup(n)) {
+          var du = document.createElement("span");
+          du.className = "dup";
+          du.textContent = " ○ " + G.dupes[n.name].length + " versions";
+          row.appendChild(du);
+        }
+        if (repeat) {
+          var st = document.createElement("span");
+          st.className = "note";
+          st.textContent = " (*)";
+          row.appendChild(st);
+        }
+
+        row.appendChild(document.createTextNode("\n"));
+        wrap.appendChild(row);
+
+        if (repeat) return;
+
+        var kids = childrenOf(key);
+        kids.forEach(function (e, i) {
+          var last = i === kids.length - 1;
+          walk(e.to, prefix + (connector ? (connector.charAt(0) === "└" ? "    " : "│   ") : ""),
+               last ? "└── " : "├── ", e.kind);
+        });
+      }
+
+      walk(rootKey, "", "", "normal");
+      host.appendChild(wrap);
+    }
+
+    // ------------------------------------------------------------- table
+
+    var COLS = [
+      { id: "name", label: "Crate", num: false },
+      { id: "ver", label: "Version", num: false },
+      { id: "kind", label: "Ships?", num: false },
+      { id: "depth", label: "Hops", num: true },
+      { id: "owners", label: "Reached via", num: false },
+      { id: "in", label: "Dependents", num: true },
+      { id: "lic", label: "License", num: false }
+    ];
+
+    function sortValue(n, col) {
+      switch (col) {
+        case "name": return n.name;
+        case "ver": return n.ver;
+        case "kind": return n.linked ? 0 : 1;
+        case "depth": return isFinite(n.depth) ? n.depth : 99;
+        case "owners": return n.owners.length;
+        case "in": return n.in.length;
+        case "lic": return n.lic || "￿";
+      }
+      return 0;
+    }
+
+    function renderTable() {
+      var host = document.getElementById("view-table");
+      host.textContent = "";
+
+      var rows = G.keys.filter(function (k) {
+        if (k === G.root) return false;
+        if (!inFocus(k)) return false;
+        if (state.query && G.nodes[k].name.toLowerCase().indexOf(state.query) === -1) return false;
+        return true;
+      }).sort(function (a, b) {
+        var va = sortValue(G.nodes[a], state.sort.col);
+        var vb = sortValue(G.nodes[b], state.sort.col);
+        if (va < vb) return -state.sort.dir;
+        if (va > vb) return state.sort.dir;
+        return G.nodes[a].name.localeCompare(G.nodes[b].name);
+      });
+
+      var table = document.createElement("table");
+      var thead = document.createElement("thead");
+      var htr = document.createElement("tr");
+
+      COLS.forEach(function (c) {
+        var th = document.createElement("th");
+        th.textContent = c.label;
+        if (c.num) th.className = "num";
+        if (state.sort.col === c.id) {
+          th.setAttribute("aria-sort", state.sort.dir === 1 ? "ascending" : "descending");
+          th.textContent = c.label + (state.sort.dir === 1 ? " ↑" : " ↓");
+        }
+        th.addEventListener("click", function () {
+          if (state.sort.col === c.id) state.sort.dir *= -1;
+          else state.sort = { col: c.id, dir: c.id === "in" || c.id === "owners" || c.id === "depth" ? -1 : 1 };
+          renderTable();
+        });
+        htr.appendChild(th);
+      });
+
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      var tbody = document.createElement("tbody");
+
+      rows.forEach(function (k) {
+        var n = G.nodes[k];
+        var tr = document.createElement("tr");
+        if (state.sel === k) tr.className = "is-sel";
+
+        var td1 = document.createElement("td");
+        td1.className = "cell-name";
+        td1.textContent = n.name;
+        td1.addEventListener("click", function () { select(k); });
+        tr.appendChild(td1);
+
+        var td2 = document.createElement("td");
+        td2.className = "num muted";
+        td2.textContent = n.ver;
+        tr.appendChild(td2);
+
+        var td3 = document.createElement("td");
+        td3.className = "cell-kind";
+        var pill = document.createElement("span");
+        pill.className = "pill " + (n.linked ? "p-linked" : "p-build");
+        pill.textContent = n.linked ? "linked" : n.pm ? "proc-macro" : "build";
+        td3.appendChild(pill);
+        if (isDup(n)) {
+          td3.appendChild(document.createTextNode(" "));
+          var dp = document.createElement("span");
+          dp.className = "pill p-dup";
+          dp.textContent = G.dupes[n.name].length + "×";
+          td3.appendChild(dp);
+        }
+        tr.appendChild(td3);
+
+        var td4 = document.createElement("td");
+        td4.className = "num muted";
+        td4.textContent = isFinite(n.depth) ? n.depth : "—";
+        tr.appendChild(td4);
+
+        var td5 = document.createElement("td");
+        td5.className = "muted";
+        td5.textContent = n.owners.map(function (o) {
+          return G.nodes[o].name;
+        }).join(", ");
+        tr.appendChild(td5);
+
+        var td6 = document.createElement("td");
+        td6.className = "num muted";
+        td6.textContent = n.in.length;
+        tr.appendChild(td6);
+
+        var td7 = document.createElement("td");
+        td7.className = "muted";
+        td7.textContent = n.lic || "—";
+        tr.appendChild(td7);
+
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(tbody);
+      host.appendChild(table);
+    }
+
+    // ------------------------------------------------------------ detail
+
+    function chipRow(keys, label) {
+      if (!keys.length) return "";
+      return '<dt>' + label + "</dt><dd><span class='chips'>" +
+        keys.map(function (k) {
+          return '<button type="button" class="chip" data-key="' +
+            k.replace(/"/g, "&quot;") + '">' + G.nodes[k].name + "</button>";
+        }).join("") + "</span></dd>";
+    }
+
+    function renderDetail() {
+      var host = document.getElementById("detail");
+
+      if (!state.sel || !G.nodes[state.sel]) {
+        host.innerHTML =
+          '<p class="detail-empty">Pick a crate in the graph, tree or table to see who ' +
+          "pulls it in and what it pulls in itself. Pick a direct dependency in the left " +
+          "rail to narrow every view to just its subtree.</p>";
+        return;
+      }
+
+      var n = G.nodes[state.sel];
+      var parents = n.in.map(function (e) { return e.from; })
+        .sort(function (a, b) { return G.nodes[a].name.localeCompare(G.nodes[b].name); });
+      var kids = n.out.map(function (e) { return e.to; })
+        .sort(function (a, b) { return G.nodes[a].name.localeCompare(G.nodes[b].name); });
+
+      var html = '<button type="button" class="detail-close" aria-label="Close">×</button>' +
+        "<h3>" + n.name + " <span>v" + n.ver + "</span></h3>";
+
+      if (n.desc) html += '<p class="desc">' + escapeHtml(n.desc) + "</p>";
+
+      html += "<dl>";
+      html += "<dt>Ships?</dt><dd>" +
+        (n.key === G.root ? "this crate"
+          : n.linked ? "linked into the binary"
+          : n.pm ? "proc-macro — runs in the compiler only"
+          : "build script only — not in the binary") + "</dd>";
+
+      if (isDup(n)) {
+        html += "<dt>Duplicate</dt><dd style='color:var(--verdigris)'>" +
+          G.dupes[n.name].map(function (v) { return "v" + v; }).join(" &amp; ") +
+          " both in the graph</dd>";
+      }
+
+      html += "<dt>Hops</dt><dd>" + (isFinite(n.depth) ? n.depth : "—") +
+        " from Cargo.toml</dd>";
+
+      if (n.owners.length && n.key !== G.root) {
+        html += chipRow(n.owners, n.owners.length === 1 ? "Only via" : "Reached via");
+      }
+
+      html += chipRow(parents, "Pulled in by");
+      html += chipRow(kids, "Pulls in");
+
+      if (n.lic) html += "<dt>License</dt><dd>" + escapeHtml(n.lic) + "</dd>";
+      if (n.repo) {
+        html += '<dt>Source</dt><dd><a href="' + escapeHtml(n.repo) +
+          '" target="_blank" rel="noopener">' +
+          escapeHtml(n.repo.replace(/^https?:\/\//, "")) + "</a></dd>";
+      }
+      html += "</dl>";
+
+      host.innerHTML = html;
+
+      host.querySelector(".detail-close").addEventListener("click", function () {
+        select(null);
+      });
+      Array.prototype.forEach.call(host.querySelectorAll(".chip"), function (c) {
+        c.addEventListener("click", function () { select(c.getAttribute("data-key")); });
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+      });
+    }
+
+    // ------------------------------------------------------------ wiring
+
+    function select(key) {
+      state.sel = key || null;
+      renderDetail();
+      renderTree();
+      renderTable();
+      draw();
+    }
+
+    function renderCounts() {
+      document.getElementById("c-total").textContent = G.stats.total;
+      document.getElementById("c-linked").textContent = G.stats.linked;
+      document.getElementById("c-build").textContent = G.stats.buildonly;
+      document.getElementById("c-direct").textContent = G.direct.length;
+    }
+
+    function setTarget(t) {
+      state.target = t;
+      state.focus = null;
+      state.sel = null;
+      hover = null;
+      G = buildModel(t);
+      sim = layout();
+      needFit = true;
+      renderCounts();
+      renderRail();
+      renderTree();
+      renderTable();
+      renderDetail();
+      resize();
+    }
+
+    document.getElementById("target-switch").addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-target]");
+      if (!b) return;
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      setTarget(b.getAttribute("data-target"));
+    });
+
+    document.getElementById("view-switch").addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-view]");
+      if (!b) return;
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      state.view = b.getAttribute("data-view");
+      ["graph", "tree", "table"].forEach(function (v) {
+        document.getElementById("view-" + v).classList.toggle("is-on", v === state.view);
+      });
+      if (state.view === "graph") resize();
+    });
+
+    document.getElementById("q").addEventListener("input", function () {
+      state.query = this.value.trim().toLowerCase();
+      renderTable();
+      draw();
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") {
+        if (state.sel) select(null);
+        else if (state.focus) {
+          state.focus = null;
+          renderRail(); renderTree(); renderTable(); draw();
+        }
+      }
+    });
+
+    readTheme();
+    setTarget("linux");
+
+    new ResizeObserver(function () {
+      if (state.view === "graph") resize();
+    }).observe(document.querySelector(".stage-body"));
+
+    resize();
+
+    var reTheme = function () { readTheme(); draw(); };
+    if (window.matchMedia) {
+      var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      if (mq.addEventListener) mq.addEventListener("change", reTheme);
+    }
+    new MutationObserver(reTheme).observe(document.documentElement, {
+      attributes: true, attributeFilter: ["data-theme", "class", "style"]
+    });
+  })();
+</script>

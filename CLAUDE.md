@@ -437,6 +437,25 @@ client's), `packaging/rpm/`
 Verified end to end for 0.3.0 on Fedora 44 (rpm), Debian trixie (deb, vendored turbojpeg) and Debian sid (deb,
 system turbojpeg) — all three install and run, lintian reports only `initial-upload-closes-no-bugs`.
 
+## Dependency graph (`docs/`)
+
+`docs/dependency-graph.html` is a generated, self-contained interactive map of the crate graph for both targets
+(radial graph / `cargo tree`-style tree / sortable table). **Regenerate it whenever `Cargo.toml`'s dependencies
+change** — `python3 docs/dependency-graph.py`, which rewrites it from `docs/dependency-graph.template.html` (edit
+the template, never the generated file). Needs only python 3 and `cargo`; the Windows target needs no toolchain
+installed, since `cargo tree --target` merely resolves. The edges come from `cargo tree`, **not** `cargo
+metadata`, whose `resolve` graph is not feature-resolved and reports optional dependencies nothing enables.
+Output is byte-stable for a given resolution, but `Cargo.lock` is gitignored, so counts can shift between runs on
+their own — which is why the crate counts quoted in `README.md`'s **Dependencies** section are the one thing the
+script cannot keep current. Check them when regenerating.
+
+`docs/` is also the **GitHub Pages** source (Settings → Pages → deploy from a branch, `main` + `/docs`), served
+at <https://xpra-org.github.io/rust-xpra/>, which is what `README.md` links to. Jekyll turns `docs/README.md`
+into the landing page and copies the graph through untouched (it has no front matter); `docs/_config.yml` holds
+the theme and excludes the generator and template from the published site. Links in `docs/README.md` to anything
+outside `docs/` must be absolute GitHub URLs — a relative `../README.md` resolves on github.com but 404s on the
+Pages site, since only `docs/` is published.
+
 ## Known repo quirks
 
 - `build.rs` embeds the Windows resources: `assets/xpra.ico` (name id `1` — the executable's icon in Explorer,

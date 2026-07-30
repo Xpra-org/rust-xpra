@@ -1,0 +1,24 @@
+# GitHub Pages configuration.
+#
+# This folder is the site source: Settings -> Pages -> Build and deployment ->
+# Source "Deploy from a branch" -> branch `main`, folder `/docs`. Every push to
+# `main` then republishes https://xpra-org.github.io/rust-xpra/ automatically.
+#
+# Jekyll turns README.md into the landing page, and copies dependency-graph.html
+# through untouched because it carries no front matter.
+
+title: rust-xpra dependency graph
+description: Every crate the rust-xpra client pulls in, on Linux and Windows.
+
+# Primer is GitHub's own documentation styling - near enough to how a README already
+# reads, so the landing page does not fight the graph's own look. It is absent from
+# the gallery at https://pages.github.com/themes/ but is a supported theme all the
+# same: the github-pages gem ships jekyll-theme-primer 0.6.0
+# (https://pages.github.com/versions/). Don't "fix" it to a gallery theme.
+theme: jekyll-theme-primer
+
+# Build inputs, not things to serve. The template in particular is unusable on its
+# own - it still has the __DATA__ placeholder where the graph gets inlined.
+exclude:
+  - dependency-graph.py
+  - dependency-graph.template.html

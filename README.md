@@ -189,3 +189,30 @@ to be able to patch, so there is a feature to link the system `libwebp` shared l
 ```shell
 cargo build --release --features webp-dylib
 ```
+
+## Dependencies
+
+Keeping the dependency graph small is a deliberate constraint here — it is why the WebSocket layer and the SHA1
+and HMAC-SHA256 implementations are hand-rolled against `std` rather than pulled from crates, and why `ssh`
+shells out to the system binary instead of linking a client.
+
+**[xpra-org.github.io/rust-xpra](https://xpra-org.github.io/rust-xpra/dependency-graph.html)** maps what is
+actually there: for each direct dependency, its full transitive closure, which crates it is the *only* route to
+(what dropping it would really remove), and which of those are linked into the binary rather than merely run at
+build time. The same page is committed as `docs/dependency-graph.html` and is entirely self-contained, so it
+works offline from a checkout too.
+
+As of 0.3.0, the Linux graph is 124 crates — 98 linked and 26 build-time only (build scripts and proc-macros) —
+against 77 on Windows, of which 53 are linked and 24 build-time only. The windowing stack dominates both: `winit`
+alone accounts for 76 of the Linux total, 33 of which nothing else reaches, and `softbuffer` adds only 9 more on
+top of it. The page also flags crates present at more than one version — `rustix` and `linux-raw-sys` on Linux,
+the `windows-sys`/`windows-result`/`windows-strings` trio on Windows.
+
+Regenerate it after changing a dependency (needs python 3 and `cargo`, nothing else):
+
+```shell
+python3 docs/dependency-graph.py
+```
+
+[`docs/README.md`](docs/README.md) describes what the page shows, how the data is derived, and how it is
+published.

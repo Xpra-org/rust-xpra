@@ -1,0 +1,1671 @@
+<title>rust-xpra dependency graph</title>
+
+<style>
+  :root {
+    --ground: #f7f4ef;
+    --panel: #fffdfa;
+    --sunk: #f0ece5;
+    --rule: #e0d9cf;
+    --rule-strong: #c9bfb1;
+    --text: #1a1d22;
+    --text-dim: #6a7079;
+    --text-faint: #9aa0a8;
+    --oxide: #a83c0a;
+    --oxide-soft: #d98a5f;
+    --graphite: #7e8894;
+    --verdigris: #0f6f74;
+    --focus: #a83c0a;
+
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", "IBM Plex Mono",
+            "Cascadia Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0f1216;
+      --panel: #161a20;
+      --sunk: #12161b;
+      --rule: #252b33;
+      --rule-strong: #3a434e;
+      --text: #e6e2db;
+      --text-dim: #949cA6;
+      --text-faint: #6b737d;
+      --oxide: #d65a24;
+      --oxide-soft: #8a4525;
+      --graphite: #78838f;
+      --verdigris: #2e9ba0;
+      --focus: #d65a24;
+    }
+  }
+
+  :root[data-theme="light"] {
+    --ground: #f7f4ef;
+    --panel: #fffdfa;
+    --sunk: #f0ece5;
+    --rule: #e0d9cf;
+    --rule-strong: #c9bfb1;
+    --text: #1a1d22;
+    --text-dim: #6a7079;
+    --text-faint: #9aa0a8;
+    --oxide: #a83c0a;
+    --oxide-soft: #d98a5f;
+    --graphite: #7e8894;
+    --verdigris: #0f6f74;
+    --focus: #a83c0a;
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1216;
+    --panel: #161a20;
+    --sunk: #12161b;
+    --rule: #252b33;
+    --rule-strong: #3a434e;
+    --text: #e6e2db;
+    --text-dim: #949ca6;
+    --text-faint: #6b737d;
+    --oxide: #d65a24;
+    --oxide-soft: #8a4525;
+    --graphite: #78838f;
+    --verdigris: #2e9ba0;
+    --focus: #d65a24;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 1px;
+  }
+
+  /* ---------- top bar ---------- */
+
+  .bar {
+    display: flex;
+    align-items: stretch;
+    flex-wrap: wrap;
+    gap: 0;
+    border-bottom: 1px solid var(--rule);
+    background: var(--panel);
+  }
+
+  .bar-id {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 18px;
+    border-right: 1px solid var(--rule);
+    min-width: 250px;
+  }
+
+  .bar-id b {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .bar-id b span { color: var(--oxide); }
+
+  .bar-id small {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    color: var(--text-dim);
+    letter-spacing: 0.01em;
+  }
+
+  .bar-seg {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 18px;
+    border-right: 1px solid var(--rule);
+  }
+
+  .eyebrow {
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .switch {
+    display: flex;
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .switch button {
+    appearance: none;
+    border: 0;
+    border-right: 1px solid var(--rule-strong);
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 12px;
+    cursor: pointer;
+    letter-spacing: 0.02em;
+  }
+
+  .switch button:last-child { border-right: 0; }
+  .switch button:hover { color: var(--text); background: var(--sunk); }
+
+  .switch button[aria-pressed="true"] {
+    background: var(--oxide);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .counts {
+    display: flex;
+    gap: 26px;
+    padding: 8px 18px;
+    margin-right: auto;
+  }
+
+  .count {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .count-n {
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .count-l {
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+  }
+
+  .count.is-oxide .count-n { color: var(--oxide); }
+  .count.is-graphite .count-n { color: var(--graphite); }
+
+  /* ---------- shell ---------- */
+
+  .shell {
+    display: grid;
+    grid-template-columns: 336px minmax(0, 1fr);
+    height: calc(100vh - 68px);
+    min-height: 560px;
+  }
+
+  /* ---------- left rail ---------- */
+
+  .rail {
+    border-right: 1px solid var(--rule);
+    background: var(--panel);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .rail-head {
+    padding: 13px 16px 11px;
+    border-bottom: 1px solid var(--rule);
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    z-index: 2;
+  }
+
+  .rail-head p {
+    margin: 6px 0 0;
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    max-width: 46ch;
+  }
+
+  .dep {
+    display: block;
+    width: 100%;
+    text-align: left;
+    appearance: none;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid var(--rule);
+    border-left: 2px solid transparent;
+    color: inherit;
+    font: inherit;
+    padding: 9px 16px 10px;
+    cursor: pointer;
+  }
+
+  .dep:hover { background: var(--sunk); }
+
+  .dep[aria-pressed="true"] {
+    background: var(--sunk);
+    border-left-color: var(--oxide);
+  }
+
+  .dep-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+
+  .dep-name {
+    font-weight: 600;
+    font-size: 12.5px;
+    letter-spacing: -0.005em;
+  }
+
+  .dep-ver {
+    font-size: 10.5px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dep-n {
+    margin-left: auto;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+  }
+
+  .dep-bar {
+    display: flex;
+    height: 7px;
+    margin-top: 6px;
+    background: var(--sunk);
+    border: 1px solid var(--rule);
+  }
+
+  .dep[aria-pressed="true"] .dep-bar { background: var(--ground); }
+
+  .dep-bar i { display: block; height: 100%; }
+  .dep-bar .ex { background: var(--oxide); }
+  .dep-bar .sh { background: var(--oxide-soft); opacity: 0.55; }
+
+  .dep-legend {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+    font-size: 10px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rail-note {
+    font-family: var(--sans);
+    font-size: 10.5px;
+    line-height: 1.55;
+    color: var(--text-faint);
+    margin: 0;
+    padding: 12px 16px 20px;
+    max-width: 44ch;
+  }
+
+  .rail-note code {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    overflow-wrap: anywhere;
+  }
+
+  .dep-tag {
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--graphite);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 0 4px;
+  }
+
+  /* ---------- stage ---------- */
+
+  /* min-height:0 matters: without it this grid item grows to fit the tree/table
+     and shoves the detail card below the fold */
+  .stage {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    position: relative;
+    background: var(--ground);
+  }
+
+  .stage-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 9px 16px;
+    border-bottom: 1px solid var(--rule);
+    background: var(--panel);
+  }
+
+  .legend {
+    display: flex;
+    gap: 14px;
+    font-size: 10.5px;
+    color: var(--text-dim);
+    align-items: center;
+  }
+
+  .key {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .key i {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    display: block;
+  }
+
+  .key .k-oxide { background: var(--oxide); }
+  .key .k-graphite { background: var(--graphite); }
+  .key .k-direct { background: var(--ground); border: 3px solid var(--oxide); }
+  .key .k-dup { background: transparent; border: 2px solid var(--verdigris); }
+
+  .search {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .search input {
+    appearance: none;
+    background: var(--sunk);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 8px;
+    width: 168px;
+  }
+
+  .search input::placeholder { color: var(--text-faint); }
+
+  .stage-body {
+    flex: 1;
+    position: relative;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .view { display: none; height: 100%; position: relative; }
+  .view.is-on { display: block; }
+
+  #cv {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  #cv.is-drag { cursor: grabbing; }
+
+  .hint {
+    position: absolute;
+    left: 14px;
+    bottom: 12px;
+    font-size: 10.5px;
+    color: var(--text-faint);
+    pointer-events: none;
+  }
+
+  /* ---------- tree view ---------- */
+
+  .tree {
+    height: 100%;
+    overflow: auto;
+    padding: 14px 16px 40px;
+    font-size: 12.5px;
+    line-height: 1.62;
+    white-space: pre;
+  }
+
+  .tw { display: block; min-width: max-content; }
+
+  .row {
+    display: block;
+    color: var(--text-faint);
+  }
+
+  .row-hit {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--text);
+    cursor: pointer;
+    border-radius: 2px;
+  }
+
+  .row-hit:hover { background: var(--sunk); color: var(--oxide); }
+  .row.is-build .row-hit { color: var(--graphite); }
+  .row.is-sel .row-hit { background: var(--oxide); color: #fff; }
+  .row .v { color: var(--text-faint); }
+  .row .note { color: var(--graphite); font-size: 11px; }
+  .row .dup { color: var(--verdigris); }
+
+  /* ---------- table view ---------- */
+
+  .tablewrap {
+    height: 100%;
+    overflow: auto;
+    padding-bottom: 40px;
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 720px;
+    font-size: 12px;
+  }
+
+  thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    border-bottom: 1px solid var(--rule-strong);
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 9.5px;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  thead th:hover { color: var(--text); }
+  thead th[aria-sort] { color: var(--oxide); }
+
+  tbody td {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+
+  tbody tr:hover td { background: var(--sunk); }
+  tbody tr.is-sel td { background: var(--sunk); }
+  tbody tr.is-sel td:first-child { box-shadow: inset 2px 0 0 var(--oxide); }
+
+  .cell-name {
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .cell-name:hover { color: var(--oxide); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .muted { color: var(--text-dim); }
+
+  .cell-kind { white-space: nowrap; }
+
+  .pill {
+    display: inline-block;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 2px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
+  }
+
+  .pill.p-linked { color: var(--oxide); }
+  .pill.p-build { color: var(--graphite); }
+  .pill.p-dup { color: var(--verdigris); }
+
+  /* ---------- detail card ---------- */
+
+  .detail {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    width: 320px;
+    max-height: calc(100% - 28px);
+    overflow: auto;
+    background: var(--panel);
+    border: 1px solid var(--rule-strong);
+    border-radius: 2px;
+    padding: 12px 14px 13px;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.16);
+  }
+
+  .detail h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .detail h3 span {
+    font-weight: 400;
+    color: var(--text-faint);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .detail .desc {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    margin: 7px 0 0;
+    max-width: 42ch;
+  }
+
+  .detail dl {
+    margin: 11px 0 0;
+    display: grid;
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 5px 10px;
+    font-size: 11.5px;
+  }
+
+  .detail dt {
+    font-size: 9.5px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    font-weight: 700;
+    padding-top: 2px;
+  }
+
+  .detail dd {
+    margin: 0;
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  .detail dd a { color: var(--oxide); }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .chip {
+    appearance: none;
+    border: 1px solid var(--rule-strong);
+    background: transparent;
+    border-radius: 2px;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 10.5px;
+    padding: 1px 5px;
+    cursor: pointer;
+  }
+
+  .chip:hover { border-color: var(--oxide); color: var(--oxide); }
+
+  .detail-empty {
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--text-dim);
+    margin: 0;
+  }
+
+  .detail-close {
+    float: right;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--text-faint);
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+  }
+
+  .detail-close:hover { color: var(--oxide); }
+
+  @media (max-width: 900px) {
+    .shell {
+      grid-template-columns: 1fr;
+      height: auto;
+    }
+
+    .rail { border-right: 0; border-bottom: 1px solid var(--rule); max-height: 300px; }
+    .stage-body { height: 70vh; min-height: 420px; }
+    .detail { position: static; width: auto; margin: 12px; max-height: none; }
+  }
+</style>
+
+<header class="bar">
+  <div class="bar-id">
+    <b>rust-<span>xpra</span> &middot; dependency graph</b>
+    <small>Every crate cargo pulls in, and which direct dependency drags it there.</small>
+  </div>
+
+  <div class="bar-seg">
+    <span class="eyebrow">Target</span>
+    <div class="switch" id="target-switch">
+      <button type="button" data-target="linux" aria-pressed="true">Linux</button>
+      <button type="button" data-target="windows" aria-pressed="false">Windows</button>
+    </div>
+  </div>
+
+  <div class="counts">
+    <div class="count">
+      <span class="count-n" id="c-total">&mdash;</span>
+      <span class="count-l">crates</span>
+    </div>
+    <div class="count is-oxide">
+      <span class="count-n" id="c-linked">&mdash;</span>
+      <span class="count-l">in the binary</span>
+    </div>
+    <div class="count is-graphite">
+      <span class="count-n" id="c-build">&mdash;</span>
+      <span class="count-l">build&#8209;time only</span>
+    </div>
+    <div class="count">
+      <span class="count-n" id="c-direct">&mdash;</span>
+      <span class="count-l">declared by us</span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <aside class="rail">
+    <div class="rail-head">
+      <span class="eyebrow">Direct dependencies</span>
+      <p>
+        Bar length is the full transitive closure. The solid part is what
+        <em>only</em> this dependency reaches &mdash; what dropping it would
+        actually remove.
+      </p>
+    </div>
+    <div id="dep-list"></div>
+
+    <p class="rail-note">
+      Read from <code>cargo tree --edges normal,build</code> per target, against the
+      working tree at 0.3.0 on 30 Jul 2026. Feature-resolved, so optional dependencies nothing
+      turns on are absent; dev-dependencies are excluded.
+      Regenerate with <code>python3 docs/dependency-graph.py</code>.
+    </p>
+  </aside>
+
+  <section class="stage">
+    <div class="stage-head">
+      <div class="switch" id="view-switch">
+        <button type="button" data-view="graph" aria-pressed="true">Graph</button>
+        <button type="button" data-view="tree" aria-pressed="false">Tree</button>
+        <button type="button" data-view="table" aria-pressed="false">Table</button>
+      </div>
+
+      <div class="legend">
+        <span class="key"><i class="k-oxide"></i>linked into the binary</span>
+        <span class="key"><i class="k-graphite"></i>build script / proc&#8209;macro</span>
+        <span class="key"><i class="k-direct"></i>declared by us</span>
+        <span class="key"><i class="k-dup"></i>duplicate version</span>
+      </div>
+
+      <div class="search">
+        <label class="eyebrow" for="q">Find</label>
+        <input id="q" type="search" placeholder="crate name&hellip;" autocomplete="off" />
+      </div>
+    </div>
+
+    <div class="stage-body">
+      <div class="view is-on" id="view-graph">
+        <canvas id="cv"></canvas>
+        <p class="hint">drag to pan &middot; scroll to zoom &middot; click a crate for detail &middot; rings = steps from Cargo.toml</p>
+      </div>
+      <div class="view tree" id="view-tree"></div>
+      <div class="view tablewrap" id="view-table"></div>
+    </div>
+
+    <div class="detail" id="detail"></div>
+  </section>
+</div>
+
+<script type="application/json" id="graph-data">{"linux":{"direct":["base64 0.22.1","copypasta 0.10.2","libwebp-sys 0.14.4","log 0.4.33","lz4_flex 0.11.6","machine-uid 0.6.0","native-tls 0.2.18","serde_json 1.0.150","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13","winresource 0.1.31","yaml-rust2 0.11.0"],"dupes":{"linux-raw-sys":["0.12.1","0.4.15","0.9.4"],"rustix":["0.38.44","1.1.4"]},"edges":[{"a":"ab_glyph 0.2.32","b":"ab_glyph_rasterizer 0.1.10","k":"normal"},{"a":"ab_glyph 0.2.32","b":"owned_ttf_parser 0.25.1","k":"normal"},{"a":"ahash 0.8.12","b":"cfg-if 1.0.4","k":"normal"},{"a":"ahash 0.8.12","b":"getrandom 0.3.4","k":"normal"},{"a":"ahash 0.8.12","b":"once_cell 1.21.4","k":"normal"},{"a":"ahash 0.8.12","b":"version_check 0.9.5","k":"build"},{"a":"ahash 0.8.12","b":"zerocopy 0.8.54","k":"normal"},{"a":"bytemuck 1.25.0","b":"bytemuck_derive 1.10.2","k":"normal"},{"a":"bytemuck_derive 1.10.2","b":"proc-macro2 1.0.106","k":"normal"},{"a":"bytemuck_derive 1.10.2","b":"quote 1.0.46","k":"normal"},{"a":"bytemuck_derive 1.10.2","b":"syn 2.0.118","k":"normal"},{"a":"calloop 0.13.0","b":"bitflags 2.13.0","k":"normal"},{"a":"calloop 0.13.0","b":"log 0.4.33","k":"normal"},{"a":"calloop 0.13.0","b":"polling 3.11.0","k":"normal"},{"a":"calloop 0.13.0","b":"rustix 0.38.44","k":"normal"},{"a":"calloop 0.13.0","b":"slab 0.4.12","k":"normal"},{"a":"calloop 0.13.0","b":"thiserror 1.0.69","k":"normal"},{"a":"calloop-wayland-source 0.3.0","b":"calloop 0.13.0","k":"normal"},{"a":"calloop-wayland-source 0.3.0","b":"rustix 0.38.44","k":"normal"},{"a":"calloop-wayland-source 0.3.0","b":"wayland-backend 0.3.15","k":"normal"},{"a":"calloop-wayland-source 0.3.0","b":"wayland-client 0.31.14","k":"normal"},{"a":"cc 1.2.66","b":"find-msvc-tools 0.1.9","k":"build"},{"a":"cc 1.2.66","b":"jobserver 0.1.35","k":"build"},{"a":"cc 1.2.66","b":"libc 0.2.186","k":"build"},{"a":"cc 1.2.66","b":"shlex 2.0.1","k":"build"},{"a":"cmake 0.1.58","b":"cc 1.2.66","k":"build"},{"a":"copypasta 0.10.2","b":"x11-clipboard 0.9.3","k":"normal"},{"a":"dlib 0.5.3","b":"libloading 0.8.9","k":"normal"},{"a":"drm 0.14.1","b":"bitflags 2.13.0","k":"normal"},{"a":"drm 0.14.1","b":"bytemuck 1.25.0","k":"normal"},{"a":"drm 0.14.1","b":"drm-ffi 0.9.1","k":"normal"},{"a":"drm 0.14.1","b":"drm-fourcc 2.2.0","k":"normal"},{"a":"drm 0.14.1","b":"rustix 0.38.44","k":"normal"},{"a":"drm-ffi 0.9.1","b":"drm-sys 0.8.1","k":"normal"},{"a":"drm-ffi 0.9.1","b":"rustix 1.1.4","k":"normal"},{"a":"drm-sys 0.8.1","b":"linux-raw-sys 0.9.4","k":"normal"},{"a":"encoding_rs 0.8.35","b":"cfg-if 1.0.4","k":"normal"},{"a":"foreign-types 0.3.2","b":"foreign-types-shared 0.1.1","k":"normal"},{"a":"gethostname 1.1.0","b":"rustix 1.1.4","k":"normal"},{"a":"getrandom 0.3.4","b":"cfg-if 1.0.4","k":"normal"},{"a":"getrandom 0.3.4","b":"libc 0.2.186","k":"normal"},{"a":"hashbrown 0.16.1","b":"foldhash 0.2.0","k":"normal"},{"a":"hashlink 0.11.1","b":"hashbrown 0.16.1","k":"normal"},{"a":"jobserver 0.1.35","b":"libc 0.2.186","k":"build"},{"a":"libloading 0.8.9","b":"cfg-if 1.0.4","k":"normal"},{"a":"libwebp-sys 0.14.4","b":"cc 1.2.66","k":"build"},{"a":"libwebp-sys 0.14.4","b":"glob 0.3.3","k":"build"},{"a":"libwebp-sys 0.14.4","b":"pkg-config 0.3.33","k":"build"},{"a":"libz-sys 1.1.29","b":"cc 1.2.66","k":"build"},{"a":"libz-sys 1.1.29","b":"libc 0.2.186","k":"normal"},{"a":"libz-sys 1.1.29","b":"pkg-config 0.3.33","k":"build"},{"a":"libz-sys 1.1.29","b":"vcpkg 0.2.15","k":"build"},{"a":"memmap2 0.9.11","b":"libc 0.2.186","k":"normal"},{"a":"native-tls 0.2.18","b":"log 0.4.33","k":"normal"},{"a":"native-tls 0.2.18","b":"openssl 0.10.81","k":"normal"},{"a":"native-tls 0.2.18","b":"openssl-probe 0.2.1","k":"normal"},{"a":"native-tls 0.2.18","b":"openssl-sys 0.9.117","k":"normal"},{"a":"openssl 0.10.81","b":"bitflags 2.13.0","k":"normal"},{"a":"openssl 0.10.81","b":"cfg-if 1.0.4","k":"normal"},{"a":"openssl 0.10.81","b":"foreign-types 0.3.2","k":"normal"},{"a":"openssl 0.10.81","b":"libc 0.2.186","k":"normal"},{"a":"openssl 0.10.81","b":"openssl-macros 0.1.1","k":"normal"},{"a":"openssl 0.10.81","b":"openssl-sys 0.9.117","k":"normal"},{"a":"openssl-macros 0.1.1","b":"proc-macro2 1.0.106","k":"normal"},{"a":"openssl-macros 0.1.1","b":"quote 1.0.46","k":"normal"},{"a":"openssl-macros 0.1.1","b":"syn 2.0.118","k":"normal"},{"a":"openssl-sys 0.9.117","b":"cc 1.2.66","k":"build"},{"a":"openssl-sys 0.9.117","b":"libc 0.2.186","k":"normal"},{"a":"openssl-sys 0.9.117","b":"pkg-config 0.3.33","k":"build"},{"a":"openssl-sys 0.9.117","b":"vcpkg 0.2.15","k":"build"},{"a":"owned_ttf_parser 0.25.1","b":"ttf-parser 0.25.1","k":"normal"},{"a":"polling 3.11.0","b":"cfg-if 1.0.4","k":"normal"},{"a":"polling 3.11.0","b":"rustix 1.1.4","k":"normal"},{"a":"proc-macro2 1.0.106","b":"unicode-ident 1.0.24","k":"normal"},{"a":"quick-xml 0.39.4","b":"memchr 2.8.3","k":"normal"},{"a":"quote 1.0.46","b":"proc-macro2 1.0.106","k":"normal"},{"a":"rustix 0.38.44","b":"bitflags 2.13.0","k":"normal"},{"a":"rustix 0.38.44","b":"linux-raw-sys 0.4.15","k":"normal"},{"a":"rustix 1.1.4","b":"bitflags 2.13.0","k":"normal"},{"a":"rustix 1.1.4","b":"linux-raw-sys 0.12.1","k":"normal"},{"a":"sctk-adwaita 0.10.1","b":"ab_glyph 0.2.32","k":"normal"},{"a":"sctk-adwaita 0.10.1","b":"log 0.4.33","k":"normal"},{"a":"sctk-adwaita 0.10.1","b":"memmap2 0.9.11","k":"normal"},{"a":"sctk-adwaita 0.10.1","b":"smithay-client-toolkit 0.19.2","k":"normal"},{"a":"sctk-adwaita 0.10.1","b":"tiny-skia 0.11.4","k":"normal"},{"a":"serde_json 1.0.150","b":"itoa 1.0.18","k":"normal"},{"a":"serde_json 1.0.150","b":"memchr 2.8.3","k":"normal"},{"a":"serde_json 1.0.150","b":"serde_core 1.0.228","k":"normal"},{"a":"serde_json 1.0.150","b":"zmij 1.0.21","k":"normal"},{"a":"serde_spanned 1.1.1","b":"serde_core 1.0.228","k":"build"},{"a":"smithay-client-toolkit 0.19.2","b":"bitflags 2.13.0","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"calloop 0.13.0","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"calloop-wayland-source 0.3.0","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"cursor-icon 1.2.0","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"libc 0.2.186","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"log 0.4.33","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"memmap2 0.9.11","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"rustix 0.38.44","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"thiserror 1.0.69","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-backend 0.3.15","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-client 0.31.14","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-csd-frame 0.3.0","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-cursor 0.31.14","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-protocols 0.32.13","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-protocols-wlr 0.3.12","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"wayland-scanner 0.31.10","k":"normal"},{"a":"smithay-client-toolkit 0.19.2","b":"xkeysym 0.2.1","k":"normal"},{"a":"softbuffer 0.4.8","b":"as-raw-xcb-connection 1.0.1","k":"normal"},{"a":"softbuffer 0.4.8","b":"bytemuck 1.25.0","k":"normal"},{"a":"softbuffer 0.4.8","b":"drm 0.14.1","k":"normal"},{"a":"softbuffer 0.4.8","b":"fastrand 2.4.1","k":"normal"},{"a":"softbuffer 0.4.8","b":"memmap2 0.9.11","k":"normal"},{"a":"softbuffer 0.4.8","b":"raw-window-handle 0.6.2","k":"normal"},{"a":"softbuffer 0.4.8","b":"rustix 1.1.4","k":"normal"},{"a":"softbuffer 0.4.8","b":"tiny-xlib 0.2.5","k":"normal"},{"a":"softbuffer 0.4.8","b":"tracing 0.1.44","k":"normal"},{"a":"softbuffer 0.4.8","b":"wayland-backend 0.3.15","k":"normal"},{"a":"softbuffer 0.4.8","b":"wayland-client 0.31.14","k":"normal"},{"a":"softbuffer 0.4.8","b":"wayland-sys 0.31.11","k":"normal"},{"a":"softbuffer 0.4.8","b":"x11rb 0.13.2","k":"normal"},{"a":"spng 0.2.0-alpha.3","b":"bitflags 2.13.0","k":"normal"},{"a":"spng 0.2.0-alpha.3","b":"libc 0.2.186","k":"normal"},{"a":"spng 0.2.0-alpha.3","b":"spng-sys 0.2.0-alpha.3","k":"normal"},{"a":"spng-sys 0.2.0-alpha.3","b":"cc 1.2.66","k":"build"},{"a":"spng-sys 0.2.0-alpha.3","b":"libc 0.2.186","k":"normal"},{"a":"spng-sys 0.2.0-alpha.3","b":"libz-sys 1.1.29","k":"normal"},{"a":"syn 2.0.118","b":"proc-macro2 1.0.106","k":"normal"},{"a":"syn 2.0.118","b":"quote 1.0.46","k":"normal"},{"a":"syn 2.0.118","b":"unicode-ident 1.0.24","k":"normal"},{"a":"thiserror 1.0.69","b":"thiserror-impl 1.0.69","k":"normal"},{"a":"thiserror-impl 1.0.69","b":"proc-macro2 1.0.106","k":"normal"},{"a":"thiserror-impl 1.0.69","b":"quote 1.0.46","k":"normal"},{"a":"thiserror-impl 1.0.69","b":"syn 2.0.118","k":"normal"},{"a":"tiny-skia 0.11.4","b":"arrayref 0.3.9","k":"normal"},{"a":"tiny-skia 0.11.4","b":"arrayvec 0.7.8","k":"normal"},{"a":"tiny-skia 0.11.4","b":"bytemuck 1.25.0","k":"normal"},{"a":"tiny-skia 0.11.4","b":"cfg-if 1.0.4","k":"normal"},{"a":"tiny-skia 0.11.4","b":"log 0.4.33","k":"normal"},{"a":"tiny-skia 0.11.4","b":"tiny-skia-path 0.11.4","k":"normal"},{"a":"tiny-skia-path 0.11.4","b":"arrayref 0.3.9","k":"normal"},{"a":"tiny-skia-path 0.11.4","b":"bytemuck 1.25.0","k":"normal"},{"a":"tiny-skia-path 0.11.4","b":"strict-num 0.1.1","k":"normal"},{"a":"tiny-xlib 0.2.5","b":"as-raw-xcb-connection 1.0.1","k":"normal"},{"a":"tiny-xlib 0.2.5","b":"ctor 0.10.1","k":"normal"},{"a":"tiny-xlib 0.2.5","b":"libloading 0.8.9","k":"normal"},{"a":"tiny-xlib 0.2.5","b":"pkg-config 0.3.33","k":"build"},{"a":"tiny-xlib 0.2.5","b":"tracing 0.1.44","k":"normal"},{"a":"toml 1.1.3+spec-1.1.0","b":"serde_core 1.0.228","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"serde_spanned 1.1.1","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"toml_datetime 1.1.1+spec-1.1.0","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"toml_parser 1.1.2+spec-1.1.0","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"winnow 1.0.3","k":"build"},{"a":"toml_datetime 1.1.1+spec-1.1.0","b":"serde_core 1.0.228","k":"build"},{"a":"toml_parser 1.1.2+spec-1.1.0","b":"winnow 1.0.3","k":"build"},{"a":"tracing 0.1.44","b":"pin-project-lite 0.2.17","k":"normal"},{"a":"tracing 0.1.44","b":"tracing-core 0.1.36","k":"normal"},{"a":"turbojpeg 1.4.0","b":"gcd 2.3.0","k":"normal"},{"a":"turbojpeg 1.4.0","b":"libc 0.2.186","k":"normal"},{"a":"turbojpeg 1.4.0","b":"thiserror 1.0.69","k":"normal"},{"a":"turbojpeg 1.4.0","b":"turbojpeg-sys 1.2.0","k":"normal"},{"a":"turbojpeg-sys 1.2.0","b":"anyhow 1.0.103","k":"build"},{"a":"turbojpeg-sys 1.2.0","b":"cmake 0.1.58","k":"build"},{"a":"turbojpeg-sys 1.2.0","b":"libc 0.2.186","k":"normal"},{"a":"turbojpeg-sys 1.2.0","b":"pkg-config 0.3.33","k":"build"},{"a":"wayland-backend 0.3.15","b":"cc 1.2.66","k":"build"},{"a":"wayland-backend 0.3.15","b":"downcast-rs 1.2.1","k":"normal"},{"a":"wayland-backend 0.3.15","b":"rustix 1.1.4","k":"normal"},{"a":"wayland-backend 0.3.15","b":"scoped-tls 1.0.1","k":"normal"},{"a":"wayland-backend 0.3.15","b":"smallvec 1.15.2","k":"normal"},{"a":"wayland-backend 0.3.15","b":"wayland-sys 0.31.11","k":"normal"},{"a":"wayland-client 0.31.14","b":"bitflags 2.13.0","k":"normal"},{"a":"wayland-client 0.31.14","b":"rustix 1.1.4","k":"normal"},{"a":"wayland-client 0.31.14","b":"wayland-backend 0.3.15","k":"normal"},{"a":"wayland-client 0.31.14","b":"wayland-scanner 0.31.10","k":"normal"},{"a":"wayland-csd-frame 0.3.0","b":"bitflags 2.13.0","k":"normal"},{"a":"wayland-csd-frame 0.3.0","b":"cursor-icon 1.2.0","k":"normal"},{"a":"wayland-csd-frame 0.3.0","b":"wayland-backend 0.3.15","k":"normal"},{"a":"wayland-cursor 0.31.14","b":"rustix 1.1.4","k":"normal"},{"a":"wayland-cursor 0.31.14","b":"wayland-client 0.31.14","k":"normal"},{"a":"wayland-cursor 0.31.14","b":"xcursor 0.3.10","k":"normal"},{"a":"wayland-protocols 0.32.13","b":"bitflags 2.13.0","k":"normal"},{"a":"wayland-protocols 0.32.13","b":"wayland-backend 0.3.15","k":"normal"},{"a":"wayland-protocols 0.32.13","b":"wayland-client 0.31.14","k":"normal"},{"a":"wayland-protocols 0.32.13","b":"wayland-scanner 0.31.10","k":"normal"},{"a":"wayland-protocols-plasma 0.3.12","b":"bitflags 2.13.0","k":"normal"},{"a":"wayland-protocols-plasma 0.3.12","b":"wayland-backend 0.3.15","k":"normal"},{"a":"wayland-protocols-plasma 0.3.12","b":"wayland-client 0.31.14","k":"normal"},{"a":"wayland-protocols-plasma 0.3.12","b":"wayland-protocols 0.32.13","k":"normal"},{"a":"wayland-protocols-plasma 0.3.12","b":"wayland-scanner 0.31.10","k":"normal"},{"a":"wayland-protocols-wlr 0.3.12","b":"bitflags 2.13.0","k":"normal"},{"a":"wayland-protocols-wlr 0.3.12","b":"wayland-backend 0.3.15","k":"normal"},{"a":"wayland-protocols-wlr 0.3.12","b":"wayland-client 0.31.14","k":"normal"},{"a":"wayland-protocols-wlr 0.3.12","b":"wayland-protocols 0.32.13","k":"normal"},{"a":"wayland-protocols-wlr 0.3.12","b":"wayland-scanner 0.31.10","k":"normal"},{"a":"wayland-scanner 0.31.10","b":"proc-macro2 1.0.106","k":"normal"},{"a":"wayland-scanner 0.31.10","b":"quick-xml 0.39.4","k":"normal"},{"a":"wayland-scanner 0.31.10","b":"quote 1.0.46","k":"normal"},{"a":"wayland-sys 0.31.11","b":"dlib 0.5.3","k":"normal"},{"a":"wayland-sys 0.31.11","b":"log 0.4.33","k":"normal"},{"a":"wayland-sys 0.31.11","b":"once_cell 1.21.4","k":"normal"},{"a":"wayland-sys 0.31.11","b":"pkg-config 0.3.33","k":"build"},{"a":"winit 0.30.13","b":"ahash 0.8.12","k":"normal"},{"a":"winit 0.30.13","b":"bitflags 2.13.0","k":"normal"},{"a":"winit 0.30.13","b":"bytemuck 1.25.0","k":"normal"},{"a":"winit 0.30.13","b":"calloop 0.13.0","k":"normal"},{"a":"winit 0.30.13","b":"cfg_aliases 0.2.1","k":"build"},{"a":"winit 0.30.13","b":"cursor-icon 1.2.0","k":"normal"},{"a":"winit 0.30.13","b":"dpi 0.1.2","k":"normal"},{"a":"winit 0.30.13","b":"libc 0.2.186","k":"normal"},{"a":"winit 0.30.13","b":"memmap2 0.9.11","k":"normal"},{"a":"winit 0.30.13","b":"percent-encoding 2.3.2","k":"normal"},{"a":"winit 0.30.13","b":"raw-window-handle 0.6.2","k":"normal"},{"a":"winit 0.30.13","b":"rustix 0.38.44","k":"normal"},{"a":"winit 0.30.13","b":"sctk-adwaita 0.10.1","k":"normal"},{"a":"winit 0.30.13","b":"smithay-client-toolkit 0.19.2","k":"normal"},{"a":"winit 0.30.13","b":"smol_str 0.2.2","k":"normal"},{"a":"winit 0.30.13","b":"tracing 0.1.44","k":"normal"},{"a":"winit 0.30.13","b":"wayland-backend 0.3.15","k":"normal"},{"a":"winit 0.30.13","b":"wayland-client 0.31.14","k":"normal"},{"a":"winit 0.30.13","b":"wayland-protocols 0.32.13","k":"normal"},{"a":"winit 0.30.13","b":"wayland-protocols-plasma 0.3.12","k":"normal"},{"a":"winit 0.30.13","b":"x11-dl 2.21.0","k":"normal"},{"a":"winit 0.30.13","b":"x11rb 0.13.2","k":"normal"},{"a":"winit 0.30.13","b":"xkbcommon-dl 0.4.2","k":"normal"},{"a":"winresource 0.1.31","b":"toml 1.1.3+spec-1.1.0","k":"build"},{"a":"winresource 0.1.31","b":"version_check 0.9.5","k":"build"},{"a":"x11-clipboard 0.9.3","b":"libc 0.2.186","k":"normal"},{"a":"x11-clipboard 0.9.3","b":"x11rb 0.13.2","k":"normal"},{"a":"x11-dl 2.21.0","b":"libc 0.2.186","k":"normal"},{"a":"x11-dl 2.21.0","b":"once_cell 1.21.4","k":"normal"},{"a":"x11-dl 2.21.0","b":"pkg-config 0.3.33","k":"build"},{"a":"x11rb 0.13.2","b":"as-raw-xcb-connection 1.0.1","k":"normal"},{"a":"x11rb 0.13.2","b":"gethostname 1.1.0","k":"normal"},{"a":"x11rb 0.13.2","b":"libc 0.2.186","k":"normal"},{"a":"x11rb 0.13.2","b":"libloading 0.8.9","k":"normal"},{"a":"x11rb 0.13.2","b":"once_cell 1.21.4","k":"normal"},{"a":"x11rb 0.13.2","b":"rustix 1.1.4","k":"normal"},{"a":"x11rb 0.13.2","b":"x11rb-protocol 0.13.2","k":"normal"},{"a":"xkbcommon-dl 0.4.2","b":"bitflags 2.13.0","k":"normal"},{"a":"xkbcommon-dl 0.4.2","b":"dlib 0.5.3","k":"normal"},{"a":"xkbcommon-dl 0.4.2","b":"log 0.4.33","k":"normal"},{"a":"xkbcommon-dl 0.4.2","b":"once_cell 1.21.4","k":"normal"},{"a":"xkbcommon-dl 0.4.2","b":"xkeysym 0.2.1","k":"normal"},{"a":"xpra 0.3.0","b":"base64 0.22.1","k":"normal"},{"a":"xpra 0.3.0","b":"copypasta 0.10.2","k":"normal"},{"a":"xpra 0.3.0","b":"libwebp-sys 0.14.4","k":"normal"},{"a":"xpra 0.3.0","b":"log 0.4.33","k":"normal"},{"a":"xpra 0.3.0","b":"lz4_flex 0.11.6","k":"normal"},{"a":"xpra 0.3.0","b":"machine-uid 0.6.0","k":"normal"},{"a":"xpra 0.3.0","b":"native-tls 0.2.18","k":"normal"},{"a":"xpra 0.3.0","b":"serde_json 1.0.150","k":"normal"},{"a":"xpra 0.3.0","b":"softbuffer 0.4.8","k":"normal"},{"a":"xpra 0.3.0","b":"spng 0.2.0-alpha.3","k":"normal"},{"a":"xpra 0.3.0","b":"turbojpeg 1.4.0","k":"normal"},{"a":"xpra 0.3.0","b":"winit 0.30.13","k":"normal"},{"a":"xpra 0.3.0","b":"winresource 0.1.31","k":"build"},{"a":"xpra 0.3.0","b":"yaml-rust2 0.11.0","k":"normal"},{"a":"yaml-rust2 0.11.0","b":"arraydeque 0.5.1","k":"normal"},{"a":"yaml-rust2 0.11.0","b":"encoding_rs 0.8.35","k":"normal"},{"a":"yaml-rust2 0.11.0","b":"hashlink 0.11.1","k":"normal"}],"nodes":{"ab_glyph 0.2.32":{"desc":"API for loading, scaling, positioning and rasterizing OpenType font glyphs.","direct":false,"lic":"Apache-2.0","linked":true,"n":"ab_glyph","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/alexheretic/ab-glyph","v":"0.2.32"},"ab_glyph_rasterizer 0.1.10":{"desc":"Coverage rasterization for lines, quadratic & cubic beziers","direct":false,"lic":"Apache-2.0","linked":true,"n":"ab_glyph_rasterizer","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/alexheretic/ab-glyph","v":"0.1.10"},"ahash 0.8.12":{"desc":"A non-cryptographic hash function using AES-NI for high performance","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"ahash","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/tkaitchuck/ahash","v":"0.8.12"},"anyhow 1.0.103":{"desc":"Flexible concrete Error type built on std::error::Error","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"anyhow","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/dtolnay/anyhow","v":"1.0.103"},"arraydeque 0.5.1":{"desc":"A ring buffer with a fixed capacity, which can be stored on the stack.","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"arraydeque","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/andylokandy/arraydeque","v":"0.5.1"},"arrayref 0.3.9":{"desc":"Macros to take array references of slices","direct":false,"lic":"BSD-2-Clause","linked":true,"n":"arrayref","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/droundy/arrayref","v":"0.3.9"},"arrayvec 0.7.8":{"desc":"A vector with fixed capacity, backed by an array (it can be stored on the stack too). Implements fixed capacity ArrayVec and ArrayString.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"arrayvec","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/bluss/arrayvec","v":"0.7.8"},"as-raw-xcb-connection 1.0.1":{"desc":"Trait to facilitate interoperatibility with libxcb C API","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"as-raw-xcb-connection","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/psychon/as-raw-xcb-connection","v":"1.0.1"},"base64 0.22.1":{"desc":"encodes and decodes base64 as bytes or utf8","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"base64","owners":["base64 0.22.1"],"pm":false,"repo":"https://github.com/marshallpierce/rust-base64","v":"0.22.1"},"bitflags 2.13.0":{"desc":"A macro to generate structures which behave like bitflags.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"bitflags","owners":["copypasta 0.10.2","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","winit 0.30.13"],"pm":false,"repo":"https://github.com/bitflags/bitflags","v":"2.13.0"},"bytemuck 1.25.0":{"desc":"A crate for mucking around with piles of bytes.","direct":false,"lic":"Zlib OR Apache-2.0 OR MIT","linked":true,"n":"bytemuck","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/Lokathor/bytemuck","v":"1.25.0"},"bytemuck_derive 1.10.2":{"desc":"derive proc-macros for `bytemuck`","direct":false,"lic":"Zlib OR Apache-2.0 OR MIT","linked":false,"n":"bytemuck_derive","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":true,"repo":"https://github.com/Lokathor/bytemuck","v":"1.10.2"},"calloop 0.13.0":{"desc":"A callback-based event loop","direct":false,"lic":"MIT","linked":true,"n":"calloop","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/Smithay/calloop","v":"0.13.0"},"calloop-wayland-source 0.3.0":{"desc":"A wayland-rs client event source for callloop","direct":false,"lic":"MIT","linked":true,"n":"calloop-wayland-source","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/calloop-wayland-source","v":"0.3.0"},"cc 1.2.66":{"desc":"A build-time dependency for Cargo build scripts to assist in invoking the native C compiler to compile native C code into a static archive to be linked into Rust code.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"cc","owners":["libwebp-sys 0.14.4","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-lang/cc-rs","v":"1.2.66"},"cfg-if 1.0.4":{"desc":"A macro to ergonomically define an item depending on a large number of #[cfg] parameters. Structured like an if-else chain, the first matching branch is the item that gets emitted.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"cfg-if","owners":["copypasta 0.10.2","native-tls 0.2.18","softbuffer 0.4.8","winit 0.30.13","yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/rust-lang/cfg-if","v":"1.0.4"},"cfg_aliases 0.2.1":{"desc":"A tiny utility to help save you a lot of effort with long winded `#[cfg()]` checks.","direct":false,"lic":"MIT","linked":false,"n":"cfg_aliases","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/katharostech/cfg_aliases","v":"0.2.1"},"cmake 0.1.58":{"desc":"A build dependency for running `cmake` to build a native library","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"cmake","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/cmake-rs","v":"0.1.58"},"copypasta 0.10.2":{"desc":"copypasta is a cross-platform library for getting and setting the contents of the OS-level clipboard.","direct":true,"lic":"MIT / Apache-2.0","linked":true,"n":"copypasta","owners":["copypasta 0.10.2"],"pm":false,"repo":"https://github.com/alacritty/copypasta","v":"0.10.2"},"ctor 0.10.1":{"desc":"__attribute__((constructor)) for Rust","direct":false,"lic":"Apache-2.0 OR MIT","linked":true,"n":"ctor","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/mmastrac/rust-ctor","v":"0.10.1"},"cursor-icon 1.2.0":{"desc":"Cross platform cursor icon type","direct":false,"lic":"MIT OR Apache-2.0 OR Zlib","linked":true,"n":"cursor-icon","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/cursor-icon","v":"1.2.0"},"dlib 0.5.3":{"desc":"Helper macros for handling manually loading optional system libraries.","direct":false,"lic":"MIT","linked":true,"n":"dlib","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/elinorbgr/dlib","v":"0.5.3"},"downcast-rs 1.2.1":{"desc":"Trait object downcasting support using only safe Rust. It supports type parameters, associated types, and type constraints.","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"downcast-rs","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/marcianx/downcast-rs","v":"1.2.1"},"dpi 0.1.2":{"desc":"Types for handling UI scaling","direct":false,"lic":"Apache-2.0 AND MIT","linked":true,"n":"dpi","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/winit","v":"0.1.2"},"drm 0.14.1":{"desc":"Safe, low-level bindings to the Direct Rendering Manager API","direct":false,"lic":"MIT","linked":true,"n":"drm","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/Smithay/drm-rs","v":"0.14.1"},"drm-ffi 0.9.1":{"desc":"Safe, low-level bindings to the Direct Rendering Manager API","direct":false,"lic":"MIT","linked":true,"n":"drm-ffi","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/Smithay/drm-rs","v":"0.9.1"},"drm-fourcc 2.2.0":{"desc":"Provides an enum with every valid Direct Rendering Manager (DRM) format fourcc","direct":false,"lic":"MIT","linked":true,"n":"drm-fourcc","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/danielzfranklin/drm-fourcc-rs","v":"2.2.0"},"drm-sys 0.8.1":{"desc":"Bindings to the Direct Rendering Manager API","direct":false,"lic":"MIT","linked":true,"n":"drm-sys","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/Smithay/drm-rs","v":"0.8.1"},"encoding_rs 0.8.35":{"desc":"A Gecko-oriented implementation of the Encoding Standard","direct":false,"lic":"(Apache-2.0 OR MIT) AND BSD-3-Clause","linked":true,"n":"encoding_rs","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/hsivonen/encoding_rs","v":"0.8.35"},"fastrand 2.4.1":{"desc":"A simple and fast random number generator","direct":false,"lic":"Apache-2.0 OR MIT","linked":true,"n":"fastrand","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/smol-rs/fastrand","v":"2.4.1"},"find-msvc-tools 0.1.9":{"desc":"Find windows-specific tools, read MSVC versions from the registry and from COM interfaces","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"find-msvc-tools","owners":["libwebp-sys 0.14.4","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-lang/cc-rs","v":"0.1.9"},"foldhash 0.2.0":{"desc":"A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.","direct":false,"lic":"Zlib","linked":true,"n":"foldhash","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/orlp/foldhash","v":"0.2.0"},"foreign-types 0.3.2":{"desc":"A framework for Rust wrappers over C APIs","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"foreign-types","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/sfackler/foreign-types","v":"0.3.2"},"foreign-types-shared 0.1.1":{"desc":"An internal crate used by foreign-types","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"foreign-types-shared","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/sfackler/foreign-types","v":"0.1.1"},"gcd 2.3.0":{"desc":"Calculate the greatest common divisor","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"gcd","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/frewsxcv/rust-gcd","v":"2.3.0"},"gethostname 1.1.0":{"desc":"gethostname for all platforms","direct":false,"lic":"Apache-2.0","linked":true,"n":"gethostname","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://codeberg.org/swsnr/gethostname.rs.git","v":"1.1.0"},"getrandom 0.3.4":{"desc":"A small cross-platform library for retrieving random data from system source","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"getrandom","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-random/getrandom","v":"0.3.4"},"glob 0.3.3":{"desc":"Support for matching file paths against Unix shell style patterns.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"glob","owners":["libwebp-sys 0.14.4"],"pm":false,"repo":"https://github.com/rust-lang/glob","v":"0.3.3"},"hashbrown 0.16.1":{"desc":"A Rust port of Google's SwissTable hash map","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"hashbrown","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/rust-lang/hashbrown","v":"0.16.1"},"hashlink 0.11.1":{"desc":"HashMap-like containers that hold their key-value pairs in a user controllable order","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"hashlink","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/djc/hashlink","v":"0.11.1"},"itoa 1.0.18":{"desc":"Fast integer primitive to string conversion","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"itoa","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/dtolnay/itoa","v":"1.0.18"},"jobserver 0.1.35":{"desc":"An implementation of the GNU Make jobserver for Rust.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"jobserver","owners":["libwebp-sys 0.14.4","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-lang/jobserver-rs","v":"0.1.35"},"libc 0.2.186":{"desc":"Raw FFI bindings to platform libraries like libc.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"libc","owners":["copypasta 0.10.2","libwebp-sys 0.14.4","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-lang/libc","v":"0.2.186"},"libloading 0.8.9":{"desc":"Bindings around the platform's dynamic library loading primitives with greatly improved memory safety.","direct":false,"lic":"ISC","linked":true,"n":"libloading","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/nagisa/rust_libloading/","v":"0.8.9"},"libwebp-sys 0.14.4":{"desc":"Bindings to libwebp (bindgen, static linking)","direct":true,"lic":"MIT","linked":true,"n":"libwebp-sys","owners":["libwebp-sys 0.14.4"],"pm":false,"repo":"https://github.com/NoXF/libwebp-sys","v":"0.14.4"},"libz-sys 1.1.29":{"desc":"Low-level bindings to the system libz library (also known as zlib).","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"libz-sys","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/rust-lang/libz-sys","v":"1.1.29"},"linux-raw-sys 0.12.1":{"desc":"Generated bindings for Linux's userspace API","direct":false,"lic":"Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT","linked":true,"n":"linux-raw-sys","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/sunfishcode/linux-raw-sys","v":"0.12.1"},"linux-raw-sys 0.4.15":{"desc":"Generated bindings for Linux's userspace API","direct":false,"lic":"Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT","linked":true,"n":"linux-raw-sys","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/sunfishcode/linux-raw-sys","v":"0.4.15"},"linux-raw-sys 0.9.4":{"desc":"Generated bindings for Linux's userspace API","direct":false,"lic":"Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT","linked":true,"n":"linux-raw-sys","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/sunfishcode/linux-raw-sys","v":"0.9.4"},"log 0.4.33":{"desc":"A lightweight logging facade for Rust","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"log","owners":["log 0.4.33","native-tls 0.2.18","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-lang/log","v":"0.4.33"},"lz4_flex 0.11.6":{"desc":"Fastest LZ4 implementation in Rust, no unsafe by default.","direct":true,"lic":"MIT","linked":true,"n":"lz4_flex","owners":["lz4_flex 0.11.6"],"pm":false,"repo":"https://github.com/pseitz/lz4_flex","v":"0.11.6"},"machine-uid 0.6.0":{"desc":"Get os native machine id without root permission.","direct":true,"lic":"MIT","linked":true,"n":"machine-uid","owners":["machine-uid 0.6.0"],"pm":false,"repo":"https://github.com/Hanaasagi/machine-uid","v":"0.6.0"},"memchr 2.8.3":{"desc":"Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for 1, 2 or 3 byte search and single substring search.","direct":false,"lic":"Unlicense OR MIT","linked":true,"n":"memchr","owners":["serde_json 1.0.150","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/BurntSushi/memchr","v":"2.8.3"},"memmap2 0.9.11":{"desc":"Cross-platform Rust API for memory-mapped file IO","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"memmap2","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/RazrFalcon/memmap2-rs","v":"0.9.11"},"native-tls 0.2.18":{"desc":"A wrapper over a platform's native TLS implementation","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"native-tls","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/rust-native-tls/rust-native-tls","v":"0.2.18"},"once_cell 1.21.4":{"desc":"Single assignment cells and lazy values.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"once_cell","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/matklad/once_cell","v":"1.21.4"},"openssl 0.10.81":{"desc":"OpenSSL bindings","direct":false,"lic":"Apache-2.0","linked":true,"n":"openssl","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/rust-openssl/rust-openssl","v":"0.10.81"},"openssl-macros 0.1.1":{"desc":"Internal macros used by the openssl crate.","direct":false,"lic":"MIT/Apache-2.0","linked":false,"n":"openssl-macros","owners":["native-tls 0.2.18"],"pm":true,"repo":"","v":"0.1.1"},"openssl-probe 0.2.1":{"desc":"A library for helping to find system-wide trust anchor (\"root\") certificate locations based on paths typically used by `openssl`.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"openssl-probe","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/rustls/openssl-probe","v":"0.2.1"},"openssl-sys 0.9.117":{"desc":"FFI bindings to OpenSSL","direct":false,"lic":"MIT","linked":true,"n":"openssl-sys","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/rust-openssl/rust-openssl","v":"0.9.117"},"owned_ttf_parser 0.25.1":{"desc":"ttf-parser plus support for owned data","direct":false,"lic":"Apache-2.0","linked":true,"n":"owned_ttf_parser","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/alexheretic/owned-ttf-parser","v":"0.25.1"},"percent-encoding 2.3.2":{"desc":"Percent encoding and decoding","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"percent-encoding","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/servo/rust-url/","v":"2.3.2"},"pin-project-lite 0.2.17":{"desc":"A lightweight version of pin-project written with declarative macros.","direct":false,"lic":"Apache-2.0 OR MIT","linked":true,"n":"pin-project-lite","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/taiki-e/pin-project-lite","v":"0.2.17"},"pkg-config 0.3.33":{"desc":"A library to run the pkg-config system tool at build time in order to be used in Cargo build scripts.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"pkg-config","owners":["libwebp-sys 0.14.4","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-lang/pkg-config-rs","v":"0.3.33"},"polling 3.11.0":{"desc":"Portable interface to epoll, kqueue, event ports, and IOCP","direct":false,"lic":"Apache-2.0 OR MIT","linked":true,"n":"polling","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smol-rs/polling","v":"3.11.0"},"proc-macro2 1.0.106":{"desc":"A substitute implementation of the compiler's `proc_macro` API to decouple token-based libraries from the procedural macro use case.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"proc-macro2","owners":["native-tls 0.2.18","softbuffer 0.4.8","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/dtolnay/proc-macro2","v":"1.0.106"},"quick-xml 0.39.4":{"desc":"High performance xml reader and writer","direct":false,"lic":"MIT","linked":false,"n":"quick-xml","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/tafia/quick-xml","v":"0.39.4"},"quote 1.0.46":{"desc":"Quasi-quoting macro quote!(...)","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"quote","owners":["native-tls 0.2.18","softbuffer 0.4.8","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/dtolnay/quote","v":"1.0.46"},"raw-window-handle 0.6.2":{"desc":"Interoperability library for Rust Windowing applications.","direct":false,"lic":"MIT OR Apache-2.0 OR Zlib","linked":true,"n":"raw-window-handle","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/raw-window-handle","v":"0.6.2"},"rustix 0.38.44":{"desc":"Safe Rust bindings to POSIX/Unix/Linux/Winsock-like syscalls","direct":false,"lic":"Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT","linked":true,"n":"rustix","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/bytecodealliance/rustix","v":"0.38.44"},"rustix 1.1.4":{"desc":"Safe Rust bindings to POSIX/Unix/Linux/Winsock-like syscalls","direct":false,"lic":"Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT","linked":true,"n":"rustix","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/bytecodealliance/rustix","v":"1.1.4"},"scoped-tls 1.0.1":{"desc":"Library implementation of the standard library's old `scoped_thread_local!` macro for providing scoped access to thread local storage (TLS) so any type can be stored into TLS.","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"scoped-tls","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/alexcrichton/scoped-tls","v":"1.0.1"},"sctk-adwaita 0.10.1":{"desc":"Adwaita-like SCTK Frame","direct":false,"lic":"MIT","linked":true,"n":"sctk-adwaita","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/PolyMeilex/sctk-adwaita","v":"0.10.1"},"serde_core 1.0.228":{"desc":"Serde traits only, with no support for derive -- use the `serde` crate instead","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"serde_core","owners":["serde_json 1.0.150","winresource 0.1.31"],"pm":false,"repo":"https://github.com/serde-rs/serde","v":"1.0.228"},"serde_json 1.0.150":{"desc":"A JSON serialization file format","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"serde_json","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/serde-rs/json","v":"1.0.150"},"serde_spanned 1.1.1":{"desc":"Serde-compatible spanned Value","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"serde_spanned","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.1"},"shlex 2.0.1":{"desc":"Split a string into shell words, like Python's shlex.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"shlex","owners":["libwebp-sys 0.14.4","native-tls 0.2.18","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/comex/rust-shlex","v":"2.0.1"},"slab 0.4.12":{"desc":"Pre-allocated storage for a uniform data type","direct":false,"lic":"MIT","linked":true,"n":"slab","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/tokio-rs/slab","v":"0.4.12"},"smallvec 1.15.2":{"desc":"'Small vector' optimization: store up to a small number of items on the stack","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"smallvec","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/servo/rust-smallvec","v":"1.15.2"},"smithay-client-toolkit 0.19.2":{"desc":"Toolkit for making client wayland applications.","direct":false,"lic":"MIT","linked":true,"n":"smithay-client-toolkit","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/client-toolkit","v":"0.19.2"},"smol_str 0.2.2":{"desc":"small-string optimized string type with O(1) clone","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"smol_str","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-analyzer/smol_str","v":"0.2.2"},"softbuffer 0.4.8":{"desc":"Cross-platform software buffer","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"softbuffer","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/rust-windowing/softbuffer","v":"0.4.8"},"spng 0.2.0-alpha.3":{"desc":"Rust bindings to libspng","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"spng","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/aloucks/spng-rs","v":"0.2.0-alpha.3"},"spng-sys 0.2.0-alpha.3":{"desc":"Native bindings to libspng","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"spng-sys","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/aloucks/spng-rs","v":"0.2.0-alpha.3"},"strict-num 0.1.1":{"desc":"A collection of bounded numeric types","direct":false,"lic":"MIT","linked":true,"n":"strict-num","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/RazrFalcon/strict-num","v":"0.1.1"},"syn 2.0.118":{"desc":"Parser for Rust source code","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"syn","owners":["native-tls 0.2.18","softbuffer 0.4.8","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/dtolnay/syn","v":"2.0.118"},"thiserror 1.0.69":{"desc":"derive(Error)","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"thiserror","owners":["turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/dtolnay/thiserror","v":"1.0.69"},"thiserror-impl 1.0.69":{"desc":"Implementation detail of the `thiserror` crate","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"thiserror-impl","owners":["turbojpeg 1.4.0","winit 0.30.13"],"pm":true,"repo":"https://github.com/dtolnay/thiserror","v":"1.0.69"},"tiny-skia 0.11.4":{"desc":"A tiny Skia subset ported to Rust.","direct":false,"lic":"BSD-3-Clause","linked":true,"n":"tiny-skia","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/RazrFalcon/tiny-skia","v":"0.11.4"},"tiny-skia-path 0.11.4":{"desc":"A tiny-skia Bezier path implementation","direct":false,"lic":"BSD-3-Clause","linked":true,"n":"tiny-skia-path","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/RazrFalcon/tiny-skia/tree/master/path","v":"0.11.4"},"tiny-xlib 0.2.5":{"desc":"A tiny Xlib wrapper for Rust","direct":false,"lic":"MIT OR Apache-2.0 OR Zlib","linked":true,"n":"tiny-xlib","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/rust-windowing/tiny-xlib","v":"0.2.5"},"toml 1.1.3+spec-1.1.0":{"desc":"A native Rust encoder and decoder of TOML-formatted files and streams. Provides implementations of the standard Serialize/Deserialize traits for TOML data to facilitate deserializing and serializing R","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"toml","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.3+spec-1.1.0"},"toml_datetime 1.1.1+spec-1.1.0":{"desc":"A TOML-compatible datetime type","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"toml_datetime","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.1+spec-1.1.0"},"toml_parser 1.1.2+spec-1.1.0":{"desc":"Yet another format-preserving TOML parser.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"toml_parser","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.2+spec-1.1.0"},"tracing 0.1.44":{"desc":"Application-level tracing for Rust.","direct":false,"lic":"MIT","linked":true,"n":"tracing","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/tokio-rs/tracing","v":"0.1.44"},"tracing-core 0.1.36":{"desc":"Core primitives for application-level tracing.","direct":false,"lic":"MIT","linked":true,"n":"tracing-core","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/tokio-rs/tracing","v":"0.1.36"},"ttf-parser 0.25.1":{"desc":"A high-level, safe, zero-allocation font parser for TrueType, OpenType, and AAT.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"ttf-parser","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/harfbuzz/ttf-parser","v":"0.25.1"},"turbojpeg 1.4.0":{"desc":"Fast and easy JPEG encoding, decoding and lossless transforms with TurboJPEG","direct":true,"lic":"Unlicense OR MIT","linked":true,"n":"turbojpeg","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/honzasp/rust-turbojpeg","v":"1.4.0"},"turbojpeg-sys 1.2.0":{"desc":"Raw bindings for TurboJPEG","direct":false,"lic":"Unlicense OR MIT","linked":true,"n":"turbojpeg-sys","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/honzasp/rust-turbojpeg/turbojpeg-sys","v":"1.2.0"},"unicode-ident 1.0.24":{"desc":"Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31","direct":false,"lic":"(MIT OR Apache-2.0) AND Unicode-3.0","linked":false,"n":"unicode-ident","owners":["native-tls 0.2.18","softbuffer 0.4.8","turbojpeg 1.4.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/dtolnay/unicode-ident","v":"1.0.24"},"vcpkg 0.2.15":{"desc":"A library to find native dependencies in a vcpkg tree at build time in order to be used in Cargo build scripts.","direct":false,"lic":"MIT/Apache-2.0","linked":false,"n":"vcpkg","owners":["native-tls 0.2.18","spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/mcgoo/vcpkg-rs","v":"0.2.15"},"version_check 0.9.5":{"desc":"Tiny crate to check the version of the installed/running rustc.","direct":false,"lic":"MIT/Apache-2.0","linked":false,"n":"version_check","owners":["winit 0.30.13","winresource 0.1.31"],"pm":false,"repo":"https://github.com/SergioBenitez/version_check","v":"0.9.5"},"wayland-backend 0.3.15":{"desc":"Low-level bindings to the Wayland protocol","direct":false,"lic":"MIT","linked":true,"n":"wayland-backend","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.3.15"},"wayland-client 0.31.14":{"desc":"Bindings to the standard C implementation of the wayland protocol, client side.","direct":false,"lic":"MIT","linked":true,"n":"wayland-client","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.31.14"},"wayland-csd-frame 0.3.0":{"desc":"Common trait and types for wayland CSD interop","direct":false,"lic":"MIT","linked":true,"n":"wayland-csd-frame","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/wayland-csd-frame","v":"0.3.0"},"wayland-cursor 0.31.14":{"desc":"Bindings to libwayland-cursor.","direct":false,"lic":"MIT","linked":true,"n":"wayland-cursor","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.31.14"},"wayland-protocols 0.32.13":{"desc":"Generated API for the officials wayland protocol extensions","direct":false,"lic":"MIT","linked":true,"n":"wayland-protocols","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.32.13"},"wayland-protocols-plasma 0.3.12":{"desc":"Generated API for the Plasma wayland protocol extensions","direct":false,"lic":"MIT","linked":true,"n":"wayland-protocols-plasma","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.3.12"},"wayland-protocols-wlr 0.3.12":{"desc":"Generated API for the WLR wayland protocol extensions","direct":false,"lic":"MIT","linked":true,"n":"wayland-protocols-wlr","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.3.12"},"wayland-scanner 0.31.10":{"desc":"Wayland Scanner for generating rust APIs from XML wayland protocol files.","direct":false,"lic":"MIT","linked":false,"n":"wayland-scanner","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":true,"repo":"https://github.com/smithay/wayland-rs","v":"0.31.10"},"wayland-sys 0.31.11":{"desc":"FFI bindings to the various libwayland-*.so libraries. You should only need this crate if you are working on custom wayland protocol extensions. Look at the crate wayland-client for usable bindings.","direct":false,"lic":"MIT","linked":true,"n":"wayland-sys","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/smithay/wayland-rs","v":"0.31.11"},"winit 0.30.13":{"desc":"Cross-platform window creation library.","direct":true,"lic":"Apache-2.0","linked":true,"n":"winit","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/winit","v":"0.30.13"},"winnow 1.0.3":{"desc":"A byte-oriented, zero-copy, parser combinators library","direct":false,"lic":"MIT","linked":false,"n":"winnow","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/winnow-rs/winnow","v":"1.0.3"},"winresource 0.1.31":{"desc":"Create and set windows icons and metadata for executables","direct":true,"lic":"MIT","linked":false,"n":"winresource","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/BenjaminRi/winresource","v":"0.1.31"},"x11-clipboard 0.9.3":{"desc":"x11 clipboard support for Rust.","direct":false,"lic":"MIT","linked":true,"n":"x11-clipboard","owners":["copypasta 0.10.2"],"pm":false,"repo":"https://github.com/quininer/x11-clipboard","v":"0.9.3"},"x11-dl 2.21.0":{"desc":"X11 library bindings for Rust","direct":false,"lic":"MIT","linked":true,"n":"x11-dl","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/AltF02/x11-rs.git","v":"2.21.0"},"x11rb 0.13.2":{"desc":"Rust bindings to X11","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"x11rb","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/psychon/x11rb","v":"0.13.2"},"x11rb-protocol 0.13.2":{"desc":"Rust bindings to X11","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"x11rb-protocol","owners":["copypasta 0.10.2","softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/psychon/x11rb","v":"0.13.2"},"xcursor 0.3.10":{"desc":"A library for loading XCursor themes","direct":false,"lic":"MIT","linked":true,"n":"xcursor","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/esposm03/xcursor-rs","v":"0.3.10"},"xkbcommon-dl 0.4.2":{"desc":"Dynamically loaded xkbcommon and xkbcommon-x11 Rust bindings.","direct":false,"lic":"MIT","linked":true,"n":"xkbcommon-dl","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/xkbcommon-dl","v":"0.4.2"},"xkeysym 0.2.1":{"desc":"A library for working with X11 keysyms","direct":false,"lic":"MIT OR Apache-2.0 OR Zlib","linked":true,"n":"xkeysym","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/notgull/xkeysym","v":"0.2.1"},"xpra 0.3.0":{"desc":"","direct":false,"lic":"","linked":true,"n":"xpra","owners":[],"pm":false,"repo":"","v":"0.3.0"},"yaml-rust2 0.11.0":{"desc":"A fully YAML 1.2 compliant YAML parser","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"yaml-rust2","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/Ethiraric/yaml-rust2","v":"0.11.0"},"zerocopy 0.8.54":{"desc":"Zerocopy makes zero-cost memory manipulation effortless. We write \"unsafe\" so you don't have to.","direct":false,"lic":"BSD-2-Clause OR Apache-2.0 OR MIT","linked":true,"n":"zerocopy","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/google/zerocopy","v":"0.8.54"},"zmij 1.0.21":{"desc":"A double-to-string conversion algorithm based on Schubfach and yy","direct":false,"lic":"MIT","linked":true,"n":"zmij","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/dtolnay/zmij","v":"1.0.21"}},"root":"xpra 0.3.0","stats":{"buildonly":26,"linked":98,"total":124}},"windows":{"direct":["base64 0.22.1","copypasta 0.10.2","libwebp-sys 0.14.4","log 0.4.33","lz4_flex 0.11.6","machine-uid 0.6.0","native-tls 0.2.18","serde_json 1.0.150","softbuffer 0.4.8","spng 0.2.0-alpha.3","turbojpeg 1.4.0","windows 0.58.0","winit 0.30.13","winresource 0.1.31","yaml-rust2 0.11.0"],"dupes":{"windows-result":["0.2.0","0.4.1"],"windows-strings":["0.1.0","0.5.1"],"windows-sys":["0.52.0","0.61.2"]},"edges":[{"a":"cc 1.2.66","b":"find-msvc-tools 0.1.9","k":"build"},{"a":"cc 1.2.66","b":"jobserver 0.1.35","k":"build"},{"a":"cc 1.2.66","b":"libc 0.2.186","k":"build"},{"a":"cc 1.2.66","b":"shlex 2.0.1","k":"build"},{"a":"clipboard-win 5.4.1","b":"error-code 3.3.2","k":"normal"},{"a":"cmake 0.1.58","b":"cc 1.2.66","k":"build"},{"a":"copypasta 0.10.2","b":"clipboard-win 5.4.1","k":"normal"},{"a":"encoding_rs 0.8.35","b":"cfg-if 1.0.4","k":"normal"},{"a":"hashbrown 0.16.1","b":"foldhash 0.2.0","k":"normal"},{"a":"hashlink 0.11.1","b":"hashbrown 0.16.1","k":"normal"},{"a":"jobserver 0.1.35","b":"libc 0.2.186","k":"build"},{"a":"libwebp-sys 0.14.4","b":"cc 1.2.66","k":"build"},{"a":"libwebp-sys 0.14.4","b":"glob 0.3.3","k":"build"},{"a":"libwebp-sys 0.14.4","b":"pkg-config 0.3.33","k":"build"},{"a":"libz-sys 1.1.29","b":"cc 1.2.66","k":"build"},{"a":"libz-sys 1.1.29","b":"libc 0.2.186","k":"normal"},{"a":"libz-sys 1.1.29","b":"pkg-config 0.3.33","k":"build"},{"a":"libz-sys 1.1.29","b":"vcpkg 0.2.15","k":"build"},{"a":"machine-uid 0.6.0","b":"windows-registry 0.6.1","k":"normal"},{"a":"machine-uid 0.6.0","b":"windows-sys 0.61.2","k":"normal"},{"a":"native-tls 0.2.18","b":"schannel 0.1.29","k":"normal"},{"a":"proc-macro2 1.0.106","b":"unicode-ident 1.0.24","k":"normal"},{"a":"quote 1.0.46","b":"proc-macro2 1.0.106","k":"normal"},{"a":"schannel 0.1.29","b":"windows-sys 0.61.2","k":"normal"},{"a":"serde_json 1.0.150","b":"itoa 1.0.18","k":"normal"},{"a":"serde_json 1.0.150","b":"memchr 2.8.3","k":"normal"},{"a":"serde_json 1.0.150","b":"serde_core 1.0.228","k":"normal"},{"a":"serde_json 1.0.150","b":"zmij 1.0.21","k":"normal"},{"a":"serde_spanned 1.1.1","b":"serde_core 1.0.228","k":"build"},{"a":"softbuffer 0.4.8","b":"raw-window-handle 0.6.2","k":"normal"},{"a":"softbuffer 0.4.8","b":"tracing 0.1.44","k":"normal"},{"a":"softbuffer 0.4.8","b":"windows-sys 0.61.2","k":"normal"},{"a":"spng 0.2.0-alpha.3","b":"bitflags 2.13.0","k":"normal"},{"a":"spng 0.2.0-alpha.3","b":"libc 0.2.186","k":"normal"},{"a":"spng 0.2.0-alpha.3","b":"spng-sys 0.2.0-alpha.3","k":"normal"},{"a":"spng-sys 0.2.0-alpha.3","b":"cc 1.2.66","k":"build"},{"a":"spng-sys 0.2.0-alpha.3","b":"libc 0.2.186","k":"normal"},{"a":"spng-sys 0.2.0-alpha.3","b":"libz-sys 1.1.29","k":"normal"},{"a":"syn 2.0.118","b":"proc-macro2 1.0.106","k":"normal"},{"a":"syn 2.0.118","b":"quote 1.0.46","k":"normal"},{"a":"syn 2.0.118","b":"unicode-ident 1.0.24","k":"normal"},{"a":"thiserror 1.0.69","b":"thiserror-impl 1.0.69","k":"normal"},{"a":"thiserror-impl 1.0.69","b":"proc-macro2 1.0.106","k":"normal"},{"a":"thiserror-impl 1.0.69","b":"quote 1.0.46","k":"normal"},{"a":"thiserror-impl 1.0.69","b":"syn 2.0.118","k":"normal"},{"a":"toml 1.1.3+spec-1.1.0","b":"serde_core 1.0.228","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"serde_spanned 1.1.1","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"toml_datetime 1.1.1+spec-1.1.0","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"toml_parser 1.1.2+spec-1.1.0","k":"build"},{"a":"toml 1.1.3+spec-1.1.0","b":"winnow 1.0.3","k":"build"},{"a":"toml_datetime 1.1.1+spec-1.1.0","b":"serde_core 1.0.228","k":"build"},{"a":"toml_parser 1.1.2+spec-1.1.0","b":"winnow 1.0.3","k":"build"},{"a":"tracing 0.1.44","b":"pin-project-lite 0.2.17","k":"normal"},{"a":"tracing 0.1.44","b":"tracing-core 0.1.36","k":"normal"},{"a":"turbojpeg 1.4.0","b":"gcd 2.3.0","k":"normal"},{"a":"turbojpeg 1.4.0","b":"libc 0.2.186","k":"normal"},{"a":"turbojpeg 1.4.0","b":"thiserror 1.0.69","k":"normal"},{"a":"turbojpeg 1.4.0","b":"turbojpeg-sys 1.2.0","k":"normal"},{"a":"turbojpeg-sys 1.2.0","b":"anyhow 1.0.103","k":"build"},{"a":"turbojpeg-sys 1.2.0","b":"cmake 0.1.58","k":"build"},{"a":"turbojpeg-sys 1.2.0","b":"libc 0.2.186","k":"normal"},{"a":"turbojpeg-sys 1.2.0","b":"pkg-config 0.3.33","k":"build"},{"a":"windows 0.58.0","b":"windows-core 0.58.0","k":"normal"},{"a":"windows 0.58.0","b":"windows-targets 0.52.6","k":"normal"},{"a":"windows-core 0.58.0","b":"windows-implement 0.58.0","k":"normal"},{"a":"windows-core 0.58.0","b":"windows-interface 0.58.0","k":"normal"},{"a":"windows-core 0.58.0","b":"windows-result 0.2.0","k":"normal"},{"a":"windows-core 0.58.0","b":"windows-strings 0.1.0","k":"normal"},{"a":"windows-core 0.58.0","b":"windows-targets 0.52.6","k":"normal"},{"a":"windows-implement 0.58.0","b":"proc-macro2 1.0.106","k":"normal"},{"a":"windows-implement 0.58.0","b":"quote 1.0.46","k":"normal"},{"a":"windows-implement 0.58.0","b":"syn 2.0.118","k":"normal"},{"a":"windows-interface 0.58.0","b":"proc-macro2 1.0.106","k":"normal"},{"a":"windows-interface 0.58.0","b":"quote 1.0.46","k":"normal"},{"a":"windows-interface 0.58.0","b":"syn 2.0.118","k":"normal"},{"a":"windows-registry 0.6.1","b":"windows-link 0.2.1","k":"normal"},{"a":"windows-registry 0.6.1","b":"windows-result 0.4.1","k":"normal"},{"a":"windows-registry 0.6.1","b":"windows-strings 0.5.1","k":"normal"},{"a":"windows-result 0.2.0","b":"windows-targets 0.52.6","k":"normal"},{"a":"windows-result 0.4.1","b":"windows-link 0.2.1","k":"normal"},{"a":"windows-strings 0.1.0","b":"windows-result 0.2.0","k":"normal"},{"a":"windows-strings 0.1.0","b":"windows-targets 0.52.6","k":"normal"},{"a":"windows-strings 0.5.1","b":"windows-link 0.2.1","k":"normal"},{"a":"windows-sys 0.52.0","b":"windows-targets 0.52.6","k":"normal"},{"a":"windows-sys 0.61.2","b":"windows-link 0.2.1","k":"normal"},{"a":"windows-targets 0.52.6","b":"windows_x86_64_msvc 0.52.6","k":"normal"},{"a":"winit 0.30.13","b":"bitflags 2.13.0","k":"normal"},{"a":"winit 0.30.13","b":"cfg_aliases 0.2.1","k":"build"},{"a":"winit 0.30.13","b":"cursor-icon 1.2.0","k":"normal"},{"a":"winit 0.30.13","b":"dpi 0.1.2","k":"normal"},{"a":"winit 0.30.13","b":"raw-window-handle 0.6.2","k":"normal"},{"a":"winit 0.30.13","b":"smol_str 0.2.2","k":"normal"},{"a":"winit 0.30.13","b":"tracing 0.1.44","k":"normal"},{"a":"winit 0.30.13","b":"unicode-segmentation 1.13.3","k":"normal"},{"a":"winit 0.30.13","b":"windows-sys 0.52.0","k":"normal"},{"a":"winresource 0.1.31","b":"toml 1.1.3+spec-1.1.0","k":"build"},{"a":"winresource 0.1.31","b":"version_check 0.9.5","k":"build"},{"a":"xpra 0.3.0","b":"base64 0.22.1","k":"normal"},{"a":"xpra 0.3.0","b":"copypasta 0.10.2","k":"normal"},{"a":"xpra 0.3.0","b":"libwebp-sys 0.14.4","k":"normal"},{"a":"xpra 0.3.0","b":"log 0.4.33","k":"normal"},{"a":"xpra 0.3.0","b":"lz4_flex 0.11.6","k":"normal"},{"a":"xpra 0.3.0","b":"machine-uid 0.6.0","k":"normal"},{"a":"xpra 0.3.0","b":"native-tls 0.2.18","k":"normal"},{"a":"xpra 0.3.0","b":"serde_json 1.0.150","k":"normal"},{"a":"xpra 0.3.0","b":"softbuffer 0.4.8","k":"normal"},{"a":"xpra 0.3.0","b":"spng 0.2.0-alpha.3","k":"normal"},{"a":"xpra 0.3.0","b":"turbojpeg 1.4.0","k":"normal"},{"a":"xpra 0.3.0","b":"windows 0.58.0","k":"normal"},{"a":"xpra 0.3.0","b":"winit 0.30.13","k":"normal"},{"a":"xpra 0.3.0","b":"winresource 0.1.31","k":"build"},{"a":"xpra 0.3.0","b":"yaml-rust2 0.11.0","k":"normal"},{"a":"yaml-rust2 0.11.0","b":"arraydeque 0.5.1","k":"normal"},{"a":"yaml-rust2 0.11.0","b":"encoding_rs 0.8.35","k":"normal"},{"a":"yaml-rust2 0.11.0","b":"hashlink 0.11.1","k":"normal"}],"nodes":{"anyhow 1.0.103":{"desc":"Flexible concrete Error type built on std::error::Error","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"anyhow","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/dtolnay/anyhow","v":"1.0.103"},"arraydeque 0.5.1":{"desc":"A ring buffer with a fixed capacity, which can be stored on the stack.","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"arraydeque","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/andylokandy/arraydeque","v":"0.5.1"},"base64 0.22.1":{"desc":"encodes and decodes base64 as bytes or utf8","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"base64","owners":["base64 0.22.1"],"pm":false,"repo":"https://github.com/marshallpierce/rust-base64","v":"0.22.1"},"bitflags 2.13.0":{"desc":"A macro to generate structures which behave like bitflags.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"bitflags","owners":["spng 0.2.0-alpha.3","winit 0.30.13"],"pm":false,"repo":"https://github.com/bitflags/bitflags","v":"2.13.0"},"cc 1.2.66":{"desc":"A build-time dependency for Cargo build scripts to assist in invoking the native C compiler to compile native C code into a static archive to be linked into Rust code.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"cc","owners":["libwebp-sys 0.14.4","spng 0.2.0-alpha.3","turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/cc-rs","v":"1.2.66"},"cfg-if 1.0.4":{"desc":"A macro to ergonomically define an item depending on a large number of #[cfg] parameters. Structured like an if-else chain, the first matching branch is the item that gets emitted.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"cfg-if","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/rust-lang/cfg-if","v":"1.0.4"},"cfg_aliases 0.2.1":{"desc":"A tiny utility to help save you a lot of effort with long winded `#[cfg()]` checks.","direct":false,"lic":"MIT","linked":false,"n":"cfg_aliases","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/katharostech/cfg_aliases","v":"0.2.1"},"clipboard-win 5.4.1":{"desc":"Provides simple way to interact with Windows clipboard.","direct":false,"lic":"BSL-1.0","linked":true,"n":"clipboard-win","owners":["copypasta 0.10.2"],"pm":false,"repo":"https://github.com/DoumanAsh/clipboard-win","v":"5.4.1"},"cmake 0.1.58":{"desc":"A build dependency for running `cmake` to build a native library","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"cmake","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/cmake-rs","v":"0.1.58"},"copypasta 0.10.2":{"desc":"copypasta is a cross-platform library for getting and setting the contents of the OS-level clipboard.","direct":true,"lic":"MIT / Apache-2.0","linked":true,"n":"copypasta","owners":["copypasta 0.10.2"],"pm":false,"repo":"https://github.com/alacritty/copypasta","v":"0.10.2"},"cursor-icon 1.2.0":{"desc":"Cross platform cursor icon type","direct":false,"lic":"MIT OR Apache-2.0 OR Zlib","linked":true,"n":"cursor-icon","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/cursor-icon","v":"1.2.0"},"dpi 0.1.2":{"desc":"Types for handling UI scaling","direct":false,"lic":"Apache-2.0 AND MIT","linked":true,"n":"dpi","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/winit","v":"0.1.2"},"encoding_rs 0.8.35":{"desc":"A Gecko-oriented implementation of the Encoding Standard","direct":false,"lic":"(Apache-2.0 OR MIT) AND BSD-3-Clause","linked":true,"n":"encoding_rs","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/hsivonen/encoding_rs","v":"0.8.35"},"error-code 3.3.2":{"desc":"Error code","direct":false,"lic":"BSL-1.0","linked":true,"n":"error-code","owners":["copypasta 0.10.2"],"pm":false,"repo":"https://github.com/DoumanAsh/error-code","v":"3.3.2"},"find-msvc-tools 0.1.9":{"desc":"Find windows-specific tools, read MSVC versions from the registry and from COM interfaces","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"find-msvc-tools","owners":["libwebp-sys 0.14.4","spng 0.2.0-alpha.3","turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/cc-rs","v":"0.1.9"},"foldhash 0.2.0":{"desc":"A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.","direct":false,"lic":"Zlib","linked":true,"n":"foldhash","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/orlp/foldhash","v":"0.2.0"},"gcd 2.3.0":{"desc":"Calculate the greatest common divisor","direct":false,"lic":"MIT/Apache-2.0","linked":true,"n":"gcd","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/frewsxcv/rust-gcd","v":"2.3.0"},"glob 0.3.3":{"desc":"Support for matching file paths against Unix shell style patterns.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"glob","owners":["libwebp-sys 0.14.4"],"pm":false,"repo":"https://github.com/rust-lang/glob","v":"0.3.3"},"hashbrown 0.16.1":{"desc":"A Rust port of Google's SwissTable hash map","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"hashbrown","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/rust-lang/hashbrown","v":"0.16.1"},"hashlink 0.11.1":{"desc":"HashMap-like containers that hold their key-value pairs in a user controllable order","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"hashlink","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/djc/hashlink","v":"0.11.1"},"itoa 1.0.18":{"desc":"Fast integer primitive to string conversion","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"itoa","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/dtolnay/itoa","v":"1.0.18"},"jobserver 0.1.35":{"desc":"An implementation of the GNU Make jobserver for Rust.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"jobserver","owners":["libwebp-sys 0.14.4","spng 0.2.0-alpha.3","turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/jobserver-rs","v":"0.1.35"},"libc 0.2.186":{"desc":"Raw FFI bindings to platform libraries like libc.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"libc","owners":["libwebp-sys 0.14.4","spng 0.2.0-alpha.3","turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/libc","v":"0.2.186"},"libwebp-sys 0.14.4":{"desc":"Bindings to libwebp (bindgen, static linking)","direct":true,"lic":"MIT","linked":true,"n":"libwebp-sys","owners":["libwebp-sys 0.14.4"],"pm":false,"repo":"https://github.com/NoXF/libwebp-sys","v":"0.14.4"},"libz-sys 1.1.29":{"desc":"Low-level bindings to the system libz library (also known as zlib).","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"libz-sys","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/rust-lang/libz-sys","v":"1.1.29"},"log 0.4.33":{"desc":"A lightweight logging facade for Rust","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"log","owners":["log 0.4.33"],"pm":false,"repo":"https://github.com/rust-lang/log","v":"0.4.33"},"lz4_flex 0.11.6":{"desc":"Fastest LZ4 implementation in Rust, no unsafe by default.","direct":true,"lic":"MIT","linked":true,"n":"lz4_flex","owners":["lz4_flex 0.11.6"],"pm":false,"repo":"https://github.com/pseitz/lz4_flex","v":"0.11.6"},"machine-uid 0.6.0":{"desc":"Get os native machine id without root permission.","direct":true,"lic":"MIT","linked":true,"n":"machine-uid","owners":["machine-uid 0.6.0"],"pm":false,"repo":"https://github.com/Hanaasagi/machine-uid","v":"0.6.0"},"memchr 2.8.3":{"desc":"Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) routines for 1, 2 or 3 byte search and single substring search.","direct":false,"lic":"Unlicense OR MIT","linked":true,"n":"memchr","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/BurntSushi/memchr","v":"2.8.3"},"native-tls 0.2.18":{"desc":"A wrapper over a platform's native TLS implementation","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"native-tls","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/rust-native-tls/rust-native-tls","v":"0.2.18"},"pin-project-lite 0.2.17":{"desc":"A lightweight version of pin-project written with declarative macros.","direct":false,"lic":"Apache-2.0 OR MIT","linked":true,"n":"pin-project-lite","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/taiki-e/pin-project-lite","v":"0.2.17"},"pkg-config 0.3.33":{"desc":"A library to run the pkg-config system tool at build time in order to be used in Cargo build scripts.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"pkg-config","owners":["libwebp-sys 0.14.4","spng 0.2.0-alpha.3","turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/rust-lang/pkg-config-rs","v":"0.3.33"},"proc-macro2 1.0.106":{"desc":"A substitute implementation of the compiler's `proc_macro` API to decouple token-based libraries from the procedural macro use case.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"proc-macro2","owners":["turbojpeg 1.4.0","windows 0.58.0"],"pm":false,"repo":"https://github.com/dtolnay/proc-macro2","v":"1.0.106"},"quote 1.0.46":{"desc":"Quasi-quoting macro quote!(...)","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"quote","owners":["turbojpeg 1.4.0","windows 0.58.0"],"pm":false,"repo":"https://github.com/dtolnay/quote","v":"1.0.46"},"raw-window-handle 0.6.2":{"desc":"Interoperability library for Rust Windowing applications.","direct":false,"lic":"MIT OR Apache-2.0 OR Zlib","linked":true,"n":"raw-window-handle","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/raw-window-handle","v":"0.6.2"},"schannel 0.1.29":{"desc":"Schannel bindings for rust, allowing SSL/TLS (e.g. https) without openssl","direct":false,"lic":"MIT","linked":true,"n":"schannel","owners":["native-tls 0.2.18"],"pm":false,"repo":"https://github.com/steffengy/schannel-rs","v":"0.1.29"},"serde_core 1.0.228":{"desc":"Serde traits only, with no support for derive -- use the `serde` crate instead","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"serde_core","owners":["serde_json 1.0.150","winresource 0.1.31"],"pm":false,"repo":"https://github.com/serde-rs/serde","v":"1.0.228"},"serde_json 1.0.150":{"desc":"A JSON serialization file format","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"serde_json","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/serde-rs/json","v":"1.0.150"},"serde_spanned 1.1.1":{"desc":"Serde-compatible spanned Value","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"serde_spanned","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.1"},"shlex 2.0.1":{"desc":"Split a string into shell words, like Python's shlex.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"shlex","owners":["libwebp-sys 0.14.4","spng 0.2.0-alpha.3","turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/comex/rust-shlex","v":"2.0.1"},"smol_str 0.2.2":{"desc":"small-string optimized string type with O(1) clone","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"smol_str","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-analyzer/smol_str","v":"0.2.2"},"softbuffer 0.4.8":{"desc":"Cross-platform software buffer","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"softbuffer","owners":["softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/rust-windowing/softbuffer","v":"0.4.8"},"spng 0.2.0-alpha.3":{"desc":"Rust bindings to libspng","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"spng","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/aloucks/spng-rs","v":"0.2.0-alpha.3"},"spng-sys 0.2.0-alpha.3":{"desc":"Native bindings to libspng","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"spng-sys","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/aloucks/spng-rs","v":"0.2.0-alpha.3"},"syn 2.0.118":{"desc":"Parser for Rust source code","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"syn","owners":["turbojpeg 1.4.0","windows 0.58.0"],"pm":false,"repo":"https://github.com/dtolnay/syn","v":"2.0.118"},"thiserror 1.0.69":{"desc":"derive(Error)","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"thiserror","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/dtolnay/thiserror","v":"1.0.69"},"thiserror-impl 1.0.69":{"desc":"Implementation detail of the `thiserror` crate","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"thiserror-impl","owners":["turbojpeg 1.4.0"],"pm":true,"repo":"https://github.com/dtolnay/thiserror","v":"1.0.69"},"toml 1.1.3+spec-1.1.0":{"desc":"A native Rust encoder and decoder of TOML-formatted files and streams. Provides implementations of the standard Serialize/Deserialize traits for TOML data to facilitate deserializing and serializing R","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"toml","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.3+spec-1.1.0"},"toml_datetime 1.1.1+spec-1.1.0":{"desc":"A TOML-compatible datetime type","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"toml_datetime","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.1+spec-1.1.0"},"toml_parser 1.1.2+spec-1.1.0":{"desc":"Yet another format-preserving TOML parser.","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"toml_parser","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/toml-rs/toml","v":"1.1.2+spec-1.1.0"},"tracing 0.1.44":{"desc":"Application-level tracing for Rust.","direct":false,"lic":"MIT","linked":true,"n":"tracing","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/tokio-rs/tracing","v":"0.1.44"},"tracing-core 0.1.36":{"desc":"Core primitives for application-level tracing.","direct":false,"lic":"MIT","linked":true,"n":"tracing-core","owners":["softbuffer 0.4.8","winit 0.30.13"],"pm":false,"repo":"https://github.com/tokio-rs/tracing","v":"0.1.36"},"turbojpeg 1.4.0":{"desc":"Fast and easy JPEG encoding, decoding and lossless transforms with TurboJPEG","direct":true,"lic":"Unlicense OR MIT","linked":true,"n":"turbojpeg","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/honzasp/rust-turbojpeg","v":"1.4.0"},"turbojpeg-sys 1.2.0":{"desc":"Raw bindings for TurboJPEG","direct":false,"lic":"Unlicense OR MIT","linked":true,"n":"turbojpeg-sys","owners":["turbojpeg 1.4.0"],"pm":false,"repo":"https://github.com/honzasp/rust-turbojpeg/turbojpeg-sys","v":"1.2.0"},"unicode-ident 1.0.24":{"desc":"Determine whether characters have the XID_Start or XID_Continue properties according to Unicode Standard Annex #31","direct":false,"lic":"(MIT OR Apache-2.0) AND Unicode-3.0","linked":false,"n":"unicode-ident","owners":["turbojpeg 1.4.0","windows 0.58.0"],"pm":false,"repo":"https://github.com/dtolnay/unicode-ident","v":"1.0.24"},"unicode-segmentation 1.13.3":{"desc":"This crate provides Grapheme Cluster, Word and Sentence boundaries according to Unicode Standard Annex #29 rules.","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"unicode-segmentation","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/unicode-rs/unicode-segmentation","v":"1.13.3"},"vcpkg 0.2.15":{"desc":"A library to find native dependencies in a vcpkg tree at build time in order to be used in Cargo build scripts.","direct":false,"lic":"MIT/Apache-2.0","linked":false,"n":"vcpkg","owners":["spng 0.2.0-alpha.3"],"pm":false,"repo":"https://github.com/mcgoo/vcpkg-rs","v":"0.2.15"},"version_check 0.9.5":{"desc":"Tiny crate to check the version of the installed/running rustc.","direct":false,"lic":"MIT/Apache-2.0","linked":false,"n":"version_check","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/SergioBenitez/version_check","v":"0.9.5"},"windows 0.58.0":{"desc":"Rust for Windows","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows","owners":["windows 0.58.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.58.0"},"windows-core 0.58.0":{"desc":"Rust for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-core","owners":["windows 0.58.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.58.0"},"windows-implement 0.58.0":{"desc":"The implement macro for the windows crate","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"windows-implement","owners":["windows 0.58.0"],"pm":true,"repo":"https://github.com/microsoft/windows-rs","v":"0.58.0"},"windows-interface 0.58.0":{"desc":"The interface macro for the windows crate","direct":false,"lic":"MIT OR Apache-2.0","linked":false,"n":"windows-interface","owners":["windows 0.58.0"],"pm":true,"repo":"https://github.com/microsoft/windows-rs","v":"0.58.0"},"windows-link 0.2.1":{"desc":"Linking for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-link","owners":["machine-uid 0.6.0","native-tls 0.2.18","softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.2.1"},"windows-registry 0.6.1":{"desc":"Windows registry","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-registry","owners":["machine-uid 0.6.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.6.1"},"windows-result 0.2.0":{"desc":"Windows error handling","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-result","owners":["windows 0.58.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.2.0"},"windows-result 0.4.1":{"desc":"Windows error handling","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-result","owners":["machine-uid 0.6.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.4.1"},"windows-strings 0.1.0":{"desc":"Rust for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-strings","owners":["windows 0.58.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.1.0"},"windows-strings 0.5.1":{"desc":"Windows string types","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-strings","owners":["machine-uid 0.6.0"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.5.1"},"windows-sys 0.52.0":{"desc":"Rust for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-sys","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.52.0"},"windows-sys 0.61.2":{"desc":"Rust for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-sys","owners":["machine-uid 0.6.0","native-tls 0.2.18","softbuffer 0.4.8"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.61.2"},"windows-targets 0.52.6":{"desc":"Import libs for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows-targets","owners":["windows 0.58.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.52.6"},"windows_x86_64_msvc 0.52.6":{"desc":"Import lib for Windows","direct":false,"lic":"MIT OR Apache-2.0","linked":true,"n":"windows_x86_64_msvc","owners":["windows 0.58.0","winit 0.30.13"],"pm":false,"repo":"https://github.com/microsoft/windows-rs","v":"0.52.6"},"winit 0.30.13":{"desc":"Cross-platform window creation library.","direct":true,"lic":"Apache-2.0","linked":true,"n":"winit","owners":["winit 0.30.13"],"pm":false,"repo":"https://github.com/rust-windowing/winit","v":"0.30.13"},"winnow 1.0.3":{"desc":"A byte-oriented, zero-copy, parser combinators library","direct":false,"lic":"MIT","linked":false,"n":"winnow","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/winnow-rs/winnow","v":"1.0.3"},"winresource 0.1.31":{"desc":"Create and set windows icons and metadata for executables","direct":true,"lic":"MIT","linked":false,"n":"winresource","owners":["winresource 0.1.31"],"pm":false,"repo":"https://github.com/BenjaminRi/winresource","v":"0.1.31"},"xpra 0.3.0":{"desc":"","direct":false,"lic":"","linked":true,"n":"xpra","owners":[],"pm":false,"repo":"","v":"0.3.0"},"yaml-rust2 0.11.0":{"desc":"A fully YAML 1.2 compliant YAML parser","direct":true,"lic":"MIT OR Apache-2.0","linked":true,"n":"yaml-rust2","owners":["yaml-rust2 0.11.0"],"pm":false,"repo":"https://github.com/Ethiraric/yaml-rust2","v":"0.11.0"},"zmij 1.0.21":{"desc":"A double-to-string conversion algorithm based on Schubfach and yy","direct":false,"lic":"MIT","linked":true,"n":"zmij","owners":["serde_json 1.0.150"],"pm":false,"repo":"https://github.com/dtolnay/zmij","v":"1.0.21"}},"root":"xpra 0.3.0","stats":{"buildonly":24,"linked":53,"total":77}}}</script>
+
+<script>
+  (function () {
+    "use strict";
+
+    var DATA = JSON.parse(document.getElementById("graph-data").textContent);
+
+    var state = {
+      target: "linux",
+      view: "graph",
+      focus: null,    // a direct dependency key: dims everything outside its closure
+      sel: null,      // the crate shown in the detail card
+      query: "",
+      sort: { col: "name", dir: 1 }
+    };
+
+    var G = null;     // derived model for the active target
+    var sim = null;   // laid-out node positions
+
+    // ---------------------------------------------------------------- model
+
+    function buildModel(target) {
+      var raw = DATA[target];
+      var keys = Object.keys(raw.nodes);
+      var nodes = {};
+
+      keys.forEach(function (k) {
+        var s = raw.nodes[k];
+        nodes[k] = {
+          key: k, name: s.n, ver: s.v, pm: s.pm, linked: s.linked,
+          direct: s.direct, owners: s.owners, lic: s.lic, desc: s.desc,
+          repo: s.repo, out: [], in: [], depth: Infinity
+        };
+      });
+
+      raw.edges.forEach(function (e) {
+        nodes[e.a].out.push({ to: e.b, kind: e.k });
+        nodes[e.b].in.push({ from: e.a, kind: e.k });
+      });
+
+      // depth = fewest hops from the root package
+      var queue = [raw.root];
+      nodes[raw.root].depth = 0;
+      while (queue.length) {
+        var cur = nodes[queue.shift()];
+        cur.out.forEach(function (e) {
+          if (nodes[e.to].depth > cur.depth + 1) {
+            nodes[e.to].depth = cur.depth + 1;
+            queue.push(e.to);
+          }
+        });
+      }
+
+      // closure / exclusive tallies per direct dependency
+      var tally = {};
+      raw.direct.forEach(function (d) { tally[d] = { closure: 0, exclusive: 0 }; });
+      keys.forEach(function (k) {
+        var o = nodes[k].owners;
+        o.forEach(function (d) {
+          if (tally[d]) {
+            tally[d].closure++;
+            if (o.length === 1) tally[d].exclusive++;
+          }
+        });
+      });
+
+      var dupes = raw.dupes || {};
+
+      return {
+        root: raw.root, nodes: nodes, keys: keys, edges: raw.edges,
+        direct: raw.direct.slice().sort(function (a, b) {
+          return tally[b].closure - tally[a].closure || a.localeCompare(b);
+        }),
+        tally: tally, dupes: dupes, stats: raw.stats,
+        maxClosure: raw.direct.reduce(function (m, d) {
+          return Math.max(m, tally[d].closure);
+        }, 1)
+      };
+    }
+
+    function isDup(n) {
+      return Object.prototype.hasOwnProperty.call(G.dupes, n.name);
+    }
+
+    function inFocus(key) {
+      if (!state.focus) return true;
+      if (key === G.root) return true;
+      return G.nodes[key].owners.indexOf(state.focus) !== -1;
+    }
+
+    function matchesQuery(key) {
+      return state.query && G.nodes[key].name.toLowerCase().indexOf(state.query) !== -1;
+    }
+
+    // ------------------------------------------------------------ layout
+
+    // Deterministic seed so the picture is identical on every reload.
+    function hash(s) {
+      var h = 2166136261;
+      for (var i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return (h >>> 0) / 4294967296;
+    }
+
+    var RING = 118;
+    var HUB = 96;      // empty core, so the 14 direct dependencies get a real circle
+    var GAP = 26;      // world-space breathing room between two crates on a ring
+
+    function ringRadius(d) {
+      return HUB + d * RING;
+    }
+
+    // circular relaxation: push neighbours apart until each has `need` radians
+    function spread(list, angle, need) {
+      list.sort(function (a, b) { return angle[a] - angle[b]; });
+      if (list.length < 2 || need * list.length >= Math.PI * 2) return;
+      for (var pass = 0; pass < 90; pass++) {
+        for (var i = 0; i < list.length; i++) {
+          var j = (i + 1) % list.length;
+          var gap = angle[list[j]] - angle[list[i]];
+          if (j === 0) gap += Math.PI * 2;
+          if (gap < need) {
+            var push = (need - gap) / 2;
+            angle[list[i]] -= push;
+            angle[list[j]] += push;
+          }
+        }
+      }
+    }
+
+    // Radial layout. Each direct dependency owns an angular wedge whose width is
+    // proportional to the number of crates *only it* reaches, so the picture is a
+    // pie of who costs what; radius is hops from Cargo.toml. Crates several
+    // dependencies share sit at the average bearing of their owners' wedges, which
+    // lands them between the wedges they bridge.
+    function layout() {
+      var P = {}, wedges = {};
+      var weight = 0;
+
+      G.direct.forEach(function (d) { weight += G.tally[d].exclusive + 1; });
+
+      var at = -Math.PI / 2;
+      G.direct.forEach(function (d) {
+        var w = ((G.tally[d].exclusive + 1) / weight) * Math.PI * 2;
+        wedges[d] = { start: at, end: at + w, mid: at + w / 2 };
+        at += w;
+      });
+
+      // crates a single direct dependency owns, spread evenly across its wedge
+      var owned = {};
+      G.direct.forEach(function (d) { owned[d] = []; });
+      G.keys.forEach(function (k) {
+        var o = G.nodes[k].owners;
+        if (o.length === 1 && owned[o[0]] && k !== o[0]) owned[o[0]].push(k);
+      });
+
+      var angle = {};
+      G.direct.forEach(function (d) {
+        angle[d] = wedges[d].mid;
+        var list = owned[d].sort(function (a, b) {
+          return (G.nodes[a].depth - G.nodes[b].depth) || a.localeCompare(b);
+        });
+        var span = wedges[d].end - wedges[d].start;
+        list.forEach(function (k, i) {
+          angle[k] = wedges[d].start + span * ((i + 0.5) / list.length);
+        });
+      });
+
+      G.keys.forEach(function (k) {
+        if (k === G.root || angle[k] !== undefined) return;
+        var o = G.nodes[k].owners.filter(function (d) { return wedges[d]; });
+        var sx = 0, sy = 0;
+        o.forEach(function (d) { sx += Math.cos(wedges[d].mid); sy += Math.sin(wedges[d].mid); });
+        var m = Math.sqrt(sx * sx + sy * sy);
+        angle[k] = m > 0.08 ? Math.atan2(sy, sx) : hash(k) * Math.PI * 2;
+      });
+
+      // pull apart crates that landed on top of each other on the same ring
+      var rings = {};
+      G.keys.forEach(function (k) {
+        if (k === G.root) return;
+        var d = isFinite(G.nodes[k].depth) ? G.nodes[k].depth : 5;
+        (rings[d] = rings[d] || []).push(k);
+      });
+
+      Object.keys(rings).forEach(function (d) {
+        spread(rings[d], angle, GAP / ringRadius(Number(d)));
+      });
+
+      G.keys.forEach(function (k) {
+        if (k === G.root) { P[k] = { x: 0, y: 0 }; return; }
+        var r = ringRadius(isFinite(G.nodes[k].depth) ? G.nodes[k].depth : 5);
+        P[k] = { x: Math.cos(angle[k]) * r, y: Math.sin(angle[k]) * r };
+      });
+
+      G.wedges = wedges;
+      G.maxDepth = Math.max.apply(null, Object.keys(rings).map(Number));
+
+      // rim labels start at their crate's bearing, then get their own breathing room
+      var rim = {};
+      G.direct.forEach(function (d) { rim[d] = angle[d]; });
+      spread(G.direct.slice(), rim, 46 / rimRadius());
+      G.rimAngle = rim;
+
+      return P;
+    }
+
+    // ------------------------------------------------------------ canvas
+
+    var cv = document.getElementById("cv");
+    var ctx = cv.getContext("2d");
+    var view = { k: 1, tx: 0, ty: 0 };
+    var hover = null;
+    var css = {};
+    var needFit = true;
+    var faceStack = "monospace";
+
+    function readTheme() {
+      var s = getComputedStyle(document.documentElement);
+      ["oxide", "graphite", "verdigris", "rule", "rule-strong", "text",
+       "text-dim", "text-faint", "panel", "ground"].forEach(function (v) {
+        css[v] = s.getPropertyValue("--" + v).trim();
+      });
+      faceStack = getComputedStyle(document.body).fontFamily || "monospace";
+    }
+
+    function radius(n) {
+      if (n.key === G.root) return 10;
+      if (n.direct) return 7.5 + 1.2 * Math.sqrt(n.in.length);
+      return 3.4 + 1.9 * Math.sqrt(n.in.length);
+    }
+
+    function rimRadius() {
+      return ringRadius(G.maxDepth) + 54;
+    }
+
+    // leave a margin for the rim labels, which stick out radially in every direction
+    function fitView() {
+      var w = cv.clientWidth || 800, h = cv.clientHeight || 600;
+      view.k = Math.max(0.15, (Math.min(w, h) / 2 - 104) / rimRadius());
+      view.tx = w / 2;
+      view.ty = h / 2;
+    }
+
+    function resize() {
+      var dpr = window.devicePixelRatio || 1;
+      var w = cv.clientWidth, h = cv.clientHeight;
+      if (!w || !h) return;
+      cv.width = Math.round(w * dpr);
+      cv.height = Math.round(h * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (needFit) { fitView(); needFit = false; }
+      draw();
+    }
+
+    function toScreen(p) {
+      return { x: p.x * view.k + view.tx, y: p.y * view.k + view.ty };
+    }
+
+    function draw() {
+      if (!sim) return;
+      var w = cv.clientWidth, h = cv.clientHeight;
+      ctx.clearRect(0, 0, w, h);
+
+      // one ring per hop from Cargo.toml
+      ctx.strokeStyle = css.rule;
+      ctx.lineWidth = 1;
+      for (var d = 1; d <= G.maxDepth; d++) {
+        ctx.beginPath();
+        ctx.arc(view.tx, view.ty, ringRadius(d) * view.k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // rim bracket per direct dependency: arc length = crates only it reaches
+      var rimR = rimRadius() * view.k;
+      ctx.lineCap = "butt";
+      G.direct.forEach(function (dk) {
+        var wg = G.wedges[dk];
+        var lit = state.focus === dk;
+        var la = G.rimAngle[dk];
+        ctx.globalAlpha = state.focus ? (lit ? 1 : 0.12) : 0.5;
+        ctx.strokeStyle = css.oxide;
+        ctx.lineWidth = lit ? 5 : 3;
+        ctx.beginPath();
+        ctx.arc(view.tx, view.ty, rimR, wg.start + 0.008, wg.end - 0.008);
+        ctx.stroke();
+
+        // leader from the crate out to its name on the rim
+        var p = toScreen(sim[dk]);
+        ctx.globalAlpha = state.focus ? (lit ? 0.5 : 0.06) : 0.18;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(view.tx + Math.cos(la) * rimR, view.ty + Math.sin(la) * rimR);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // set radially, so neighbouring names fan out instead of colliding
+        var right = Math.cos(la) >= 0;
+        ctx.globalAlpha = state.focus ? (lit ? 1 : 0.3) : 0.95;
+        ctx.font = (lit ? "700 " : "600 ") + "11.5px " + faceStack;
+        ctx.fillStyle = lit ? css.oxide : css["text-dim"];
+        ctx.save();
+        ctx.translate(view.tx + Math.cos(la) * (rimR + 9),
+                      view.ty + Math.sin(la) * (rimR + 9));
+        ctx.rotate(right ? la : la + Math.PI);
+        ctx.textAlign = right ? "left" : "right";
+        ctx.textBaseline = "middle";
+        ctx.fillText(G.nodes[dk].name, 0, 0);
+        ctx.restore();
+      });
+      ctx.globalAlpha = 1;
+
+      var active = state.sel || hover;
+      var near = {};
+      if (active && G.nodes[active]) {
+        near[active] = true;
+        G.nodes[active].out.forEach(function (e) { near[e.to] = true; });
+        G.nodes[active].in.forEach(function (e) { near[e.from] = true; });
+      }
+
+      // edges, bowed toward the hub so long chords bundle instead of slicing
+      // across the rings (the bow is proportional to the angular distance)
+      G.edges.forEach(function (e) {
+        var a = toScreen(sim[e.a]), b = toScreen(sim[e.b]);
+        var lit = active ? (near[e.a] && near[e.b]) : false;
+        var dim = !(inFocus(e.a) && inFocus(e.b));
+        ctx.globalAlpha = lit ? 0.95 : dim ? 0.05 : (active ? 0.11 : 0.33);
+        ctx.strokeStyle = lit ? css.oxide : css["rule-strong"];
+        ctx.lineWidth = lit ? 1.6 : 1;
+        ctx.setLineDash(e.k === "build" ? [3, 3] : []);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        if (e.a === G.root) {
+          ctx.lineTo(b.x, b.y);
+        } else {
+          var wa = sim[e.a], wb = sim[e.b];
+          var arcSpan = Math.abs(Math.atan2(wa.y, wa.x) - Math.atan2(wb.y, wb.x));
+          if (arcSpan > Math.PI) arcSpan = Math.PI * 2 - arcSpan;
+          var t = Math.cos(arcSpan / 2) * 0.92;
+          ctx.quadraticCurveTo(
+            view.tx + ((a.x + b.x) / 2 - view.tx) * t,
+            view.ty + ((a.y + b.y) / 2 - view.ty) * t,
+            b.x, b.y);
+        }
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+
+      // nodes
+      var labels = [];
+      G.keys.forEach(function (k) {
+        var n = G.nodes[k];
+        var p = toScreen(sim[k]);
+        var r = radius(n) * Math.max(0.62, Math.min(view.k, 1.5));
+        var dim = !inFocus(k) || (active && !near[k]);
+        var hit = matchesQuery(k);
+
+        ctx.globalAlpha = dim ? (hit ? 0.55 : 0.16) : 1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = k === G.root ? css.text : n.linked ? css.oxide : css.graphite;
+        ctx.fill();
+
+        // the crates we declare ourselves are drawn hollow
+        if (n.direct) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r * 0.44, 0, Math.PI * 2);
+          ctx.fillStyle = css.ground;
+          ctx.fill();
+        }
+
+        if (isDup(n)) {
+          ctx.strokeStyle = css.verdigris;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r + 3, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        if (k === active || hit) {
+          ctx.strokeStyle = css.oxide;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r + 4.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = 1;
+
+        // direct dependencies are named on the rim, so they need no label here
+        var rank = k === G.root ? 100
+                 : k === active ? 95
+                 : hit ? 88
+                 : n.in.length >= 4 ? 20 + n.in.length
+                 : view.k > 1.4 ? 5
+                 : 0;
+        if (rank && !dim) labels.push({ n: n, p: p, r: r, rank: rank });
+      });
+
+      // labels last, best first, and never stacked on top of each other
+      var taken = [];
+      labels.sort(function (a, b) { return b.rank - a.rank; }).forEach(function (l) {
+        var strong = l.rank >= 70;
+        ctx.font = (strong ? "600 " : "") + (strong ? 12 : 11) + "px " + faceStack;
+        var t = l.n.name;
+        var tw = ctx.measureText(t).width;
+        var box = { x: l.p.x - tw / 2 - 3, y: l.p.y - l.r - 15, w: tw + 6, h: 14 };
+
+        if (box.x + box.w < -20 || box.x > w + 20 || box.y + box.h < -20 || box.y > h + 20) return;
+        for (var i = 0; i < taken.length; i++) {
+          var o = taken[i];
+          if (box.x < o.x + o.w && o.x < box.x + box.w &&
+              box.y < o.y + o.h && o.y < box.y + box.h) return;
+        }
+        taken.push(box);
+
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = css.panel;
+        ctx.fillRect(box.x, box.y, box.w, box.h);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = strong ? css.text : css["text-dim"];
+        ctx.fillText(t, box.x + 3, box.y + 11);
+      });
+    }
+
+    function pick(mx, my) {
+      var best = null, bestD = 18 * 18;
+      G.keys.forEach(function (k) {
+        if (!inFocus(k)) return;
+        var p = toScreen(sim[k]);
+        var dx = p.x - mx, dy = p.y - my;
+        var d2 = dx * dx + dy * dy;
+        if (d2 < bestD) { bestD = d2; best = k; }
+      });
+      return best;
+    }
+
+    var drag = null;
+
+    cv.addEventListener("pointerdown", function (ev) {
+      cv.setPointerCapture(ev.pointerId);
+      drag = { x: ev.offsetX, y: ev.offsetY, moved: false };
+      cv.classList.add("is-drag");
+    });
+
+    cv.addEventListener("pointermove", function (ev) {
+      if (drag) {
+        var dx = ev.offsetX - drag.x, dy = ev.offsetY - drag.y;
+        if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+        view.tx += dx; view.ty += dy;
+        drag.x = ev.offsetX; drag.y = ev.offsetY;
+        draw();
+        return;
+      }
+      var h = pick(ev.offsetX, ev.offsetY);
+      if (h !== hover) { hover = h; draw(); }
+    });
+
+    cv.addEventListener("pointerup", function (ev) {
+      var wasDrag = drag && drag.moved;
+      drag = null;
+      cv.classList.remove("is-drag");
+      if (wasDrag) return;
+      var k = pick(ev.offsetX, ev.offsetY);
+      select(k);
+    });
+
+    cv.addEventListener("pointerleave", function () {
+      drag = null;
+      cv.classList.remove("is-drag");
+      if (hover) { hover = null; draw(); }
+    });
+
+    cv.addEventListener("wheel", function (ev) {
+      ev.preventDefault();
+      var f = Math.exp(-ev.deltaY * 0.0015);
+      var nk = Math.max(0.12, Math.min(6, view.k * f));
+      f = nk / view.k;
+      view.tx = ev.offsetX - (ev.offsetX - view.tx) * f;
+      view.ty = ev.offsetY - (ev.offsetY - view.ty) * f;
+      view.k = nk;
+      draw();
+    }, { passive: false });
+
+    // -------------------------------------------------------------- rail
+
+    function renderRail() {
+      var host = document.getElementById("dep-list");
+      host.textContent = "";
+
+      G.direct.forEach(function (k) {
+        var n = G.nodes[k];
+        var t = G.tally[k];
+        var b = document.createElement("button");
+        b.type = "button";
+        b.className = "dep";
+        b.setAttribute("aria-pressed", state.focus === k ? "true" : "false");
+
+        var exW = (t.exclusive / G.maxClosure) * 100;
+        var shW = ((t.closure - t.exclusive) / G.maxClosure) * 100;
+
+        b.innerHTML =
+          '<span class="dep-top">' +
+            '<span class="dep-name"></span>' +
+            '<span class="dep-ver"></span>' +
+            (n.linked ? "" : '<span class="dep-tag">build</span>') +
+            '<span class="dep-n">' + t.closure + "</span>" +
+          "</span>" +
+          '<span class="dep-bar">' +
+            '<i class="ex" style="width:' + exW.toFixed(2) + '%"></i>' +
+            '<i class="sh" style="width:' + shW.toFixed(2) + '%"></i>' +
+          "</span>" +
+          '<span class="dep-legend">' +
+            "<span>" + t.exclusive + " only here</span>" +
+            "<span>" + (t.closure - t.exclusive) + " shared</span>" +
+          "</span>";
+
+        b.querySelector(".dep-name").textContent = n.name;
+        b.querySelector(".dep-ver").textContent = n.ver;
+
+        b.addEventListener("click", function () {
+          state.focus = state.focus === k ? null : k;
+          state.sel = state.focus ? k : null;
+          renderRail();
+          renderTree();
+          renderTable();
+          renderDetail();
+          draw();
+        });
+
+        host.appendChild(b);
+      });
+    }
+
+    // -------------------------------------------------------------- tree
+
+    function childrenOf(key) {
+      return G.nodes[key].out.slice().sort(function (a, b) {
+        if ((a.kind === "build") !== (b.kind === "build")) return a.kind === "build" ? 1 : -1;
+        return a.to.localeCompare(b.to);
+      });
+    }
+
+    function renderTree() {
+      var host = document.getElementById("view-tree");
+      host.textContent = "";
+      var wrap = document.createElement("div");
+      wrap.className = "tw";
+
+      var seen = {};
+      var rootKey = state.focus || G.root;
+      var lines = 0;
+
+      function walk(key, prefix, connector, kind) {
+        if (lines++ > 4000) return;
+        var n = G.nodes[key];
+        var repeat = seen[key];
+        seen[key] = true;
+
+        var row = document.createElement("span");
+        row.className = "row" + (kind === "build" ? " is-build" : "") +
+                        (state.sel === key ? " is-sel" : "");
+
+        row.appendChild(document.createTextNode(prefix + connector));
+
+        var hit = document.createElement("button");
+        hit.type = "button";
+        hit.className = "row-hit";
+        hit.textContent = n.name;
+        hit.addEventListener("click", function () { select(key); });
+        row.appendChild(hit);
+
+        var meta = document.createElement("span");
+        meta.className = "v";
+        meta.textContent = " v" + n.ver;
+        row.appendChild(meta);
+
+        if (n.pm) {
+          var pm = document.createElement("span");
+          pm.className = "note";
+          pm.textContent = " (proc-macro)";
+          row.appendChild(pm);
+        }
+        if (kind === "build") {
+          var bd = document.createElement("span");
+          bd.className = "note";
+          bd.textContent = " (build)";
+          row.appendChild(bd);
+        }
+        if (isDup(n)) {
+          var du = document.createElement("span");
+          du.className = "dup";
+          du.textContent = " ○ " + G.dupes[n.name].length + " versions";
+          row.appendChild(du);
+        }
+        if (repeat) {
+          var st = document.createElement("span");
+          st.className = "note";
+          st.textContent = " (*)";
+          row.appendChild(st);
+        }
+
+        row.appendChild(document.createTextNode("\n"));
+        wrap.appendChild(row);
+
+        if (repeat) return;
+
+        var kids = childrenOf(key);
+        kids.forEach(function (e, i) {
+          var last = i === kids.length - 1;
+          walk(e.to, prefix + (connector ? (connector.charAt(0) === "└" ? "    " : "│   ") : ""),
+               last ? "└── " : "├── ", e.kind);
+        });
+      }
+
+      walk(rootKey, "", "", "normal");
+      host.appendChild(wrap);
+    }
+
+    // ------------------------------------------------------------- table
+
+    var COLS = [
+      { id: "name", label: "Crate", num: false },
+      { id: "ver", label: "Version", num: false },
+      { id: "kind", label: "Ships?", num: false },
+      { id: "depth", label: "Hops", num: true },
+      { id: "owners", label: "Reached via", num: false },
+      { id: "in", label: "Dependents", num: true },
+      { id: "lic", label: "License", num: false }
+    ];
+
+    function sortValue(n, col) {
+      switch (col) {
+        case "name": return n.name;
+        case "ver": return n.ver;
+        case "kind": return n.linked ? 0 : 1;
+        case "depth": return isFinite(n.depth) ? n.depth : 99;
+        case "owners": return n.owners.length;
+        case "in": return n.in.length;
+        case "lic": return n.lic || "￿";
+      }
+      return 0;
+    }
+
+    function renderTable() {
+      var host = document.getElementById("view-table");
+      host.textContent = "";
+
+      var rows = G.keys.filter(function (k) {
+        if (k === G.root) return false;
+        if (!inFocus(k)) return false;
+        if (state.query && G.nodes[k].name.toLowerCase().indexOf(state.query) === -1) return false;
+        return true;
+      }).sort(function (a, b) {
+        var va = sortValue(G.nodes[a], state.sort.col);
+        var vb = sortValue(G.nodes[b], state.sort.col);
+        if (va < vb) return -state.sort.dir;
+        if (va > vb) return state.sort.dir;
+        return G.nodes[a].name.localeCompare(G.nodes[b].name);
+      });
+
+      var table = document.createElement("table");
+      var thead = document.createElement("thead");
+      var htr = document.createElement("tr");
+
+      COLS.forEach(function (c) {
+        var th = document.createElement("th");
+        th.textContent = c.label;
+        if (c.num) th.className = "num";
+        if (state.sort.col === c.id) {
+          th.setAttribute("aria-sort", state.sort.dir === 1 ? "ascending" : "descending");
+          th.textContent = c.label + (state.sort.dir === 1 ? " ↑" : " ↓");
+        }
+        th.addEventListener("click", function () {
+          if (state.sort.col === c.id) state.sort.dir *= -1;
+          else state.sort = { col: c.id, dir: c.id === "in" || c.id === "owners" || c.id === "depth" ? -1 : 1 };
+          renderTable();
+        });
+        htr.appendChild(th);
+      });
+
+      thead.appendChild(htr);
+      table.appendChild(thead);
+
+      var tbody = document.createElement("tbody");
+
+      rows.forEach(function (k) {
+        var n = G.nodes[k];
+        var tr = document.createElement("tr");
+        if (state.sel === k) tr.className = "is-sel";
+
+        var td1 = document.createElement("td");
+        td1.className = "cell-name";
+        td1.textContent = n.name;
+        td1.addEventListener("click", function () { select(k); });
+        tr.appendChild(td1);
+
+        var td2 = document.createElement("td");
+        td2.className = "num muted";
+        td2.textContent = n.ver;
+        tr.appendChild(td2);
+
+        var td3 = document.createElement("td");
+        td3.className = "cell-kind";
+        var pill = document.createElement("span");
+        pill.className = "pill " + (n.linked ? "p-linked" : "p-build");
+        pill.textContent = n.linked ? "linked" : n.pm ? "proc-macro" : "build";
+        td3.appendChild(pill);
+        if (isDup(n)) {
+          td3.appendChild(document.createTextNode(" "));
+          var dp = document.createElement("span");
+          dp.className = "pill p-dup";
+          dp.textContent = G.dupes[n.name].length + "×";
+          td3.appendChild(dp);
+        }
+        tr.appendChild(td3);
+
+        var td4 = document.createElement("td");
+        td4.className = "num muted";
+        td4.textContent = isFinite(n.depth) ? n.depth : "—";
+        tr.appendChild(td4);
+
+        var td5 = document.createElement("td");
+        td5.className = "muted";
+        td5.textContent = n.owners.map(function (o) {
+          return G.nodes[o].name;
+        }).join(", ");
+        tr.appendChild(td5);
+
+        var td6 = document.createElement("td");
+        td6.className = "num muted";
+        td6.textContent = n.in.length;
+        tr.appendChild(td6);
+
+        var td7 = document.createElement("td");
+        td7.className = "muted";
+        td7.textContent = n.lic || "—";
+        tr.appendChild(td7);
+
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(tbody);
+      host.appendChild(table);
+    }
+
+    // ------------------------------------------------------------ detail
+
+    function chipRow(keys, label) {
+      if (!keys.length) return "";
+      return '<dt>' + label + "</dt><dd><span class='chips'>" +
+        keys.map(function (k) {
+          return '<button type="button" class="chip" data-key="' +
+            k.replace(/"/g, "&quot;") + '">' + G.nodes[k].name + "</button>";
+        }).join("") + "</span></dd>";
+    }
+
+    function renderDetail() {
+      var host = document.getElementById("detail");
+
+      if (!state.sel || !G.nodes[state.sel]) {
+        host.innerHTML =
+          '<p class="detail-empty">Pick a crate in the graph, tree or table to see who ' +
+          "pulls it in and what it pulls in itself. Pick a direct dependency in the left " +
+          "rail to narrow every view to just its subtree.</p>";
+        return;
+      }
+
+      var n = G.nodes[state.sel];
+      var parents = n.in.map(function (e) { return e.from; })
+        .sort(function (a, b) { return G.nodes[a].name.localeCompare(G.nodes[b].name); });
+      var kids = n.out.map(function (e) { return e.to; })
+        .sort(function (a, b) { return G.nodes[a].name.localeCompare(G.nodes[b].name); });
+
+      var html = '<button type="button" class="detail-close" aria-label="Close">×</button>' +
+        "<h3>" + n.name + " <span>v" + n.ver + "</span></h3>";
+
+      if (n.desc) html += '<p class="desc">' + escapeHtml(n.desc) + "</p>";
+
+      html += "<dl>";
+      html += "<dt>Ships?</dt><dd>" +
+        (n.key === G.root ? "this crate"
+          : n.linked ? "linked into the binary"
+          : n.pm ? "proc-macro — runs in the compiler only"
+          : "build script only — not in the binary") + "</dd>";
+
+      if (isDup(n)) {
+        html += "<dt>Duplicate</dt><dd style='color:var(--verdigris)'>" +
+          G.dupes[n.name].map(function (v) { return "v" + v; }).join(" &amp; ") +
+          " both in the graph</dd>";
+      }
+
+      html += "<dt>Hops</dt><dd>" + (isFinite(n.depth) ? n.depth : "—") +
+        " from Cargo.toml</dd>";
+
+      if (n.owners.length && n.key !== G.root) {
+        html += chipRow(n.owners, n.owners.length === 1 ? "Only via" : "Reached via");
+      }
+
+      html += chipRow(parents, "Pulled in by");
+      html += chipRow(kids, "Pulls in");
+
+      if (n.lic) html += "<dt>License</dt><dd>" + escapeHtml(n.lic) + "</dd>";
+      if (n.repo) {
+        html += '<dt>Source</dt><dd><a href="' + escapeHtml(n.repo) +
+          '" target="_blank" rel="noopener">' +
+          escapeHtml(n.repo.replace(/^https?:\/\//, "")) + "</a></dd>";
+      }
+      html += "</dl>";
+
+      host.innerHTML = html;
+
+      host.querySelector(".detail-close").addEventListener("click", function () {
+        select(null);
+      });
+      Array.prototype.forEach.call(host.querySelectorAll(".chip"), function (c) {
+        c.addEventListener("click", function () { select(c.getAttribute("data-key")); });
+      });
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+      });
+    }
+
+    // ------------------------------------------------------------ wiring
+
+    function select(key) {
+      state.sel = key || null;
+      renderDetail();
+      renderTree();
+      renderTable();
+      draw();
+    }
+
+    function renderCounts() {
+      document.getElementById("c-total").textContent = G.stats.total;
+      document.getElementById("c-linked").textContent = G.stats.linked;
+      document.getElementById("c-build").textContent = G.stats.buildonly;
+      document.getElementById("c-direct").textContent = G.direct.length;
+    }
+
+    function setTarget(t) {
+      state.target = t;
+      state.focus = null;
+      state.sel = null;
+      hover = null;
+      G = buildModel(t);
+      sim = layout();
+      needFit = true;
+      renderCounts();
+      renderRail();
+      renderTree();
+      renderTable();
+      renderDetail();
+      resize();
+    }
+
+    document.getElementById("target-switch").addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-target]");
+      if (!b) return;
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      setTarget(b.getAttribute("data-target"));
+    });
+
+    document.getElementById("view-switch").addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-view]");
+      if (!b) return;
+      Array.prototype.forEach.call(this.querySelectorAll("button"), function (x) {
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      state.view = b.getAttribute("data-view");
+      ["graph", "tree", "table"].forEach(function (v) {
+        document.getElementById("view-" + v).classList.toggle("is-on", v === state.view);
+      });
+      if (state.view === "graph") resize();
+    });
+
+    document.getElementById("q").addEventListener("input", function () {
+      state.query = this.value.trim().toLowerCase();
+      renderTable();
+      draw();
+    });
+
+    document.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape") {
+        if (state.sel) select(null);
+        else if (state.focus) {
+          state.focus = null;
+          renderRail(); renderTree(); renderTable(); draw();
+        }
+      }
+    });
+
+    readTheme();
+    setTarget("linux");
+
+    new ResizeObserver(function () {
+      if (state.view === "graph") resize();
+    }).observe(document.querySelector(".stage-body"));
+
+    resize();
+
+    var reTheme = function () { readTheme(); draw(); };
+    if (window.matchMedia) {
+      var mq = window.matchMedia("(prefers-color-scheme: dark)");
+      if (mq.addEventListener) mq.addEventListener("change", reTheme);
+    }
+    new MutationObserver(reTheme).observe(document.documentElement, {
+      attributes: true, attributeFilter: ["data-theme", "class", "style"]
+    });
+  })();
+</script>
