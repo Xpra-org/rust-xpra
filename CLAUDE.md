@@ -39,13 +39,16 @@ have no libjpeg-turbo 3.x (and the Windows ones no `pkg-config`). Same escape ha
 `libwebp-sys` is the opposite default: it builds its **vendored** libwebp C sources with `cc` and links them
 statically, which is what the all-in-one CI release binaries want and needs no extra tooling (no `cmake`/`nasm`/
 `bindgen` — the bindings are pre-generated). Downstream packagers who must link the distro's shared libwebp
-instead build with `--features webp-dylib` (see `Cargo.toml`), which turns on `libwebp-sys/system-dylib` and makes
+instead build with `--features webp-dylib` (see `Cargo.toml`), which is what the RPM and DEB builds under
+`packaging/` do; it turns on `libwebp-sys/system-dylib` and makes
 its `build.rs` `pkg-config`-probe the system library rather than compiling the vendored copy. The two modes are
 interchangeable: the FFI surface is identical, so no code outside `Cargo.toml` is conditional on the feature.
 
 There are no automated tests for the GUI/protocol dispatch layer — verify changes manually against a real Xpra
 server (`xpra start :100 --bind-tcp=127.0.0.1:PORT --auth=none --tcp-auth=none` works well for local testing).
-The only automated tests are `net::sha1`'s unit tests (`cargo test --lib`).
+What *is* covered runs under **`cargo test`**, not `cargo test --lib`: the lib target only holds `net/`, so
+`--lib` skips everything in `src/client/` (the audio jitter buffer, the connect dialog's URI building, window
+metadata parsing, the logger's date arithmetic) and runs three of the tests instead of all of them.
 
 ## Architecture
 
@@ -84,10 +87,10 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `WebSocketStream` buffers one reassembled (defragmented) message at a time and serves it through `Read`,
     transparently answering pings.
   - `net/sha1.rs`: a self-contained SHA1 (only used for the websocket accept-hash, not security-sensitive) — has
-    unit tests with the standard RFC 3174 test vectors, run via `cargo test --lib`.
+    unit tests with the standard RFC 3174 test vectors, run via `cargo test`.
   - `net/sha256.rs`: a self-contained SHA-256 + HMAC-SHA256, used to answer the server's password `challenge`
     (see the client's `process_challenge`). Unlike `sha1` this *is* a security boundary, so it is verified against
-    the FIPS-180 and RFC 4231 test vectors (`cargo test --lib`). Hand-rolled rather than pulling in a crypto crate,
+    the FIPS-180 and RFC 4231 test vectors (`cargo test`). Hand-rolled rather than pulling in a crypto crate,
     matching the rest of `net/`; `hmac_sha256_hex` returns the lowercase-hex ASCII form xpra puts on the wire.
   - `net/ssh.rs`: `ssh://`, implemented by shelling out to the system `ssh` binary (`std::process::Command`) and
     treating its stdin/stdout pipes as the byte stream — no SSH library dependency, mirroring the `tcp`/`ws`
@@ -229,10 +232,11 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     public-domain 8x8 font that had to be drawn at double size and looked it. `paint.rs` is `fill_rect` and
     `outline`. Both dialogs measure text by counting characters, which only works because the font is monospaced
     (`font::GLYPH_W`/`GLYPH_H`, `font::text_width`).
-  - `remote_logging.rs`: **client→server log forwarding** (xpra's `--remote-logging=send`). `RemoteLogger` is
-    the global `log::Log`: it wraps a `SimpleLogger` for unchanged local output *and* forwards info-and-above
+  - `remote_logging.rs`: **client→server log forwarding** (xpra's `--remote-logging=send`), plus the whole of the
+    *local* log output. `RemoteLogger` is the global `log::Log`: it prints locally via `LocalLogger` *and* forwards
+    info-and-above
     records to the server as `logging-event` packets, so they land in the server's log file (handy when the client runs
-    headless / its stderr isn't visible). `init()` (called from `main`, replacing the plain `SimpleLogger` init)
+    headless / its stderr isn't visible). `init()` (called from `main`)
     returns a `LogSink = Arc<Mutex<Option<EventLoopProxy<Packet>>>>` that starts empty; `XpraClient::process_hello`
     drops the proxy into it **only when the server's hello advertises `remote-logging.receive`** (a nested
     `{receive, send}` dict, xpra `server/subsystem/logging.py`), so we never send `logging-event` packets to a server
@@ -245,6 +249,18 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     or errors that set `exit_code` and make `write_json` a no-op — so a normal send never re-logs), and a
     thread-local `IN_FORWARD` flag stops a forward that itself logs from recursing. Level mapping is `log`→python:
     Error 40 / Warn 30 / Info 20.
+    `LocalLogger` is what `simple_logger` used to do, hand-rolled — same output, byte for byte:
+    `2026-07-30T09:42:06.176Z ERROR [xpra] message`, on **stdout** (not stderr), level padded to five columns and
+    coloured red/yellow/cyan/purple with Trace left plain. Colour is decided once at init, as `colored` decided it:
+    only when stdout is a terminal and `NO_COLOR` is unset — and on Windows only if `enable_ansi()` can turn
+    `ENABLE_VIRTUAL_TERMINAL_PROCESSING` on, which `colored` used to do for us and without which conhost prints the
+    escapes literally (Windows Terminal enables it itself). The timestamp comes from `SystemTime` through
+    `civil_from_days`, Howard Hinnant's algorithm, which has the unit test — the epoch, a pre-epoch day (negative
+    day numbers need flooring division, not truncating) and all three leap-year rules including 1900 and 2100.
+    Dropping `simple_logger` took **nine** crates out of the graph (it and `colored`, plus the `time` tree behind its
+    default `timestamps` feature) and, more importantly, unpinned the build from rustc 1.88: every `time` release
+    `simple_logger 5.2.0` allows declares that MSRV, and since `simple_logger` itself declares none, cargo's
+    MSRV-aware resolver could not back away from it. See the packaging notes below.
   - `tray.rs` (Windows-only, `#[cfg(windows)]`): the notification-area icon, its right-click menu (a greyed
     header naming the session, a separator, `Exit`) and the balloon notifications it raises. Hand-rolled on
     `Shell_NotifyIconW` via the `windows` crate
@@ -375,6 +391,42 @@ session was up, `PacketFailure`(9) for an unparseable packet mid-session, `Authe
 before/after-`startup_complete` split and `disconnect_is_an_error` mirror xpra's `client/base/client.py`
 (`_process_connection_lost`, `server_disconnect_exit_code`) — a disconnect whose reason mentions "error" (or a
 non-idle "timeout") is a failure, everything else ("server shutdown", "new client", ...) is a normal goodbye.
+
+## Distribution packaging (`packaging/`)
+
+RPM and DEB build definitions for [repo-build-scripts](https://github.com/Xpra-org/repo-build-scripts), which
+builds them in per-distribution containers. Mirrors the layout of xpra's own `packaging/`, but for a single
+package: `packaging/target-repository` (`beta`), `packaging/rust-xpra.desktop`, `packaging/rpm/`
+(`rust-xpra.spec` + `default.list`, the last-resort manifest name the build scripts look for, holding just
+`rust-xpra`), and `packaging/debian/` (`build.sh`, which unpacks the tarball and runs `debuild`, plus
+`rust-xpra/` which becomes the source tree's `debian/`). `packaging/README.md` has the details; the traps:
+
+- **The binary installs as `/usr/bin/rust-xpra`**, not `xpra` — that path belongs to the python `xpra` package
+  and the two must be co-installable. Both builds rename it; the cargo binary is still called `xpra`.
+- **`spng-sys` forces `libz-sys/static`**, so zlib is always compiled from source and bundled. The spec therefore
+  has to set `%global _lto_cflags %{nil}`: Fedora's global `-flto` reaches every C file the `cc` crate compiles
+  through `$CFLAGS`, and the resulting LTO objects break archive member resolution — the link fails on
+  `undefined reference to inflateInit_`. Do not "clean this up".
+- **`TURBOJPEG_SOURCE` and `TURBOJPEG_STATIC` must move together.** Both builds probe with
+  `pkg-config --atleast-version=3.0 libturbojpeg` and fall back to the crate's vendored copy where the system one
+  is too old (EL9 ships 2.0.90 in CRB, Debian trixie and Ubuntu 24.04 ship 2.1.5) — which is what `cmake` and
+  `nasm` are build dependencies for. Setting `TURBOJPEG_STATIC=0` on the *vendored* path makes `turbojpeg-sys`
+  emit `-l dylib=turbojpeg`, which links the too-old system library and fails on `undefined reference to tj3Init`.
+  Hence `%{turbojpeg_static}` / `$(if $(filter vendor,...))` rather than a constant.
+- `--features webp-dylib` is passed unconditionally so `libwebp-sys` links the distro's shared libwebp.
+- **Six runtime dependencies are listed by hand** (`libX11`, `libXcursor`, `libXi`, `libxcb`, `libxkbcommon`,
+  `libwayland-client`): winit, softbuffer and x11rb `dlopen` them, so neither `dh_shlibdeps` nor rpm's dependency
+  generator can see them. Anything new that gets `dlopen`ed has to be added to both.
+- `debian/rules` appends the `embedded-library libjpeg` lintian override itself, and only on the vendored path —
+  in the static overrides file it would be a `mismatched-override` warning everywhere else.
+- **`Cargo.lock` is in `.gitignore`**, so the release tarball carries none and cargo re-resolves against live
+  crates.io on every build: two builds of the same tarball can differ. Committing it would fix that and make the
+  declared `rust >= 1.85` / `rustc (>= 1.85)` exact rather than merely correct.
+- The `Source:` URL points at the `v<version>` GitHub tag, so **the tag has to exist** before a build; the version
+  there and in `debian/changelog` must match.
+
+Verified end to end for 0.3.0 on Fedora 44 (rpm), Debian trixie (deb, vendored turbojpeg) and Debian sid (deb,
+system turbojpeg) — all three install and run, lintian reports only `initial-upload-closes-no-bugs`.
 
 ## Known repo quirks
 

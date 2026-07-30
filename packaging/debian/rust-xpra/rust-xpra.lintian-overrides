@@ -1,0 +1,11 @@
+# false positive: nothing in the tree links or embeds libyaml. The YAML packet encoder
+# is `yaml-rust2`, which is pure Rust - lintian is matching a version string in the
+# statically linked rust code.
+rust-xpra: embedded-library libyaml [usr/bin/rust-xpra]
+
+# the client is a GUI application whose only documented interface is the URI it takes as
+# its single argument (see README.md); there is no man page upstream.
+rust-xpra: no-manual-page [usr/bin/rust-xpra]
+
+# NOTE: `embedded-library libjpeg` is appended here by debian/rules, but only on the
+# releases that actually vendor libjpeg-turbo - see override_dh_lintian there.

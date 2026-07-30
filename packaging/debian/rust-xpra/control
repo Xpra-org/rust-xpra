@@ -1,0 +1,49 @@
+Source: rust-xpra
+Section: x11
+Priority: optional
+Maintainer: Antoine Martin <antoine@xpra.org>
+Build-Depends: debhelper-compat (= 13)
+              ,pkgconf
+# `edition = "2024"` needs rust 1.85. `Cargo.lock` is not in the source tree, so cargo
+# resolves the newest dependencies that still work on the toolchain it finds - which it
+# can only do for crates that declare a `rust-version`. Committing a lockfile upstream
+# would make this exact, rather than merely correct.
+              ,cargo
+              ,rustc (>= 1.85)
+# `spng-sys` and `libz-sys` compile C sources with the `cc` crate:
+              ,gcc
+              ,zlib1g-dev
+# `native-tls` (`ssl://` and `wss://`):
+              ,libssl-dev
+# `libwebp-sys`, via the `webp-dylib` feature - see debian/rules:
+              ,libwebp-dev
+# `turbojpeg-sys`; cmake and nasm are for the vendored fallback - see debian/rules:
+              ,libturbojpeg0-dev
+              ,cmake
+              ,nasm [amd64 i386]
+Standards-Version: 4.6.2
+Homepage: https://github.com/Xpra-org/rust-xpra
+Vcs-Git: https://github.com/Xpra-org/rust-xpra.git
+Vcs-Browser: https://github.com/Xpra-org/rust-xpra
+
+Package: rust-xpra
+Architecture: any
+Depends: ${shlibs:Depends}
+        ,${misc:Depends}
+# winit, softbuffer and x11rb load all of these with `dlopen` rather than linking
+# against them, so `dh_shlibdeps` cannot see them:
+        ,libx11-6
+        ,libxcursor1
+        ,libxi6
+        ,libxcb1
+        ,libxkbcommon0
+        ,libwayland-client0
+Description: Xpra client written in Rust
+ An Xpra client implemented in Rust, built on winit and softbuffer - no GTK
+ or Qt dependency. It speaks the Xpra protocol over tcp, ssl, ws, wss and
+ ssh, and decodes the jpeg, png and webp picture encodings.
+ .
+ This is a proof of concept and requires an xpra 6.6 or later server.
+ .
+ The binary is installed as `rust-xpra` so that it does not collide with the
+ `xpra` package, which owns /usr/bin/xpra.

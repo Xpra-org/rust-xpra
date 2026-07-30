@@ -1,0 +1,54 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# keep cargo's registry cache inside the build tree rather than in $HOME:
+export CARGO_HOME = $(CURDIR)/.cargo-home
+
+# Link `turbojpeg-sys` against the system libjpeg-turbo, unless it is older than the 3.0
+# the crate requires (Debian trixie and Ubuntu 24.04 ship 2.1.5) - then build the crate's
+# vendored copy (cmake + nasm) instead of failing. `webp-dylib` does the same for
+# `libwebp-sys`, unconditionally: a distribution package must use the shared libraries
+# the distribution can patch.
+# The two settings go together and must not be split: on the vendored path a *dynamic*
+# link makes `turbojpeg-sys` emit `-l dylib=turbojpeg`, which picks up the too-old system
+# library again and fails on `undefined reference to tj3Init`.
+export TURBOJPEG_SOURCE := $(shell pkg-config --atleast-version=3.0 libturbojpeg 2> /dev/null && echo pkg-config || echo vendor)
+export TURBOJPEG_STATIC := $(if $(filter vendor,$(TURBOJPEG_SOURCE)),1,0)
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	cargo clean || true
+	rm -rf $(CARGO_HOME)
+
+# cargo resolves and downloads the dependencies here, so this step needs network access:
+override_dh_auto_build:
+	cargo build --release --features webp-dylib
+
+override_dh_auto_test:
+	cargo test --release --features webp-dylib
+
+override_dh_auto_install:
+	# the cargo binary is called `xpra`; /usr/bin/xpra belongs to the `xpra` package
+	install -D -p -m 755 target/release/xpra debian/rust-xpra/usr/bin/rust-xpra
+	install -D -p -m 644 packaging/rust-xpra.desktop \
+		debian/rust-xpra/usr/share/applications/rust-xpra.desktop
+	# assets/xpra.png is 1024x1024, which is not a directory every version of
+	# hicolor-icon-theme has - pixmaps is understood everywhere and needs no icon cache:
+	install -D -p -m 644 assets/xpra.png debian/rust-xpra/usr/share/pixmaps/rust-xpra.png
+
+override_dh_installchangelogs:
+	dh_installchangelogs CHANGELOG.md
+
+# libjpeg is only embedded on the vendored path above, so this cannot live in the static
+# overrides file: lintian warns about a *mismatched* override where the tag never fires.
+override_dh_lintian:
+	dh_lintian
+	[ "$(TURBOJPEG_SOURCE)" != vendor ] || echo \
+		'rust-xpra: embedded-library libjpeg [usr/bin/rust-xpra]' \
+		>> debian/rust-xpra/usr/share/lintian/overrides/rust-xpra
+
+override_dh_builddeb:
+	dh_builddeb -- -Zxz

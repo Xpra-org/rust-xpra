@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Xpra Client (Rust)
+GenericName=Remote Display Client
+Comment=Connect to an Xpra server
+# no argument: the client shows its connection dialog (src/client/connect_dialog.rs)
+Exec=rust-xpra
+Icon=rust-xpra
+Terminal=false
+StartupNotify=true
+Categories=Network;RemoteAccess;
+Keywords=xpra;remote;desktop;display;

@@ -1,0 +1,11 @@
+rust-xpra (0.3.0-1) UNRELEASED; urgency=low
+  * connection dialog when started without any arguments
+  * system tray icon with an `Exit` menu entry (MS Windows)
+  * show server notifications as tray balloons (MS Windows)
+  * embed the application icon and the DPI-awareness manifest
+    into the Windows executable
+  * send the packet types introduced in xpra 6.5, which raises
+    the minimum server version to 6.6
+  * initial Debian packaging
+
+ -- Antoine Martin <antoine@xpra.org>  Thu, 30 Jul 2026 10:00:00 +0700
