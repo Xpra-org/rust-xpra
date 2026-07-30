@@ -3,6 +3,12 @@
 # rust-xpra is released under the terms of the GNU GPL v3, or, at your option,
 # any later version. See the file LICENSE for details.
 
+# Let rpmbuild download the tarball from the `Source0:` URL below when it is not already
+# in `SOURCES` (rpm refuses to fetch remote sources by default). What makes that safe is
+# the sha256 check at the top of `%%prep`: the archive is only unpacked if it matches.
+# Same mechanism as xpra's own spec files.
+%define _disable_source_fetch 0
+
 # `[profile.release]` in `Cargo.toml` sets `strip = true`, so the binary carries no
 # debug symbols for `find-debuginfo` to extract - and it would fail the build if it
 # found nothing. There is no `-debuginfo` / `-debugsource` sub-package.
@@ -36,8 +42,9 @@ License:			GPL-3.0-or-later AND BSD-2-Clause
 URL:				https://github.com/Xpra-org/rust-xpra
 Packager:			Antoine Martin <antoine@xpra.org>
 Vendor:				https://xpra.org/
+# the "Source code (tar.gz)" of https://github.com/Xpra-org/rust-xpra/releases/tag/v0.3.0;
 # the `#/` fragment renames the github archive to something less ambiguous than `v0.3.0.tar.gz`
-Source:				https://github.com/Xpra-org/rust-xpra/archive/refs/tags/v%{version}.tar.gz#/rust-xpra-%{version}.tar.gz
+Source0:			%{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 # `edition = "2024"` needs rust 1.85. `Cargo.lock` is not in the source tree, so cargo
 # resolves the newest dependencies that still work on the toolchain it finds - which it
@@ -78,6 +85,13 @@ This is a proof of concept and requires an xpra 6.6 or later server.
 
 
 %prep
+# the tarball may have just been downloaded by `_disable_source_fetch` above, so verify
+# it before unpacking anything - this has to be updated for every new version:
+sha256=`sha256sum %{SOURCE0} | awk '{print $1}'`
+if [ "${sha256}" != "3eb1df636f2ddf049e132a22742e7beab1a0e521a07a98f758b1450cbd4fcf9c" ]; then
+	echo "invalid checksum for %{SOURCE0}"
+	exit 1
+fi
 %autosetup
 
 

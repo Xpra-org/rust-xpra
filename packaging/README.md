@@ -35,9 +35,14 @@ ln -sf /path/to/rust-xpra/packaging .
 ```
 
 `download_source.sh` (called by `build_all.sh`) fetches the tarball named by the
-`Source:` URL in `rpm/rust-xpra.spec` into `pkgs/`; both the RPM and the DEB build
+`Source0:` URL in `rpm/rust-xpra.spec` into `pkgs/`; both the RPM and the DEB build
 consume that same tarball, so the version there and in `debian/changelog` must match
-a pushed `v<version>` git tag.
+a pushed `v<version>` git tag. That URL is the "Source code (tar.gz)" of the matching
+[GitHub release](https://github.com/Xpra-org/rust-xpra/releases). The spec also sets
+`%define _disable_source_fetch 0`, so `rpmbuild` downloads it by itself when it is not
+already in `SOURCES`, and `%prep` refuses to unpack anything whose sha256 does not
+match the hard-coded one — as xpra's own spec files do. **Bumping the version means
+updating that checksum**, which is `sha256sum` of the release tarball.
 
 `rpm/default.list` is the last-resort manifest name the build scripts look for, so it
 applies to every RPM target. Per-distribution manifests would go in `rpm/distros/`;
