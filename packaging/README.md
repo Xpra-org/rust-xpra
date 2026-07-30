@@ -8,6 +8,7 @@ produced: `rust-xpra`.
 packaging/
 ├── target-repository        the repository the packages are destined for (beta/stable/lts)
 ├── rust-xpra.desktop        desktop entry, installed by both the spec and debian/rules
+├── rust-xpra.1              man page, installed by the spec and by dh_installman
 ├── rpm/
 │   ├── default.list         the build manifest: one entry, `rust-xpra`
 │   └── rust-xpra.spec
@@ -19,6 +20,7 @@ packaging/
         ├── copyright
         ├── rules
         ├── rust-xpra.docs
+        ├── rust-xpra.manpages   points dh_installman at ../rust-xpra.1
         └── rust-xpra.lintian-overrides
 ```
 
@@ -44,7 +46,8 @@ there is no need for any while the package list is this short.
 ## Notes
 
 * **The binary is installed as `rust-xpra`**, not `xpra`: `/usr/bin/xpra` belongs to
-  the python `xpra` package, and the two should be installable side by side.
+  the python `xpra` package, and the two should be installable side by side. The man
+  page is `rust-xpra(1)` for the same reason — `xpra(1)` is the python client's.
 * **The build needs network access, and is not reproducible.** `Cargo.lock` is in
   `.gitignore`, so it is absent from the release tarball and cargo re-resolves every
   dependency against live crates.io at build time — two builds of the same tarball can

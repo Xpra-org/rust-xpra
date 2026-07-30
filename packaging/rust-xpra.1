@@ -1,0 +1,306 @@
+.\" This file is part of rust-xpra.
+.\" Copyright (C) 2026 Antoine Martin <antoine@xpra.org>
+.\" rust-xpra is released under the terms of the GNU GPL v3, or, at your option,
+.\" any later version. See the file LICENSE for details.
+.\"
+.\" The distribution packages install the binary as `rust-xpra` (see packaging/README.md),
+.\" so that is the name documented here - the cargo binary itself is called `xpra`.
+.TH RUST\-XPRA 1 "2026\-07\-30" "rust\-xpra 0.3.0" "User Commands"
+.SH NAME
+rust\-xpra \- Xpra client written in Rust
+.SH SYNOPSIS
+.B rust\-xpra
+.RI [ HOST : PORT " | " URI ]
+.SH DESCRIPTION
+.B rust\-xpra
+connects to an
+.B xpra
+server and displays the windows of the applications running there as
+ordinary windows on the local desktop, forwarding keyboard, pointer and
+clipboard input back to the server.
+.PP
+It is built on
+.B winit
+and
+.B softbuffer
+rather than GTK or Qt, so it has no desktop toolkit dependency; window contents
+are pixels decoded from the server's picture encodings and blitted to the screen.
+.PP
+This is a proof of concept, and it requires an
+.B xpra 6.6
+or later server, left in its default backwards\-compatible mode
+.RB ( XPRA_BACKWARDS_COMPATIBLE
+unset or
+.BR 1 ).
+There is no server implementation: this program is a client only.
+.PP
+The client takes at most one argument, the connection target, and has no options.
+More than one argument, or a target that cannot be parsed, is an error (exit
+status 34).
+.SH CONNECTION TARGET
+The target is either a bare
+.IR HOST : PORT ,
+which is taken to mean
+.BR tcp ,
+or a URI in one of the following forms:
+.TP
+.BI tcp:// HOST : PORT /
+Plain, unencrypted TCP.
+.TP
+.BI ssl:// HOST : PORT /
+TCP with TLS.
+.B Certificate verification is currently disabled
+(see
+.B LIMITATIONS
+below).
+.TP
+.BI ws:// HOST : PORT /
+The xpra WebSocket transport over plain HTTP.
+.TP
+.BI wss:// HOST : PORT /
+The xpra WebSocket transport over HTTPS. Certificates are not verified, as with
+.BR ssl .
+.TP
+.BI ssh:// [ USER @] HOST [: PORT ]/[ DISPLAY ]
+Tunnel over
+.BR ssh (1),
+which is run as a subprocess: it executes
+.B xpra _proxy
+.RI [ DISPLAY ]
+on the remote host, which bridges the connection to the socket of an already
+running display. This requires
+.B ssh
+on
+.B PATH
+locally and
+.B xpra
+installed remotely.
+.IP
+Authentication must not need to read from standard input, since that carries the
+xpra protocol \- use a key held by an
+.BR ssh\-agent (1),
+or a passphrase\-less key. Host\-key confirmation and password prompts still work,
+because
+.B ssh
+reads those from the controlling terminal rather than from standard input.
+.PP
+Any other protocol is rejected. A port is required for every scheme except
+.BR ssh ,
+which defaults to 22. For
+.B ssh
+the path component is the xpra display number (for example
+.BR ssh://server/100 );
+for the other schemes it is the HTTP path the server is published under, which is
+usually empty.
+.PP
+The
+.I USER
+part of an
+.B ssh
+target is the remote login name. For the other schemes a user name can only be
+given in the connection dialog described below, where it is sent to the server as
+part of the session handshake for servers that authenticate per user.
+.SH CONNECTION DIALOG
+Started with
+.B no
+argument at all \- which is what the desktop entry does \-
+.B rust\-xpra
+opens a small dialog asking for the connection details instead of exiting: a
+protocol drop\-down (which pre\-fills the port with that protocol's default: 10000,
+or 22 for
+.BR ssh ),
+a host, a port, and an optional user name and password.
+.PP
+.B Tab
+moves between the fields, the arrow keys pick the protocol,
+.B Enter
+connects and
+.B Esc
+cancels (exit status 0). Connecting happens in the background, so the dialog stays
+responsive and reports a failure \- wrong port, no server listening, a rejected
+handshake \- in place, ready for another attempt, rather than exiting.
+.PP
+The password collected here is the
+.I session
+password: it answers the server's authentication challenge without prompting
+again. It is never the
+.B ssh
+password, which
+.B ssh
+itself asks for on the terminal.
+.SH AUTHENTICATION
+A server that requires a password sends a challenge, which the client answers with
+an HMAC\-SHA256 digest of the password. The password is taken from, in order:
+.IP 1. 4
+the connection dialog's password field, when it was filled in;
+.IP 2. 4
+the
+.B XPRA_PASSWORD
+environment variable, if set (non\-interactive, for scripts);
+.IP 3. 4
+.BR pinentry (1),
+if one is found on
+.B PATH
+\- the same prompt GnuPG uses;
+.IP 4. 4
+otherwise a small built\-in password dialog, so a prompt is always available.
+.PP
+Only the
+.B hmac+sha256
+digest is implemented; it is the only one advertised, so the server always
+picks it. Kerberos, GSS, SCRAM, U2F and the legacy
+.BR xor / des
+digests are not supported and fail cleanly. The digest never reveals the password,
+and the server mixes in a fresh per\-connection salt so a captured response cannot
+be replayed \- but the session itself is in the clear over
+.B tcp
+and
+.BR ws ,
+so use
+.BR ssl ,
+.B wss
+or
+.B ssh
+where confidentiality matters.
+.SH SESSION
+Windows appear, move, resize and close as the server tells them to; closing a
+window asks the server to close that application window, it does not disconnect
+the session. Since there is no system tray icon on Linux (see
+.B LIMITATIONS
+below), there is no way to quit from the GUI: the client exits when the server
+disconnects or shuts down, when the connection is lost, or when the process is
+interrupted \- typically with
+.B ^C
+in the terminal it was started from.
+.PP
+Picture encodings decoded here are
+.BR jpeg ,
+.B png
+and
+.BR webp .
+Plain\-text clipboard synchronization is supported. Server\-forwarded notifications
+are written to the client's log. A server\-forwarded bell writes the terminal bell
+character to standard error, so it is only audible when the client was started
+from a terminal whose bell is enabled.
+.PP
+Log output goes to standard output, coloured by level when that is a terminal.
+Once the server confirms that it accepts them, informational and higher messages
+are also forwarded to the server's own log, which is useful when the client runs
+without a visible terminal.
+.SH ENVIRONMENT
+.TP
+.B XPRA_PASSWORD
+The session password, used to answer an authentication challenge without
+prompting. See
+.B AUTHENTICATION
+above.
+.TP
+.B PINENTRY_PROGRAM
+The
+.B pinentry
+binary to prompt with, tried before
+.B pinentry
+and
+.B pinentry\-mac
+on
+.BR PATH .
+.TP
+.B GPG_TTY
+Passed to
+.B pinentry
+as its terminal name, for the curses variants.
+.TP
+.BR USER ", " USERNAME
+The user name sent to the server in the session handshake, when none was given in
+the connection dialog.
+.TP
+.B HOSTNAME
+The client host name reported to the server.
+.TP
+.B NO_COLOR
+When set, log output is never coloured, whether or not standard output is a
+terminal.
+.SH EXIT STATUS
+The values match those of xpra's own client, so wrapper scripts can treat both the
+same way:
+.TP
+.B 0
+Normal exit: the server said goodbye, or the connection dialog was cancelled.
+.TP
+.B 1
+The connection was lost after the session had started.
+.TP
+.B 7
+The server disconnected an established session with an error.
+.TP
+.B 8
+The
+.B ssh
+transport could not be set up.
+.TP
+.B 9
+An unusable packet was received from an established session.
+.TP
+.B 14
+An internal error, such as a failure to create a window.
+.TP
+.B 16
+The TLS handshake failed.
+.TP
+.B 18
+No session was ever established: the connection was refused or unreachable, the
+peer is not an xpra server, or the server rejected the client during the
+handshake.
+.TP
+.B 28
+Authentication failed \- usually a wrong password.
+.TP
+.B 34
+The command line was invalid.
+.SH LIMITATIONS
+.B Certificate verification is disabled
+for
+.B ssl
+and
+.BR wss :
+self\-signed and otherwise invalid certificates are accepted, because there is no
+way to configure a certificate authority yet. Those connections are encrypted but
+not authenticated, and are therefore open to interception.
+.PP
+Under a native Wayland session, the Wayland protocol does not let a client query or
+set its absolute position on the desktop, and has no equivalent of X11's
+override\-redirect windows. As a result: the server's tooltips, menus and
+drop\-downs become undecorated but still managed windows; server\-initiated window
+moves apply the size only; the client reports position (0, 0) to the server; and
+the NumLock state is not reported. Running under XWayland avoids all of these.
+.PP
+There is no system tray icon on Linux \- the freedesktop StatusNotifierItem
+protocol would need a D\-Bus dependency, and the older XEmbed tray is X11\-only \-
+and therefore no desktop notifications either; notifications are logged instead.
+.PP
+Speaker forwarding (server to client audio) and
+.B h264
+decoding are implemented for MS Windows only. Microphone forwarding, file
+transfers, printing and webcam forwarding are not implemented at all.
+.SH SEE ALSO
+.BR xpra (1),
+.BR ssh (1),
+.BR pinentry (1)
+.PP
+.UR https://github.com/Xpra\-org/rust\-xpra
+.UE
+and
+.UR https://xpra.org/
+.UE
+.SH BUGS
+Report bugs at
+.UR https://github.com/Xpra\-org/rust\-xpra/issues
+.UE
+.SH AUTHOR
+Antoine Martin <antoine@xpra.org>
+.SH COPYRIGHT
+Copyright \(co 2026 Antoine Martin.
+License GPLv3+: GNU GPL version 3 or later.
+.PP
+This is free software: you are free to change and redistribute it. There is NO
+WARRANTY, to the extent permitted by law.

@@ -105,6 +105,7 @@ install -D -p -m 644 packaging/rust-xpra.desktop %{buildroot}%{_datadir}/applica
 # `assets/xpra.png` is 1024x1024, which is not a directory every version of
 # hicolor-icon-theme has - `pixmaps` is understood everywhere and needs no icon cache:
 install -D -p -m 644 assets/xpra.png %{buildroot}%{_datadir}/pixmaps/%{name}.png
+install -D -p -m 644 packaging/%{name}.1 %{buildroot}%{_mandir}/man1/%{name}.1
 
 
 %files
@@ -114,6 +115,8 @@ install -D -p -m 644 assets/xpra.png %{buildroot}%{_datadir}/pixmaps/%{name}.png
 %{_bindir}/%{name}
 %{_datadir}/applications/%{name}.desktop
 %{_datadir}/pixmaps/%{name}.png
+# the glob matches whatever compression `brp-compress` applied (.gz, or .zst on newer Fedora)
+%{_mandir}/man1/%{name}.1*
 
 
 %changelog
@@ -123,4 +126,4 @@ install -D -p -m 644 assets/xpra.png %{buildroot}%{_datadir}/pixmaps/%{name}.png
 - show server-forwarded notifications as tray balloons (MS Windows)
 - embed the application icon and the DPI-awareness manifest into the Windows executable
 - send the packet types introduced in xpra 6.5, raising the minimum server version to 6.6
-- initial RPM packaging
+- initial RPM packaging, with a `rust-xpra(1)` man page

@@ -396,7 +396,10 @@ non-idle "timeout") is a failure, everything else ("server shutdown", "new clien
 
 RPM and DEB build definitions for [repo-build-scripts](https://github.com/Xpra-org/repo-build-scripts), which
 builds them in per-distribution containers. Mirrors the layout of xpra's own `packaging/`, but for a single
-package: `packaging/target-repository` (`beta`), `packaging/rust-xpra.desktop`, `packaging/rpm/`
+package: `packaging/target-repository` (`beta`), `packaging/rust-xpra.desktop`, `packaging/rust-xpra.1`
+(the man page — installed by the spec's `%install` and, on the Debian side, by `dh_installman` via
+`rust-xpra.manpages`; it documents the *installed* name, so `rust-xpra(1)`, since `xpra(1)` is the python
+client's), `packaging/rpm/`
 (`rust-xpra.spec` + `default.list`, the last-resort manifest name the build scripts look for, holding just
 `rust-xpra`), and `packaging/debian/` (`build.sh`, which unpacks the tarball and runs `debuild`, plus
 `rust-xpra/` which becomes the source tree's `debian/`). `packaging/README.md` has the details; the traps:

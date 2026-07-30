@@ -6,6 +6,6 @@ rust-xpra (0.3.0-1) UNRELEASED; urgency=low
     into the Windows executable
   * send the packet types introduced in xpra 6.5, which raises
     the minimum server version to 6.6
-  * initial Debian packaging
+  * initial Debian packaging, with a rust-xpra(1) man page
 
  -- Antoine Martin <antoine@xpra.org>  Thu, 30 Jul 2026 10:00:00 +0700
