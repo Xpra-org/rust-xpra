@@ -5,9 +5,12 @@
   * [build on older distributions](https://github.com/Xpra-org/rust-xpra/commit/f90be1a74d1146f8ac66092d538af402bc2b63ad)
   * [disable lto on Debian](https://github.com/Xpra-org/rust-xpra/commit/ca39a61e271ea4d184ddbdb41f7ce17b286d0e61)
   * [build from github releases](https://github.com/Xpra-org/rust-xpra/commit/a7f4aa9220162134f3536aa154ce604dab38b48d)
+  * [build Debian packages with Rust coreutils](https://github.com/Xpra-org/rust-xpra/commit/9d1072c6ebb323ad518e97acde1ba8e5cda00fb3)
 * ✨ Features:
   * [mmap](https://github.com/Xpra-org/rust-xpra/commit/0a8ba31ff4ded1660d5ea7aafb602e16e1a738da)
 * 🖧 Network:
+  * [connect directly to Unix-domain sockets](https://github.com/Xpra-org/rust-xpra/commit/eb857de35758b5fe0a704d7846e165796e092a7c) —
+    Unix builds accept `socket:///absolute/path` and `/absolute/path` targets
   * [verify SSL certificates by default](https://github.com/Xpra-org/rust-xpra/commit/7c6827df9433596718480c2a4b90ce4548f7d0c5) —
     `ssl://` and `wss://` now check the certificate chain and the hostname against the system
     trust store, with `--ssl-insecure` to opt out
