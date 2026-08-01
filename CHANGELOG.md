@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.1] 2026-08-01
+* 🔧 Platforms, build and packaging:
+  * [build on older distributions](https://github.com/Xpra-org/rust-xpra/commit/f90be1a74d1146f8ac66092d538af402bc2b63ad)
+  * [disable lto on Debian](https://github.com/Xpra-org/rust-xpra/commit/ca39a61e271ea4d184ddbdb41f7ce17b286d0e61)
+  * [build from github releases](https://github.com/Xpra-org/rust-xpra/commit/a7f4aa9220162134f3536aa154ce604dab38b48d)
+* ✨ Features:
+  * [mmap](https://github.com/Xpra-org/rust-xpra/commit/0a8ba31ff4ded1660d5ea7aafb602e16e1a738da)
+* Documentation:
+  * [include an interactive dependency graph](https://github.com/Xpra-org/rust-xpra/commit/47fa92ae55335114acfc59d31f93a42001d8f50f)
+  * [link to repositories](https://github.com/Xpra-org/rust-xpra/commit/10366489936a8c129faa29090dc051390f6b69ea)
+
 ## [0.3.0]
 * ✨ Features:
   * connection dialog when started without any arguments

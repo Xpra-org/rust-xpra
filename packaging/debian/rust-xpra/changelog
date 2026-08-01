@@ -1,3 +1,16 @@
+rust-xpra (0.3.1-1) UNRELEASED; urgency=low
+  * 🔧 Platforms, build and packaging:
+    build on older distributions
+    disable lto on Debian
+    build from github releases
+  * ✨ Features:
+    mmap
+  * Documentation:
+    include an interactive dependency graph
+    link to repositories
+
+ -- Antoine Martin <antoine@xpra.org>  Sat, 01 Aug 2026 17:18:37 +0700
+
 rust-xpra (0.3.0-1) UNRELEASED; urgency=low
   * connection dialog when started without any arguments
   * system tray icon with an `Exit` menu entry (MS Windows)
