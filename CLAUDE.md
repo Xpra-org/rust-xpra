@@ -482,6 +482,30 @@ client's), `packaging/rpm/`
 - **`Cargo.lock` is in `.gitignore`**, so the release tarball carries none and cargo re-resolves against live
   crates.io on every build: two builds of the same tarball can differ. Committing it would fix that and make the
   declared `rust >= 1.85` / `rustc (>= 1.85)` exact rather than merely correct.
+- **That re-resolution is what makes old distributions work, and `edition = "2024"` is what makes it
+  rust-version aware — do not downgrade the edition to widen compatibility, it does the opposite.** The edition
+  implies `resolver = "3"`; with no `rust-version` in `Cargo.toml`, cargo takes the MSRV from *the toolchain it
+  is running under* (verified: making rustc report 1.75 resolves indexmap 2.11.4 / native-tls 0.2.13 /
+  openssl 0.10.78, exactly as an explicit `rust-version = "1.75"` does). So each distribution gets the newest
+  dependency set its own toolchain can build and none of them holds the others back. `edition = "2021"`
+  silently selects `resolver = "2"`, which is not rust-version aware at all. Two corollaries: `resolver = "3"`
+  needs cargo 1.84, so `edition = "2021"` + an explicit `resolver = "3"` buys exactly one cargo version and is
+  not worth it; and `rust-version` must stay *unset*, since declaring one applies to every build host and would
+  pin Fedora to Debian's floor (it is also a hard error to declare one below 1.85 while on edition 2024).
+  The fallback is a preference, not a rule — cargo still takes an incompatible version when a requirement has
+  no compatible one — so this is correct, not exact.
+- **Three target releases need a toolchain other than the default `rustc`**, hence the build-dependency
+  alternatives `cargo-web | cargo-1.85 | cargo` / `rustc-web | rustc-1.85 | rustc (>= 1.85)`, most specific
+  first. Debian trixie/sid are fine as-is (1.85/1.95). Bookworm's `rustc` is 1.63, but `rustc-web`/`cargo-web`
+  — the 1.85 toolchain Debian keeps in **main** so Firefox can be built — are there, and `rustc-web` carries
+  `Provides: rustc (= 1.85…)`. `cargo-web` must win over `cargo`: bookworm's `cargo` is 0.66 and only
+  `Depends: rustc (>= 1.24)`, so apt would pair it with rustc-web quite happily — and cargo is what parses the
+  manifest, so it rejects edition 2024 before rustc is ever run. Ubuntu jammy/noble default to 1.75 and carry
+  `rustc-1.85`/`cargo-1.85` in `<release>-updates/universe`; those install into `/usr/lib/rust-1.85/bin`,
+  register no alternative and Provide nothing, which is why `debian/rules` prepends that directory to `$PATH`
+  when it exists. `cargo` stays unversioned in `Build-Depends` — Debian numbered it 0.66 in bookworm and only
+  lined it up with rustc from trixie on, so `cargo (>= 1.85)` would be unsatisfiable on the one release that
+  needs it.
 - The `Source:` URL points at the `v<version>` GitHub tag, so **the tag has to exist** before a build; the version
   there and in `debian/changelog` must match.
 
