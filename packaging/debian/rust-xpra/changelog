@@ -5,6 +5,8 @@ rust-xpra (0.3.1-1) UNRELEASED; urgency=low
     build from github releases
   * ✨ Features:
     mmap
+  * 🖧 Network:
+    verify SSL certificates by default, add `--ssl-insecure`
   * Documentation:
     include an interactive dependency graph
     link to repositories

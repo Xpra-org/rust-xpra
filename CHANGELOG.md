@@ -7,6 +7,10 @@
   * [build from github releases](https://github.com/Xpra-org/rust-xpra/commit/a7f4aa9220162134f3536aa154ce604dab38b48d)
 * ✨ Features:
   * [mmap](https://github.com/Xpra-org/rust-xpra/commit/0a8ba31ff4ded1660d5ea7aafb602e16e1a738da)
+* 🖧 Network:
+  * [verify SSL certificates by default](https://github.com/Xpra-org/rust-xpra/commit/7c6827df9433596718480c2a4b90ce4548f7d0c5) —
+    `ssl://` and `wss://` now check the certificate chain and the hostname against the system
+    trust store, with `--ssl-insecure` to opt out
 * Documentation:
   * [include an interactive dependency graph](https://github.com/Xpra-org/rust-xpra/commit/47fa92ae55335114acfc59d31f93a42001d8f50f)
   * [link to repositories](https://github.com/Xpra-org/rust-xpra/commit/10366489936a8c129faa29090dc051390f6b69ea)

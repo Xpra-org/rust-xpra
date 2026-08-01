@@ -33,7 +33,7 @@
 %global turbojpeg_static %(pkg-config --atleast-version=3.0 libturbojpeg 2>/dev/null && echo 0 || echo 1)
 
 Name:				rust-xpra
-Version:			0.3.0
+Version:			0.3.1
 Release:			1%{?dist}
 Summary:			Xpra client written in Rust
 # the client itself is GPL-3.0-or-later; `src/client/font.rs` is the Spleen 8x16
@@ -42,8 +42,8 @@ License:			GPL-3.0-or-later AND BSD-2-Clause
 URL:				https://github.com/Xpra-org/rust-xpra
 Packager:			Antoine Martin <antoine@xpra.org>
 Vendor:				https://xpra.org/
-# the "Source code (tar.gz)" of https://github.com/Xpra-org/rust-xpra/releases/tag/v0.3.0;
-# the `#/` fragment renames the github archive to something less ambiguous than `v0.3.0.tar.gz`
+# the "Source code (tar.gz)" of https://github.com/Xpra-org/rust-xpra/releases/tag/v0.3.1;
+# the `#/` fragment renames the github archive to something less ambiguous than `v0.3.1.tar.gz`
 Source0:			%{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 # `edition = "2024"` needs rust 1.85. `Cargo.lock` is not in the source tree, so cargo
@@ -88,7 +88,7 @@ This is a proof of concept and requires an xpra 6.6 or later server.
 # the tarball may have just been downloaded by `_disable_source_fetch` above, so verify
 # it before unpacking anything - this has to be updated for every new version:
 sha256=`sha256sum %{SOURCE0} | awk '{print $1}'`
-if [ "${sha256}" != "3eb1df636f2ddf049e132a22742e7beab1a0e521a07a98f758b1450cbd4fcf9c" ]; then
+if [ "${sha256}" != "2bc0052f2b159e365201a08f42107749c85caa3a32f0d0e166766341db6d9793" ]; then
 	echo "invalid checksum for %{SOURCE0}"
 	exit 1
 fi
@@ -141,6 +141,8 @@ install -D -p -m 644 packaging/%{name}.1 %{buildroot}%{_mandir}/man1/%{name}.1
    build from github releases
 - ✨ Features:
    mmap
+- 🖧 Network:
+   verify SSL certificates by default, add `--ssl-insecure`
 - Documentation:
    include an interactive dependency graph
    link to repositories
