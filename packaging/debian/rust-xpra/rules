@@ -50,12 +50,15 @@ override_dh_auto_test:
 
 override_dh_auto_install:
 	# the cargo binary is called `xpra`; /usr/bin/xpra belongs to the `xpra` package
-	install -D -p -m 755 target/release/xpra debian/rust-xpra/usr/bin/rust-xpra
-	install -D -p -m 644 packaging/rust-xpra.desktop \
+	mkdir -p debian/rust-xpra/usr/bin \
+		debian/rust-xpra/usr/share/applications \
+		debian/rust-xpra/usr/share/pixmaps
+	install -p -m 755 target/release/xpra debian/rust-xpra/usr/bin/rust-xpra
+	install -p -m 644 packaging/rust-xpra.desktop \
 		debian/rust-xpra/usr/share/applications/rust-xpra.desktop
 	# assets/xpra.png is 1024x1024, which is not a directory every version of
 	# hicolor-icon-theme has - pixmaps is understood everywhere and needs no icon cache:
-	install -D -p -m 644 assets/xpra.png debian/rust-xpra/usr/share/pixmaps/rust-xpra.png
+	install -p -m 644 assets/xpra.png debian/rust-xpra/usr/share/pixmaps/rust-xpra.png
 
 override_dh_installchangelogs:
 	dh_installchangelogs CHANGELOG.md
