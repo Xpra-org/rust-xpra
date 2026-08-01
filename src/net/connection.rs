@@ -1,5 +1,7 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 
 use super::ssh::SshStream;
 use super::tls::SharedTlsStream;
@@ -11,6 +13,8 @@ pub enum Connection {
     WebSocket(WebSocketStream<TcpStream>),
     WebSocketTls(WebSocketStream<SharedTlsStream>),
     Ssh(SshStream),
+    #[cfg(unix)]
+    Socket(UnixStream),
 }
 
 impl Connection {
@@ -21,6 +25,8 @@ impl Connection {
             Connection::WebSocket(stream) => Ok(Connection::WebSocket(stream.try_clone()?)),
             Connection::WebSocketTls(stream) => Ok(Connection::WebSocketTls(stream.try_clone()?)),
             Connection::Ssh(stream) => Ok(Connection::Ssh(stream.try_clone()?)),
+            #[cfg(unix)]
+            Connection::Socket(stream) => Ok(Connection::Socket(stream.try_clone()?)),
         }
     }
 
@@ -44,6 +50,8 @@ impl Read for Connection {
             Connection::WebSocket(stream) => stream.read(buf),
             Connection::WebSocketTls(stream) => stream.read(buf),
             Connection::Ssh(stream) => stream.read(buf),
+            #[cfg(unix)]
+            Connection::Socket(stream) => stream.read(buf),
         }
     }
 }
@@ -56,6 +64,8 @@ impl Write for Connection {
             Connection::WebSocket(stream) => stream.write(buf),
             Connection::WebSocketTls(stream) => stream.write(buf),
             Connection::Ssh(stream) => stream.write(buf),
+            #[cfg(unix)]
+            Connection::Socket(stream) => stream.write(buf),
         }
     }
 
@@ -66,6 +76,8 @@ impl Write for Connection {
             Connection::WebSocket(stream) => stream.flush(),
             Connection::WebSocketTls(stream) => stream.flush(),
             Connection::Ssh(stream) => stream.flush(),
+            #[cfg(unix)]
+            Connection::Socket(stream) => stream.flush(),
         }
     }
 }

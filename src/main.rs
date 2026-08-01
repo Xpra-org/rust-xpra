@@ -2,6 +2,8 @@ extern crate alloc;
 
 use std::env;
 use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
@@ -57,6 +59,8 @@ Targets:
   ws://HOST:PORT/                     websocket over http
   wss://HOST:PORT/                    websocket over https
   ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through the system 'ssh' (port 22 by default)
+  socket:///ABSOLUTE/PATH             Unix-domain socket (Unix only)
+  /ABSOLUTE/PATH                      shorthand for socket:///ABSOLUTE/PATH (Unix only)
 
 ssl:// and wss:// verify the server's certificate chain and hostname against the
 system trust store. There is no way to trust a private CA yet, so a self-signed
@@ -506,6 +510,21 @@ fn connect(target: &Target, ssl_insecure: bool) -> Result<Connection, (ExitCode,
                 .map_err(|e| (ExitCode::SshFailure, format!("ssh connection failed: {}", e)))?;
             Ok(Connection::Ssh(ssh_stream))
         }
+        Scheme::Socket => {
+            #[cfg(unix)]
+            {
+                let stream = UnixStream::connect(&target.address).map_err(|e| {
+                    (ExitCode::ConnectionFailed,
+                     format!("failed to connect to Unix-domain socket {:?}: {}", target.address, e))
+                })?;
+                Ok(Connection::Socket(stream))
+            }
+            #[cfg(not(unix))]
+            {
+                Err((ExitCode::ConnectionFailed,
+                     "Unix-domain socket connections are not supported on this platform".to_string()))
+            }
+        }
     }
 }
 
@@ -513,6 +532,13 @@ fn connect(target: &Target, ssl_insecure: bool) -> Result<Connection, (ExitCode,
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::io::{Read, Write};
+
+    #[cfg(unix)]
+    use std::os::unix::net::UnixListener;
+    #[cfg(unix)]
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn parse(args: &[&str]) -> Result<Options, String> {
         let argv: Vec<String> = std::iter::once("xpra")
@@ -562,6 +588,17 @@ mod tests {
         assert!(parse(&["tcp://a:10000/", "tcp://b:10000/"]).is_err());
     }
 
+    #[test]
+    fn ssl_insecure_is_rejected_for_socket_targets() {
+        let target = parse_target("socket:///tmp/xpra-test.sock").unwrap();
+        let error = match connect(&target, true) {
+            Ok(_) => panic!("socket target unexpectedly accepted --ssl-insecure"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, ExitCode::ArgumentMismatch);
+        assert!(error.1.contains("only applies to ssl:// and wss://"), "{}", error.1);
+    }
+
     // --help and --version act before parse_args runs, but must still parse as valid arguments:
     #[test]
     fn help_and_version_are_valid_arguments() {
@@ -570,5 +607,50 @@ mod tests {
         assert!(parse(&["--version"]).is_ok());
         assert_eq!(parse(&["--version", "tcp://a:10000/"]).unwrap().target.as_deref(),
                    Some("tcp://a:10000/"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_target_connects_and_supports_bidirectional_io_and_cloning() {
+        static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+
+        let socket_path = std::env::temp_dir().join(format!(
+            "rust-xpra-test-{}-{}.sock",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed),
+        ));
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let target = parse_target(socket_path.to_str().unwrap()).unwrap();
+        let mut connection = connect(&target, false).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+
+        connection.write_all(b"client to server").unwrap();
+        let mut from_client = [0; 16];
+        server.read_exact(&mut from_client).unwrap();
+        assert_eq!(&from_client, b"client to server");
+
+        let mut reader = connection.try_clone().unwrap();
+        server.write_all(b"server to clone").unwrap();
+        let mut from_server = [0; 15];
+        reader.read_exact(&mut from_server).unwrap();
+        assert_eq!(&from_server, b"server to clone");
+
+        drop(reader);
+        drop(connection);
+        drop(server);
+        drop(listener);
+        std::fs::remove_file(socket_path).unwrap();
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn socket_target_reports_platform_support_error() {
+        let target = parse_target("socket:///tmp/xpra-test.sock").unwrap();
+        let (code, message) = match connect(&target, false) {
+            Ok(_) => panic!("socket target unexpectedly connected on a non-Unix platform"),
+            Err(error) => error,
+        };
+        assert_eq!(code, ExitCode::ConnectionFailed);
+        assert!(message.contains("not supported on this platform"), "{message}");
     }
 }

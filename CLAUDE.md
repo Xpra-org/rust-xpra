@@ -63,17 +63,24 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
 
 - `src/lib.rs` / `src/net/`: the Xpra wire-protocol layer, platform-independent.
   - `net/uri.rs`: `parse_target` turns the command-line argument into a `Target { scheme, address, path, username }`,
-    accepting either a bare `host:port` (assumed `tcp`) or a `protocol://host:port/path` URI. `Scheme` is one of
-    `Tcp`/`Tls`/`WebSocket`/`WebSocketTls`/`Ssh` (`tcp`/`ssl`/`ws`/`wss`/`ssh`); anything else is rejected.
+    accepting a bare `host:port` (assumed `tcp`), a bare absolute Unix socket path, or a
+    `protocol://host:port/path` URI. `Scheme` is one of `Tcp`/`Tls`/`WebSocket`/`WebSocketTls`/`Ssh`/`Socket`
+    (`tcp`/`ssl`/`ws`/`wss`/`ssh`/`socket`); anything else is rejected. `socket:///absolute/path` and its bare
+    `/absolute/path` shorthand put the pathname in `address` and leave `path` empty.
     `host_only` strips the port for use as the TLS SNI/hostname argument (handles bracketed IPv6 correctly).
     `Ssh` alone allows a `user@` authority prefix (→ `username`) and defaults the port to 22 if omitted (the other
     schemes always require an explicit port); its `path` is stripped of the leading `/` since it's passed through
     as a bare xpra display number, not a URI path.
-  - `net/connection.rs`: `Connection` is an enum (`Tcp`/`Tls`/`WebSocket`/`WebSocketTls`/`Ssh`) implementing
+  - `net/connection.rs`: `Connection` is an enum (`Tcp`/`Tls`/`WebSocket`/`WebSocketTls`/`Ssh`, plus Unix-only
+    `Socket`) implementing
     `Read`/`Write` by dispatching to whichever transport is active, so the rest of the codebase (`io.rs`,
     `XpraClient`) doesn't need to know which one it's talking to. `try_clone()` gives the reader thread its own
     independent instance. `Connection::write_all` special-cases `Tls` to call `SharedTlsStream::write_all` (see
     below) rather than the generic `Write::write_all`.
+    `Socket` wraps `std::os::unix::net::UnixStream` and connects directly to a filesystem pathname; there is no
+    display lookup, socket-directory discovery, or abstract-namespace support. It is CLI-only because the
+    no-argument connection dialog deliberately has no socket option, and non-Unix builds return a platform-support
+    error when a parsed socket target is connected.
   - `net/tls.rs`: `ssl://`/`wss://`, via `native-tls` (OpenSSL/Schannel/Security.framework) rather than a
     hand-rolled implementation — unlike WebSocket masking, TLS encryption is a real security boundary.
     The certificate chain and the hostname **are verified** against the platform trust store, which is what

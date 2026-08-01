@@ -8,9 +8,10 @@ Xpra client implemented in [rust](https://www.rust-lang.org/), for MS Windows an
 
 It builds on MS Windows and Linux (X11 and Wayland).
 
-It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). `ssl`/`wss` verify the
-server's certificate against the system trust store, unless `--ssl-insecure` says otherwise. Password
-authentication is supported (HMAC digest challenges — see [Authentication](#authentication) below).
+It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below) and direct Unix-domain
+socket connections on Unix platforms. `ssl`/`wss` verify the server's certificate against the system trust
+store, unless `--ssl-insecure` says otherwise. Password authentication is supported (HMAC digest challenges —
+see [Authentication](#authentication) below).
 
 It requires an **xpra 6.6 or later** server: every packet it sends uses the packet types introduced in
 xpra 6.5, two of which (`clipboard-data`, and the argument order of `window-draw-ack`) only settled in
@@ -88,6 +89,8 @@ cargo build
 ./target/debug/xpra ws://HOST:PORT/
 ./target/debug/xpra wss://HOST:PORT/
 ./target/debug/xpra ssh://[USER@]HOST[:PORT]/[DISPLAY]
+./target/debug/xpra socket:///run/user/1000/xpra/10   # Unix only
+./target/debug/xpra /run/user/1000/xpra/10            # equivalent shorthand
 ./target/debug/xpra --ssl-insecure ssl://HOST:PORT/   # skip certificate verification
 ./target/debug/xpra --help          # or -h: the same list, plus the environment variables
 ./target/debug/xpra --version       # this client's own version (not the xpra protocol version)
@@ -113,7 +116,12 @@ Like the password prompt, the dialog is drawn with the same `winit`/`softbuffer`
 bitmap font: [Spleen](https://github.com/fcambus/spleen) 8x16, Copyright (c) 2018-2026, Frederic Cambus,
 BSD-2-Clause.
 
-Only the `tcp`, `ssl`, `ws`, `wss` and `ssh` protocols are supported; any other protocol in the URI is rejected.
+Only the `tcp`, `ssl`, `ws`, `wss`, `ssh` and `socket` protocols are supported; any other protocol in the URI is
+rejected. On Unix platforms, `socket:///absolute/path` connects directly to a filesystem pathname Unix-domain
+socket; a bare `/absolute/path` is equivalent shorthand. This does no `:DISPLAY` lookup or socket-directory
+discovery, and abstract-namespace sockets are not supported. Socket targets are command-line only and do not
+appear in the no-argument connection dialog. They are unavailable on Windows.
+
 `ws` support (HTTP upgrade handshake and frame framing) is hand-rolled against `std` only, to avoid pulling in a
 websocket crate and its dependencies. `ssl`/`wss` use [`native-tls`](https://docs.rs/native-tls) (OpenSSL on
 Linux, Schannel on Windows, Security.framework on macOS) rather than a hand-rolled implementation, since TLS

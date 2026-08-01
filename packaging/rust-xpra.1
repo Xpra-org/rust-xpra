@@ -11,7 +11,7 @@ rust\-xpra \- Xpra client written in Rust
 .SH SYNOPSIS
 .B rust\-xpra
 .RI [ OPTIONS ]
-.RI [ HOST : PORT " | " URI ]
+.RI [ HOST : PORT " | " URI " | " /ABSOLUTE/PATH ]
 .br
 .B rust\-xpra
 .BR \-h | \-\-help
@@ -41,11 +41,7 @@ unset or
 .BR 1 ).
 There is no server implementation: this program is a client only.
 .PP
-The client takes at most one argument, the connection target, and has no options
-beyond
-.B \-\-help
-and
-.BR \-\-version .
+The client takes at most one argument, the connection target.
 More than one argument, or a target that cannot be parsed, is an error (exit
 status 34).
 .SH OPTIONS
@@ -84,11 +80,11 @@ off, which is what a server using a self\-signed certificate needs. The connecti
 is then encrypted but not authenticated, and so open to interception. Using this
 option with any other kind of target is an error.
 .SH CONNECTION TARGET
-The target is either a bare
+The target is a bare
 .IR HOST : PORT ,
 which is taken to mean
 .BR tcp ,
-or a URI in one of the following forms:
+a bare absolute Unix\-domain socket path, or a URI in one of the following forms:
 .TP
 .BI tcp:// HOST : PORT /
 Plain, unencrypted TCP.
@@ -132,15 +128,35 @@ or a passphrase\-less key. Host\-key confirmation and password prompts still wor
 because
 .B ssh
 reads those from the controlling terminal rather than from standard input.
+.TP
+.BI socket:/// ABSOLUTE/PATH
+Connect directly to a filesystem pathname Unix\-domain socket. This transport is
+available only on Unix platforms. A bare
+.I /ABSOLUTE/PATH
+is equivalent shorthand.
+.IP
+The path names the socket itself: there is no
+.B :DISPLAY
+lookup or xpra socket\-directory discovery. Relative paths and Linux
+abstract\-namespace sockets are not supported. Socket targets are available only
+on the command line, not in the connection dialog.
 .PP
 Any other protocol is rejected. A port is required for every scheme except
+.B ssh
+and
+.BR socket ;
 .BR ssh ,
 which defaults to 22. For
 .B ssh
 the path component is the xpra display number (for example
 .BR ssh://server/100 );
-for the other schemes it is the HTTP path the server is published under, which is
-usually empty.
+for
+.BR tcp ,
+.BR ssl ,
+.B ws
+and
+.B wss
+it is the HTTP path the server is published under, which is usually empty.
 .PP
 The
 .I USER
