@@ -151,6 +151,16 @@ pub fn yaml_bytes(value: &Yaml) -> Vec<u8> {
 }
 
 
+// Look up a key in a hash, without assuming anything about the value's type: for the nested caps
+// dicts (`mmap.write.token`) and packet options (a draw packet's `chunks` list) that the typed
+// accessors below cannot reach.
+pub fn yaml_hash<'a>(value: &'a Yaml, key: &str) -> Option<&'a Yaml> {
+    if let Yaml::Hash(hash) = value {
+        return hash.get(&Yaml::String(key.to_string()));
+    }
+    None
+}
+
 pub fn yaml_hash_str(value: &Yaml, key: String) -> String {
     if let Yaml::Hash(hash) = value {
         let yaml_key: Yaml = Yaml::String(key);

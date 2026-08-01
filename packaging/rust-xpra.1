@@ -236,6 +236,24 @@ Passed to
 .B pinentry
 as its terminal name, for the curses variants.
 .TP
+.B XPRA_MMAP
+Shared memory picture transfers, used when the server runs on the same host: the
+server writes uncompressed pixels into a file the client maps, instead of encoding
+them onto the socket. Enabled by default. Set to
+.B no
+to switch it off, or to an absolute path to pin the backing file \(em an existing
+file is used as it is and never removed, which is how a shared memory device can be
+used between a host and a virtual machine.
+.TP
+.B XPRA_MMAP_DIR
+The directory to create the shared memory file in. Defaults to the temporary
+directory.
+.TP
+.B XPRA_MMAP_SIZE
+The size of the shared memory area, with an optional
+.BR K ", " M " or " G
+suffix. Defaults to 128M; the server rejects anything below 64M.
+.TP
 .BR USER ", " USERNAME
 The user name sent to the server in the session handshake, when none was given in
 the connection dialog.

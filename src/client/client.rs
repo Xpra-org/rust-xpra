@@ -6,6 +6,7 @@ use std::fmt;
 use std::io;
 use std::rc::Rc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -31,7 +32,7 @@ use xpra::VERSION;
 use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_packet;
-use xpra::net::packet::{Packet, yaml_hash_bool};
+use xpra::net::packet::{Packet, yaml_hash, yaml_hash_bool, yaml_hash_str, yaml_i32};
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
 use super::auth_dialog::{AuthDialog, DialogAction};
@@ -42,6 +43,7 @@ use super::audio::{
 };
 use super::clipboard::start_clipboard_loop;
 use super::draw_decoder;
+use super::mmap::{self, MmapArea};
 use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::remote_logging::LogSink;
 #[cfg(windows)]
@@ -206,6 +208,11 @@ pub struct XpraClient {
     // prompting a second time (see process_challenge). Both `None` on the command-line path.
     pub username: Option<String>,
     pub password: Option<String>,
+    // the shared memory area the server writes pixels into when it runs on this same host (see
+    // mmap.rs). Created before the connection, offered in our `hello` and confirmed - or not - by
+    // the server's reply; the decode thread holds the other `Arc`. `None` when mmap is switched
+    // off, unsupported, or could not be set up.
+    pub mmap: Option<Arc<MmapArea>>,
     // the Windows notification-area icon and its "Exit" menu (see tray.rs), created in `resumed`
     // and removed when this client is dropped. `None` if the tray could not be created, which is
     // not fatal - the client just has no tray.
@@ -243,6 +250,44 @@ pub(crate) fn client_packet(packet_type: &str, message: &str) -> Packet {
 // timeout other than the idle one.
 fn disconnect_is_an_error(reason: &str) -> bool {
     reason.contains("error") || (reason.contains("timeout") && reason != "idle timeout")
+}
+
+// Read one `mmap` draw packet: instead of pixel data it carries (offset, length) pairs into the
+// shared memory area the server has been writing frames into (see mmap.rs). Runs on the decode
+// thread, in place of a decoder, and hands back the same tightly packed BGRX buffer the real
+// decoders produce.
+fn read_mmap_draw(packet: &Packet, area: &MmapArea) -> Result<Vec<u8>, String> {
+    let options = packet.main.get(10);
+    // the chunk list rides in the packet options; the server also leaves a copy in the packet's
+    // data field, which is the only place older clients look (paint_mmap, xpra
+    // client/gui/window/backing.py), so fall back to it.
+    let list = match options.and_then(|o| yaml_hash(o, "chunks")).or_else(|| packet.main.get(7)) {
+        Some(list) => list,
+        None => return Err("mmap draw packet without a chunk list".to_string()),
+    };
+    let chunks = mmap::parse_chunks(list)?;
+    let pixels = read_mmap_pixels(packet, area, options, &chunks);
+    // Whatever happened above: the server does not reclaim this part of the ring until we move
+    // `data_start` past it, so dropping a draw without releasing it would stall the session.
+    area.release(&chunks);
+    pixels
+}
+
+fn read_mmap_pixels(packet: &Packet, area: &MmapArea, options: Option<&Yaml>,
+                    chunks: &[(usize, usize)]) -> Result<Vec<u8>, String> {
+    // we advertise `encoding.rgb_formats = ["BGRX"]` and nothing else, so this is what the server
+    // writes - BGRA would do just as well (we ignore the alpha byte), anything else would not.
+    let rgb_format = options.map(|o| yaml_hash_str(o, "rgb_format".to_string())).unwrap_or_default();
+    if !rgb_format.is_empty() && !rgb_format.starts_with("BGR") {
+        return Err(format!("unsupported mmap pixel format {:?}", rgb_format));
+    }
+    // The source stride, which for a damage sub-rectangle is the whole window's rather than w*4.
+    // This is the only place a draw packet's rowstride is read: every other encoding we handle
+    // produces tightly packed output.
+    let rowstride = packet.main.get(9).map(yaml_i32).unwrap_or(0).max(0) as usize;
+    let w = packet.get_i32(4).max(0) as usize;
+    let h = packet.get_i32(5).max(0) as usize;
+    area.read_image(chunks, w, h, rowstride)
 }
 
 fn connection_error(e: &io::Error) -> String {
@@ -290,7 +335,8 @@ impl fmt::Debug for XpraClient {
 
 impl XpraClient {
 
-    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink, target: String) -> Self {
+    pub fn new(stream: Connection, proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>,
+               log_sink: LogSink, target: String, mmap: Option<Arc<MmapArea>>) -> Self {
         #[cfg(windows)]
         let audio_worker = match AudioWorker::start(proxy.clone()) {
             Ok(worker) => Some(worker),
@@ -326,6 +372,7 @@ impl XpraClient {
             target,
             username: None,
             password: None,
+            mmap,
             #[cfg(windows)]
             tray: None,
             #[cfg(windows)]
@@ -392,6 +439,16 @@ impl XpraClient {
         // handles directly, none is a container for another.
         encoding_caps["options"] = json!(encodings);
         encoding_caps["core"] = json!(encodings);
+        if self.mmap.is_some() {
+            // the raw pixel layouts we accept, which is what the server writes into the mmap area
+            // (mmap_encode, xpra server/window/compress.py). This is *not* optional: the server
+            // defaults to ("RGB",) - three bytes per pixel - which window::paint cannot render.
+            // BGRX is both what it happens to want and X11's native little-endian layout, so the
+            // server ends up doing no conversion at all. We list no alpha format: our framebuffer
+            // is opaque 0x00RRGGBB, and advertising only BGRX makes the server flatten any window
+            // that has an alpha channel for us.
+            encoding_caps["rgb_formats"] = json!(["BGRX"]);
+        }
         let mut packet = json!(["hello", {
             "version": VERSION,
             // the packet encoders we can read, negotiated against the server's own list
@@ -480,6 +537,14 @@ impl XpraClient {
             // padding so a passive observer can't infer the password length from the packet size
             // (only meaningful over ssl/wss); a throwaway random-hex string, like xpra's own.
             caps["challenge_padding"] = json!(secure_hex(64));
+        }
+        // Offer the shared memory area for the server to write pixels into (see mmap.rs). The
+        // prefix is from *our* point of view: our "read" area is the server's write area, which is
+        // how it looks the capability up (`tdcaps.dictget("read")`, xpra server/source/mmap.py).
+        // Prefixed only: the read/write split landed in xpra 6.3, below the 6.4 protocol we
+        // announce, so the unprefixed legacy form would be dead weight.
+        if let Some(area) = &self.mmap {
+            packet[1]["mmap"] = json!({ "read": area.caps() });
         }
         // Audio probing happened before this hello was built. Advertise only the asynchronous
         // request here; the decoder list is sent later in `audio-capabilities`.
@@ -718,7 +783,8 @@ impl XpraClient {
         }).unwrap();
     }
 
-    pub fn start_draw_decode_loop(proxy: EventLoopProxy<Packet>, receiver: Receiver<Packet>) {
+    pub fn start_draw_decode_loop(proxy: EventLoopProxy<Packet>, receiver: Receiver<Packet>,
+                                  mmap: Option<Arc<MmapArea>>) {
         thread::Builder::new().name("decode".to_string()).spawn(move || {
             info!("decoding thread started");
             // Per-window H.264 decoders (Windows / Media Foundation). H.264 is inter-frame
@@ -753,7 +819,9 @@ impl XpraClient {
                 let w = packet.get_i32(4);
                 let h = packet.get_i32(5);
                 let coding = packet.get_str(6);
-                let data = packet.get_bytes(7);
+                // an mmap draw has no pixel data in the packet at all - field 7 holds a copy of
+                // its chunk list, which read_mmap_draw picks up from the options instead.
+                let data = if coding == "mmap" { Vec::new() } else { packet.get_bytes(7) };
                 let seq = packet.get_i64(8);
                 debug!("wid {:#x} got {:?}x{:?} {:?} draw packet", wid, w, h, coding);
 
@@ -783,6 +851,13 @@ impl XpraClient {
                     #[cfg(not(windows))]
                     {
                         Err("h264 decoding is only supported on Windows".to_string())
+                    }
+                } else if coding == "mmap" {
+                    match &mmap {
+                        Some(area) => read_mmap_draw(&packet, area).map(Some),
+                        // the server only sends these once it has verified our area, so this
+                        // cannot happen - but it must not be painted as if it were pixel data.
+                        None => Err("received an mmap draw without an mmap area".to_string()),
                     }
                 } else {
                     draw_decoder::decode(&coding, data).map(Some)
@@ -818,7 +893,7 @@ impl XpraClient {
         match packet_type {
             "hello" => {
                 assert!(p.len() > 1);
-                self.process_hello(&p.main[1]);
+                self.process_hello(event_loop, &p.main[1]);
             }
             #[cfg(windows)]
             AUDIO_CAPABILITIES_PACKET => {
@@ -885,7 +960,10 @@ impl XpraClient {
                 }
             }
             "draw-decoded" => self.process_draw_decoded(&mut p),
-            "draw-failed" => self.process_draw_failed(&p),
+            // both are client-side packet types the decode thread synthesizes for a draw it could
+            // not turn into pixels; either way the sequence still has to be acked, or the server's
+            // damage bookkeeping for that window stops making progress.
+            "draw-failed" | "decoding-failed" => self.process_draw_failed(&p),
             "ping" => self.process_ping(&p),
             // our own periodic ping, fired by the ping timer thread (start_ping_loop); "send-ping"
             // is a client-side packet type like "draw-decoded", not something on the wire.
@@ -1135,7 +1213,8 @@ impl XpraClient {
         self.quit(event_loop, ExitCode::AuthenticationFailed);
     }
 
-    fn process_hello(&mut self, hello: &Yaml) {
+    fn process_hello(&mut self, event_loop: &ActiveEventLoop, hello: &Yaml) {
+        self.process_mmap_caps(event_loop, hello);
         match &hello {
             Yaml::Hash(hash) => {
                 let version_key: Yaml = Yaml::String(VERSION_KEY_STR.to_string());
@@ -1185,6 +1264,39 @@ impl XpraClient {
                 }
             },
             _ => error!("unexpected hello data type: {:?}", hello),
+        }
+    }
+
+    // Second half of the mmap handshake: the server has opened the area we offered in our hello,
+    // written its own token into it and told us where. Verify it, then drop the backing file -
+    // the server has it mapped by now and neither side needs the directory entry any more.
+    // Keeping the area means the server will send us `mmap` draws; dropping it means it won't.
+    fn process_mmap_caps(&mut self, event_loop: &ActiveEventLoop, hello: &Yaml) {
+        let area = match &self.mmap {
+            Some(area) => area,
+            None => return,
+        };
+        let verified = area.check_server_caps(hello);
+        let size = area.size();
+        // whatever the outcome: the server has the file mapped by now, so the directory entry has
+        // done its job. The mapping itself survives being unlinked.
+        area.unlink();
+        match verified {
+            Ok(true) => {
+                info!("enabled fast mmap picture transfers using a {}MB shared memory area",
+                      size / 1024 / 1024);
+            }
+            Ok(false) => {
+                debug!("the server is not using our mmap area");
+                self.mmap = None;
+            }
+            Err(message) => {
+                // The server believes mmap is live and will send draws referencing an area we
+                // cannot trust - most likely a file of the same name on a *different* host.
+                error!("mmap {}", message);
+                self.mmap = None;
+                self.quit(event_loop, ExitCode::MmapTokenFailure);
+            }
         }
     }
 

@@ -17,7 +17,8 @@ xpra 6.5, two of which (`clipboard-data`, and the argument order of `window-draw
 *receives* are still the pre-6.5 ones.
 
 There is no server implementation. Plain-text clipboard synchronization is supported, as is automatic
-server-to-client speaker forwarding on Windows.
+server-to-client speaker forwarding on Windows. On Linux, a server running on the same host sends its pixels
+through shared memory rather than the socket — see [Shared memory transfers](#shared-memory-transfers).
 
 On MS Windows there is a system tray icon with an **Exit** menu entry, and server-forwarded
 notifications are shown as balloons on it — see [System tray](#system-tray). Elsewhere notifications are only
@@ -176,6 +177,33 @@ for confidentiality.
 
 `jpeg` (libjpeg-turbo), `png` (libspng), `webp` (libwebp), and `h264` on Windows only (decoded by the OS through
 Media Foundation, no codec is bundled).
+
+### Shared memory transfers
+
+When the server runs on the same host as the client, encoding pixels only to decode them again is wasted work.
+Xpra's answer is `mmap`: the client creates a backing file, maps it shared and tells the server where it is, and
+the server writes raw uncompressed frames straight into it — the `draw` packets then carry nothing but offsets
+into that area. Transfers become lossless and cost a `memcpy` instead of a decode.
+
+This is **on by default on Linux** (as it is in xpra's own client), for the server → client direction only.
+Nothing has to be configured and nothing is lost when it does not apply: the client always offers an area, and a
+server that cannot open the file — because it is on another host — simply declines, leaving the session on the
+usual picture encodings. Neither side compares hostnames; each writes a random token into the area for the other
+to read back, which is what establishes that the two really are looking at the same memory.
+
+The backing file is created in the temporary directory, is 128MB and sparse, and is unlinked as soon as the
+server has it open, so it never outlives the handshake. Note that while mmap is in use the server stops using
+every other picture encoding, which is the intended effect.
+
+| Variable         | Effect                                                                          |
+|------------------|---------------------------------------------------------------------------------|
+| `XPRA_MMAP`      | `no` to switch it off; an absolute path to pin the backing file (an existing file is used as-is and never removed, which is how a [virtio-shmem](https://github.com/Xpra-org/xpra/blob/master/docs/Subsystems/MMAP.md) device is shared between a host and a guest) |
+| `XPRA_MMAP_DIR`  | the directory to create the file in (the temporary directory by default)         |
+| `XPRA_MMAP_SIZE` | the size of the area, with an optional `K`/`M`/`G` suffix (128M default, 64M minimum — the server rejects anything smaller) |
+
+Not implemented: the client → server direction (the server only uses it for webcam frames, which this client
+does not have), and Windows, where the equivalent is a named file mapping rather than a file and would only ever
+help against a shadow server on the same machine.
 
 ### Linking libwebp
 

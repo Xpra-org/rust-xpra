@@ -11,6 +11,9 @@ pub enum ExitCode {
     SshFailure = 8,
     // an unusable / unparseable packet from an established session
     PacketFailure = 9,
+    // the server wrote its mmap token into a *different* file than the one we mapped: same path,
+    // different host (see client/mmap.rs)
+    MmapTokenFailure = 10,
     InternalError = 14,
     SslFailure = 16,
     // we never got a working session: refused / unreachable / not an xpra server

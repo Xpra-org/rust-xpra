@@ -303,7 +303,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
   - `window.rs`: `XpraWindow` owns a `winit::window::Window`, a `softbuffer::Surface`, and a persistent
     `framebuffer: Vec<u32>` (softbuffer only hands you the *live* to-be-presented buffer on each
     `buffer_mut()` call, not a persistently addressable store, so `XpraWindow` keeps its own full-window pixel
-    buffer as the source of truth). `paint()` converts decoded pixels (jpeg → `BGRA`, png → `RGBA8`) into
+    buffer as the source of truth). `paint()` converts decoded pixels (jpeg/webp/h264/mmap → `BGRA`,
+    png → `RGBA8`) into
     softbuffer's `0x00RRGGBB` `u32` format per-pixel and writes the damaged sub-rect into `framebuffer`;
     `draw_screen()` (on `WindowEvent::RedrawRequested`) copies the whole `framebuffer` into the surface buffer
     and presents it; `resize()` reallocates `framebuffer` (zero-filled — relies on the server re-sending damage
@@ -313,6 +314,49 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     (one packet in, one image out). `webp` uses `WebPDecodeBGRA`, which both allocates its output (so the pixels
     have to be copied into a `Vec` and the buffer handed back to `WebPFree`) and hands back BGRA — the same layout
     turbojpeg produces, so `window::paint` treats `webp` exactly like `jpeg` and no new pixel path was needed.
+  - `mmap.rs` (POSIX-only): **shared-memory picture transfers**, server → client. When both ends are on the
+    same host, the server writes raw pixels into a file we create and map `MAP_SHARED`, and its `draw` packets
+    carry only `(offset, length)` pairs into that area instead of an encoded image. On by default (like xpra's
+    `--mmap=auto`); `XPRA_MMAP=no` turns it off, `XPRA_MMAP=/path` pins the backing file (an existing one is
+    taken as-is and never removed — that is how xpra's virtio-shmem setup works), `XPRA_MMAP_DIR` /
+    `XPRA_MMAP_SIZE` tune the rest. **No new crate**: `std` already links libc, so the only FFI is two
+    `unsafe extern "C"` declarations (`mmap`/`munmap`) plus `PROT_READ|PROT_WRITE`/`MAP_SHARED` — same
+    hand-rolled-over-a-library preference as `net/sha256.rs` and `net/websocket.rs`. Windows would need a
+    *named file mapping* rather than a file (it would only ever help against a shadow server on the same
+    machine), so `MmapArea::create` just returns `None` there and no capability is advertised at all.
+    The traps, all of them easy to regress:
+    - **The prefixes cross over.** We send `mmap.read` (the area *we* read from); the server looks it up as
+      its write area (`write_caps = tdcaps.dictget("read")`, xpra `server/source/mmap.py`) and replies under
+      `mmap.write`, which is what we must read back. The prefixed form arrived in xpra **6.3**, below the 6.4
+      protocol we announce, so the pre-6.3 unprefixed spelling is not sent (it *is* still accepted inbound,
+      since a backwards-compatible server duplicates its caps that way).
+    - **The token exchange is the locality check.** There is no hostname comparison anywhere: each side writes
+      a random token into the area and has the other read it back. A remote server simply fails to open the
+      path (or finds a different file) and answers with no caps — `check_server_caps` returns `Ok(false)`, the
+      area is dropped and the session carries on with jpeg/webp. Only a token that is *present but wrong* is
+      fatal (`MmapTokenFailure`, 10): the server then believes mmap is live and is writing pixels somewhere we
+      cannot see. The server's token is `uuid4().int` zero-padded to 128 bytes, i.e. **128 bits**, which
+      yaml-rust2 hands back as a `Yaml::Real` holding the decimal digits rather than a `Yaml::Integer` — hence
+      the `u128` parse. Ours is 8 bytes, so it stays inside what the JSON-as-YAML writer can emit.
+    - **`encoding.rgb_formats = ["BGRX"]` is mandatory**, not decoration: the server defaults to `("RGB",)`,
+      three bytes per pixel, which `window::paint` cannot render. BGRX is also X11's native little-endian
+      layout, so the server ends up doing no conversion at all, and listing no alpha format makes it flatten
+      any window that has one (our framebuffer is opaque `0x00RRGGBB`).
+    - **`rowstride` (draw packet field 9) finally matters** — this is the only place it is read. For a damage
+      sub-rectangle it is the *whole window's* stride, not `w*4`: xpra hands out zero-copy sub-images that keep
+      their parent's stride (`XImageWrapper.get_sub_image`). `destride` copies row by row into a tightly packed
+      `w*h*4` buffer, so everything downstream sees the same shape turbojpeg/spng/libwebp produce.
+    - **Every mmap draw must end in `release()`**, painted or not. The first 8 bytes of the area are two u32
+      control words in native byte order — `data_start` (ours) and `data_end` (the server's) — and the server
+      does not reuse ring space until `data_start` moves past it (xpra `server/window/compress.py`: "never
+      cancel mmap after encoding because we need to reclaim the space"). Hence the `Ordering::Release` store
+      after the copy, and the release on the error paths in `read_mmap_draw`. The server wraps the ring and
+      will split one image into **two chunks** at an arbitrary byte offset, so a single row can straddle them.
+    - The area is **unlinked as soon as the handshake is over** (the server has it mapped by then), which is
+      why `unlink` takes `&self` behind an `AtomicBool`: the decode thread holds the other `Arc`.
+    - Enabling mmap makes the server stop using **every other encoding** for non-shaped, non-grayscale windows
+      (`update_encoding_selection`) — that is the point, not a bug. The area must be ≥ 64MiB or the server
+      discards it (`MMAP_Server.min_size`); the default is 128MiB, sparse.
   - `mediafoundation.rs` (Windows-only, `#[cfg(windows)]`): `h264` video decode via Media Foundation — no
     third-party codec is linked (the decoder lives in the OS, `msmpeg2vdec.dll`; +~13KB to the binary, just the
     COM/MF bindings from the `windows` crate). Pipeline is `CLSID_CMSH264DecoderMFT` (H.264 Annex-B → NV12) →
@@ -369,7 +413,10 @@ Three threads, and GUI/`winit`/`softbuffer` calls must only ever happen on the U
    over a plain `mpsc::Sender<Packet>` (no `EventLoopProxy` equivalent exists for UI-thread → other-thread), calls
    `draw_decoder::decode` to turn compressed image data into a raw pixel buffer off the UI thread, then sends the
    result back to the UI thread as a synthesized `draw-decoded` (or `decoding-failed`) packet via its own
-   `EventLoopProxy<Packet>` clone.
+   `EventLoopProxy<Packet>` clone. `mmap` draws go through this same thread (holding an `Arc<MmapArea>`) rather
+   than being read on the UI thread, even though "decoding" one is only a strided copy: routing every coding
+   through one channel is what keeps draws in the order the server sent them, which matters because a shaped or
+   grayscale window still gets a real encoding while the rest of the session is on mmap.
 
 `ApplicationHandler::user_event` is the only place that receives packets from these threads and dispatches them
 via `do_process_packet`.
@@ -393,6 +440,7 @@ wrapper scripts see the same values as with the python client: `ConnectionFailed
 before there is a session (connect refused, ws handshake, garbage from a non-xpra peer, kicked out before
 `startup-complete`), `SslFailure`(16)/`SshFailure`(8) for those transports' setup, `ConnectionLost`(1) once the
 session was up, `PacketFailure`(9) for an unparseable packet mid-session, `AuthenticationFailed`(28),
+`MmapTokenFailure`(10) for a shared-memory area the server wrote a wrong token into (see `client/mmap.rs`),
 `ArgumentMismatch`(34) for a bad command line, and `Ok`(0) for a plain server-sent `disconnect`. The
 before/after-`startup_complete` split and `disconnect_is_an_error` mirror xpra's `client/base/client.py`
 (`_process_connection_lost`, `server_disconnect_exit_code`) — a disconnect whose reason mentions "error" (or a

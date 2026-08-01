@@ -4,6 +4,7 @@ use std::env;
 use std::net::TcpStream;
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use log::{debug, error, info, LevelFilter};
@@ -22,6 +23,7 @@ use xpra::net::{ssh, tls, websocket};
 mod client;
 use client::client::{client_packet, XpraClient};
 use client::connect_dialog::{ConnectAction, ConnectDetails, ConnectDialog};
+use client::mmap::MmapArea;
 use client::remote_logging::{self, LogSink};
 
 
@@ -64,6 +66,12 @@ Environment:
   XPRA_PASSWORD     the session password, used to answer the server's authentication
                     challenge without prompting
   PINENTRY_PROGRAM  the pinentry binary to prompt with, when there is no XPRA_PASSWORD
+  XPRA_MMAP         'no' to switch off shared memory picture transfers, or the path of
+                    the backing file to use for them (Linux only, on by default)
+  XPRA_MMAP_DIR     the directory to create the shared memory file in (the temporary
+                    directory by default)
+  XPRA_MMAP_SIZE    the size of the shared memory area, with an optional K/M/G suffix
+                    (128M by default, 64M minimum)
   NO_COLOR          never colour the log output
 
 See rust-xpra(1), or https://github.com/Xpra-org/rust-xpra, for the full documentation.
@@ -136,9 +144,12 @@ fn run(log_sink: LogSink) -> ExitCode {
     // this channel is used for sending 'draw' packets from the UI thread to the decode thread:
     let (decode_tx, decode_rx) = channel::<Packet>();
     let proxy = event_loop.create_proxy();
-    XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx);
+    // the mmap area, if we can have one: offered to the server in the hello, and read from by the
+    // decode thread in place of a decoder for the `mmap` encoding.
+    let mmap = MmapArea::create().map(Arc::new);
+    XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx, mmap.clone());
 
-    let mut app = App::new(proxy, decode_tx, log_sink);
+    let mut app = App::new(proxy, decode_tx, log_sink, mmap);
     if let Some((connection, target)) = session {
         // args[1] as typed, rather than the parsed target: it is what the user will recognise in
         // the system tray's tooltip and menu header (see client/tray.rs).
@@ -166,6 +177,10 @@ struct App {
     proxy: EventLoopProxy<Packet>,
     decode_sender: Sender<Packet>,
     log_sink: LogSink,
+    // the shared memory area for mmap picture transfers (client/mmap.rs), created once for the
+    // process and shared with the decode thread. It depends on nothing but its own size, so it is
+    // ready before we know whether the target came from the command line or from the dialog.
+    mmap: Option<Arc<MmapArea>>,
     // the connection attempt started from the dialog: what the user asked for, and the channel the
     // worker thread hands the outcome back on (see start_connect / finish_connect).
     pending: Option<ConnectDetails>,
@@ -186,13 +201,15 @@ enum AppState {
 const CONNECT_RESULT: &str = "connect-result";
 
 impl App {
-    fn new(proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink) -> Self {
+    fn new(proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink,
+           mmap: Option<Arc<MmapArea>>) -> Self {
         App {
             state: AppState::Prompt(None),
             context: None,
             proxy,
             decode_sender,
             log_sink,
+            mmap,
             pending: None,
             connect_rx: None,
             exit_code: None,
@@ -212,6 +229,7 @@ impl App {
             self.decode_sender.clone(),
             self.log_sink.clone(),
             target,
+            self.mmap.clone(),
         );
         client.username = username;
         client.password = password;

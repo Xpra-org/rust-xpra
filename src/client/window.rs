@@ -62,9 +62,10 @@ impl XpraWindow {
         }
         // convert the decoded bytes into softbuffer's 0x00RRGGBB u32 pixels,
         // and composite them into our persistent framebuffer at (x,y):
-        let to_pixel: fn(&[u8]) -> u32 = if coding == "jpeg" || coding == "h264" || coding == "webp" {
-            // turbojpeg outputs BGRA, and so do WebPDecodeBGRA and the Media Foundation h264 path
-            // (RGB32):
+        let to_pixel: fn(&[u8]) -> u32 = if coding == "jpeg" || coding == "h264" || coding == "webp"
+                || coding == "mmap" {
+            // turbojpeg outputs BGRA, and so do WebPDecodeBGRA, the Media Foundation h264 path
+            // (RGB32) and the shared memory area (we ask the server for BGRX, see send_hello):
             |px: &[u8]| (px[2] as u32) << 16 | (px[1] as u32) << 8 | (px[0] as u32)
         } else {
             // spng outputs RGBA8:
