@@ -8,7 +8,8 @@ Xpra client implemented in [rust](https://www.rust-lang.org/), for MS Windows an
 
 It builds on MS Windows and Linux (X11 and Wayland).
 
-It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). Password
+It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below). `ssl`/`wss` verify the
+server's certificate against the system trust store, unless `--ssl-insecure` says otherwise. Password
 authentication is supported (HMAC digest challenges — see [Authentication](#authentication) below).
 
 It requires an **xpra 6.6 or later** server: every packet it sends uses the packet types introduced in
@@ -87,9 +88,13 @@ cargo build
 ./target/debug/xpra ws://HOST:PORT/
 ./target/debug/xpra wss://HOST:PORT/
 ./target/debug/xpra ssh://[USER@]HOST[:PORT]/[DISPLAY]
+./target/debug/xpra --ssl-insecure ssl://HOST:PORT/   # skip certificate verification
 ./target/debug/xpra --help          # or -h: the same list, plus the environment variables
 ./target/debug/xpra --version       # this client's own version (not the xpra protocol version)
 ```
+
+Options and the target may be given in either order. An argument starting with `-` that is not a known option
+is an error rather than something to connect to, so a mistyped option can never be read as a hostname.
 
 Started **without any argument**, the client opens a small connection dialog instead of exiting: a protocol
 drop-down (which pre-fills the port with that protocol's default — 10000, or 22 for `ssh`), a host, a port, and
@@ -112,9 +117,17 @@ Only the `tcp`, `ssl`, `ws`, `wss` and `ssh` protocols are supported; any other 
 `ws` support (HTTP upgrade handshake and frame framing) is hand-rolled against `std` only, to avoid pulling in a
 websocket crate and its dependencies. `ssl`/`wss` use [`native-tls`](https://docs.rs/native-tls) (OpenSSL on
 Linux, Schannel on Windows, Security.framework on macOS) rather than a hand-rolled implementation, since TLS
-encryption (unlike WebSocket masking) is a real security boundary. **Certificate verification is currently
-disabled** (self-signed/invalid certificates are accepted) since this client has no way to configure a custom CA
-yet; `ssl`/`wss` connections are not authenticated against a trusted CA and are vulnerable to interception.
+encryption (unlike WebSocket masking) is a real security boundary. The server's certificate chain **and** its
+hostname are verified against the system trust store; `--ssl-insecure` turns both checks off, for the
+self-signed certificates xpra servers commonly use on local and test setups:
+
+```shell
+./target/debug/xpra --ssl-insecure ssl://HOST:PORT/
+```
+
+A connection made with `--ssl-insecure` is encrypted but not authenticated, and so is open to interception —
+it is no better than `tcp://` against an active attacker. There is no way to trust a private CA yet, so that
+flag is currently the only way to reach a server whose certificate the system does not already trust.
 
 `ssh` shells out to the system `ssh` binary and uses its stdin/stdout pipes as the byte stream (no SSH library
 dependency), running `xpra _proxy [DISPLAY]` on the remote end — the same mechanism xpra's own client uses to

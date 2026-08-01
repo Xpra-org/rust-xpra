@@ -25,16 +25,19 @@ use native_tls::{TlsConnector, TlsStream};
 // mouse/typing (triggering writes) while data was arriving.
 const RETRY_INTERVAL: Duration = Duration::from_millis(5);
 
-pub fn connect(stream: TcpStream, hostname: &str) -> Result<SharedTlsStream, String> {
-    let connector = TlsConnector::builder()
-        // xpra servers commonly use self-signed certificates for local/test
-        // setups, and this client has no way to configure a custom CA yet;
-        // accept whatever certificate is presented rather than hard failing.
-        // This connection is not authenticated against a trusted CA.
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+// `insecure` is the `--ssl-insecure` command-line option. By default the server's certificate
+// chain *and* its hostname are verified against the platform trust store, which is what
+// `native-tls` does out of the box; `insecure` turns both checks off, for the self-signed
+// certificates xpra servers commonly use on local/test setups. There is no way to configure a
+// custom CA yet, so that flag is currently the only escape hatch - see README.md.
+pub fn connect(stream: TcpStream, hostname: &str, insecure: bool) -> Result<SharedTlsStream, String> {
+    let mut builder = TlsConnector::builder();
+    if insecure {
+        builder
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true);
+    }
+    let connector = builder.build().map_err(|e| e.to_string())?;
     // the handshake itself runs on the still-blocking socket, before any
     // second thread exists to contend for it.
     let tls_stream = connector.connect(hostname, stream).map_err(|e| e.to_string())?;

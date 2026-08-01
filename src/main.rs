@@ -53,14 +53,20 @@ With no TARGET at all, a dialog asks for the connection details.
 Targets:
   HOST:PORT                           plain tcp, the same as tcp://HOST:PORT/
   tcp://HOST:PORT/                    plain tcp
-  ssl://HOST:PORT/                    tcp with TLS (certificates are NOT verified)
+  ssl://HOST:PORT/                    tcp with TLS
   ws://HOST:PORT/                     websocket over http
-  wss://HOST:PORT/                    websocket over https (certificates are NOT verified)
+  wss://HOST:PORT/                    websocket over https
   ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through the system 'ssh' (port 22 by default)
+
+ssl:// and wss:// verify the server's certificate chain and hostname against the
+system trust store. There is no way to trust a private CA yet, so a self-signed
+certificate needs --ssl-insecure.
 
 Options:
   -h, --help                          show this help and exit
       --version                       show the version and exit
+      --ssl-insecure                  connect to an ssl:// or wss:// server without
+                                      verifying its certificate or hostname
 
 Environment:
   XPRA_PASSWORD     the session password, used to answer the server's authentication
@@ -86,13 +92,43 @@ fn program_name(args: &[String]) -> &str {
         .unwrap_or("xpra")
 }
 
+// Everything the command line can say, once `--help` and `--version` have had their turn.
+#[derive(Default)]
+struct Options {
+    // the target as the user typed it; `None` means the connection dialog collects one instead.
+    target: Option<String>,
+    // `--ssl-insecure`: connect to an `ssl://`/`wss://` server without verifying its certificate
+    // chain or hostname. Off by default - see net::tls.
+    ssl_insecure: bool,
+}
+
+// Options and the target may come in either order, and there is at most one target. Unlike the
+// rest of the command line this is strict about spelling: an unrecognized `-...` argument is an
+// error rather than something to connect to, so a mistyped option can never be read as a hostname.
+fn parse_args(args: &[String]) -> Result<Options, String> {
+    let mut options = Options::default();
+    for arg in args.iter().skip(1) {
+        match arg.as_str() {
+            // dealt with before this runs, but they are still valid arguments:
+            "-h" | "--help" | "--version" => {}
+            "--ssl-insecure" => options.ssl_insecure = true,
+            _ if arg.starts_with('-') => return Err(format!("unrecognized option {:?}", arg)),
+            _ => match &options.target {
+                Some(first) => return Err(format!("more than one target: {:?} and {:?}", first, arg)),
+                None => options.target = Some(arg.clone()),
+            },
+        }
+    }
+    Ok(options)
+}
+
 fn run(log_sink: LogSink) -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let program = program_name(&args);
     // asking for help wins over anything else on the command line, however invalid the rest is.
     // Printed rather than logged: it is the output the user asked for, not a log record.
     if args.iter().skip(1).any(|arg| arg == "-h" || arg == "--help") {
-        println!("usage: {program} [TARGET]");
+        println!("usage: {program} [OPTIONS] [TARGET]");
         print!("\n{HELP}");
         return ExitCode::Ok;
     }
@@ -102,16 +138,20 @@ fn run(log_sink: LogSink) -> ExitCode {
         println!("{program} {CLIENT_VERSION}");
         return ExitCode::Ok;
     }
-    if args.len() > 2 {
-        error!("invalid number of arguments: {}", args.len() - 1);
-        error!("usage: {program} [TARGET]");
-        error!("try '{program} --help' for more information");
-        return ExitCode::ArgumentMismatch;
-    }
+    let options = match parse_args(&args) {
+        Ok(options) => options,
+        Err(message) => {
+            error!("{}", message);
+            error!("usage: {program} [OPTIONS] [TARGET]");
+            error!("try '{program} --help' for more information");
+            return ExitCode::ArgumentMismatch;
+        }
+    };
+    let ssl_insecure = options.ssl_insecure;
     // with a target on the command line we connect before doing anything else, so that a bad
     // address is reported (and exited on) without ever opening a window. With no argument, the
     // connection dialog collects one instead - see AppState below.
-    let session = match args.get(1) {
+    let session = match &options.target {
         Some(target_str) => {
             let target = match parse_target(target_str) {
                 Ok(target) => target,
@@ -121,7 +161,7 @@ fn run(log_sink: LogSink) -> ExitCode {
                     return ExitCode::ArgumentMismatch;
                 }
             };
-            match connect(&target) {
+            match connect(&target, ssl_insecure) {
                 Ok(connection) => Some((connection, target_str.clone())),
                 Err((exit_code, message)) => {
                     error!("{}", message);
@@ -149,7 +189,7 @@ fn run(log_sink: LogSink) -> ExitCode {
     let mmap = MmapArea::create().map(Arc::new);
     XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx, mmap.clone());
 
-    let mut app = App::new(proxy, decode_tx, log_sink, mmap);
+    let mut app = App::new(proxy, decode_tx, log_sink, mmap, ssl_insecure);
     if let Some((connection, target)) = session {
         // args[1] as typed, rather than the parsed target: it is what the user will recognise in
         // the system tray's tooltip and menu header (see client/tray.rs).
@@ -181,6 +221,9 @@ struct App {
     // process and shared with the decode thread. It depends on nothing but its own size, so it is
     // ready before we know whether the target came from the command line or from the dialog.
     mmap: Option<Arc<MmapArea>>,
+    // `--ssl-insecure`, applied to whatever the dialog ends up connecting to (the flag is given
+    // before the protocol is picked, so `connect` is what rejects it on a non-TLS target).
+    ssl_insecure: bool,
     // the connection attempt started from the dialog: what the user asked for, and the channel the
     // worker thread hands the outcome back on (see start_connect / finish_connect).
     pending: Option<ConnectDetails>,
@@ -202,7 +245,7 @@ const CONNECT_RESULT: &str = "connect-result";
 
 impl App {
     fn new(proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink,
-           mmap: Option<Arc<MmapArea>>) -> Self {
+           mmap: Option<Arc<MmapArea>>, ssl_insecure: bool) -> Self {
         App {
             state: AppState::Prompt(None),
             context: None,
@@ -210,6 +253,7 @@ impl App {
             decode_sender,
             log_sink,
             mmap,
+            ssl_insecure,
             pending: None,
             connect_rx: None,
             exit_code: None,
@@ -347,8 +391,9 @@ impl App {
         self.connect_rx = Some(rx);
         self.pending = Some(details);
         let proxy = self.proxy.clone();
+        let ssl_insecure = self.ssl_insecure;
         thread::Builder::new().name("connect".to_string()).spawn(move || {
-            let _ = tx.send(connect(&target));
+            let _ = tx.send(connect(&target, ssl_insecure));
             let _ = proxy.send_event(client_packet(CONNECT_RESULT, ""));
         }).unwrap();
     }
@@ -420,15 +465,25 @@ impl ApplicationHandler<Packet> for App {
 
 // Failures here mean we never had a session at all, so they map to the "failed to connect"
 // family of exit codes rather than `ConnectionLost`.
-fn connect(target: &Target) -> Result<Connection, (ExitCode, String)> {
+fn connect(target: &Target, ssl_insecure: bool) -> Result<Connection, (ExitCode, String)> {
+    // there is nothing to skip verifying on a connection that has no certificate: say so rather
+    // than let the option pass unnoticed. The dialog reports this the same way it reports a bad
+    // host, since the protocol is only picked once the flag has already been given.
+    if ssl_insecure && !matches!(target.scheme, Scheme::Tls | Scheme::WebSocketTls) {
+        return Err((ExitCode::ArgumentMismatch,
+                    "--ssl-insecure only applies to ssl:// and wss:// connections".to_string()));
+    }
     let tcp_connect = || {
         TcpStream::connect(&target.address).map_err(|e| {
             (ExitCode::ConnectionFailed, format!("failed to connect to {:?}: {}", target.address, e))
         })
     };
     let tls_connect = |stream| {
-        tls::connect(stream, host_only(&target.address)).map_err(|e| {
-            (ExitCode::SslFailure, format!("tls handshake failed: {}", e))
+        tls::connect(stream, host_only(&target.address), ssl_insecure).map_err(|e| {
+            // a self-signed certificate is the likely cause on an xpra server, and there is no way
+            // to trust a private CA yet, so point at the one option that gets past it.
+            let hint = if ssl_insecure { "" } else { " (--ssl-insecure skips verification)" };
+            (ExitCode::SslFailure, format!("tls handshake failed: {}{}", e, hint))
         })
     };
     // the websocket handshake is generic over the underlying stream (tcp or tls), so it can't
@@ -451,5 +506,69 @@ fn connect(target: &Target) -> Result<Connection, (ExitCode, String)> {
                 .map_err(|e| (ExitCode::SshFailure, format!("ssh connection failed: {}", e)))?;
             Ok(Connection::Ssh(ssh_stream))
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Options, String> {
+        let argv: Vec<String> = std::iter::once("xpra")
+            .chain(args.iter().copied())
+            .map(String::from)
+            .collect();
+        parse_args(&argv)
+    }
+
+    #[test]
+    fn options_and_target_come_in_either_order() {
+        for args in [
+            ["--ssl-insecure", "ssl://example.com:10000/"],
+            ["ssl://example.com:10000/", "--ssl-insecure"],
+        ] {
+            let options = parse(&args).unwrap();
+            assert_eq!(options.target.as_deref(), Some("ssl://example.com:10000/"));
+            assert!(options.ssl_insecure);
+        }
+    }
+
+    #[test]
+    fn no_arguments_means_the_dialog_and_verified_certificates() {
+        let options = parse(&[]).unwrap();
+        assert_eq!(options.target, None);
+        assert!(!options.ssl_insecure);
+    }
+
+    #[test]
+    fn a_target_alone_verifies_certificates() {
+        let options = parse(&["wss://example.com:10000/"]).unwrap();
+        assert!(!options.ssl_insecure);
+    }
+
+    // a mistyped option must never be taken for a hostname to connect to:
+    #[test]
+    fn misspelled_options_are_rejected() {
+        assert!(parse(&["-ssl-insecure"]).is_err());
+        assert!(parse(&["--ssl_insecure"]).is_err());
+        assert!(parse(&["--ssl-insecure=yes"]).is_err());
+        assert!(parse(&["--insecure"]).is_err());
+        assert!(parse(&["tcp://example.com:10000/", "-ssl-insecure"]).is_err());
+    }
+
+    #[test]
+    fn only_one_target_is_accepted() {
+        assert!(parse(&["tcp://a:10000/", "tcp://b:10000/"]).is_err());
+    }
+
+    // --help and --version act before parse_args runs, but must still parse as valid arguments:
+    #[test]
+    fn help_and_version_are_valid_arguments() {
+        assert!(parse(&["-h"]).is_ok());
+        assert!(parse(&["--help"]).is_ok());
+        assert!(parse(&["--version"]).is_ok());
+        assert_eq!(parse(&["--version", "tcp://a:10000/"]).unwrap().target.as_deref(),
+                   Some("tcp://a:10000/"));
     }
 }

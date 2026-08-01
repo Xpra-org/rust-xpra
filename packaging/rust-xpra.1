@@ -10,6 +10,7 @@
 rust\-xpra \- Xpra client written in Rust
 .SH SYNOPSIS
 .B rust\-xpra
+.RI [ OPTIONS ]
 .RI [ HOST : PORT " | " URI ]
 .br
 .B rust\-xpra
@@ -48,9 +49,17 @@ and
 More than one argument, or a target that cannot be parsed, is an error (exit
 status 34).
 .SH OPTIONS
-Both options are honoured wherever they appear on the command line, even alongside
-arguments that would otherwise be rejected. Each prints to standard output and
-exits successfully.
+Options and the connection target may be given in either order. An argument that
+begins with
+.B \-
+and is not one of the options below is an error rather than a target, so a mistyped
+option is never taken for a host name.
+.PP
+.B \-\-help
+and
+.B \-\-version
+are honoured wherever they appear on the command line, even alongside arguments that
+would otherwise be rejected. Each prints to standard output and exits successfully.
 .TP
 .BR \-h ", " \-\-help
 Print a short summary of the usage, the connection targets and the environment
@@ -63,6 +72,17 @@ itself, and not the version of the
 .B xpra
 protocol it announces to the server, which follows the xpra release whose protocol
 it implements.
+.TP
+.B \-\-ssl\-insecure
+Connect to an
+.B ssl://
+or
+.B wss://
+server without verifying its certificate chain or its host name. Certificates are
+verified against the system trust store by default; this option turns both checks
+off, which is what a server using a self\-signed certificate needs. The connection
+is then encrypted but not authenticated, and so open to interception. Using this
+option with any other kind of target is an error.
 .SH CONNECTION TARGET
 The target is either a bare
 .IR HOST : PORT ,
@@ -74,9 +94,10 @@ or a URI in one of the following forms:
 Plain, unencrypted TCP.
 .TP
 .BI ssl:// HOST : PORT /
-TCP with TLS.
-.B Certificate verification is currently disabled
-(see
+TCP with TLS. The certificate and host name are verified against the system trust
+store unless
+.B \-\-ssl\-insecure
+is given (see
 .B LIMITATIONS
 below).
 .TP
@@ -84,7 +105,9 @@ below).
 The xpra WebSocket transport over plain HTTP.
 .TP
 .BI wss:// HOST : PORT /
-The xpra WebSocket transport over HTTPS. Certificates are not verified, as with
+The xpra WebSocket transport over HTTPS. Certificates are verified, and
+.B \-\-ssl\-insecure
+applies, as with
 .BR ssl .
 .TP
 .BI ssh:// [ USER @] HOST [: PORT ]/[ DISPLAY ]
@@ -302,14 +325,17 @@ Authentication failed \- usually a wrong password.
 .B 34
 The command line was invalid.
 .SH LIMITATIONS
-.B Certificate verification is disabled
-for
+.B There is no way to trust a private certificate authority.
 .B ssl
 and
-.BR wss :
-self\-signed and otherwise invalid certificates are accepted, because there is no
-way to configure a certificate authority yet. Those connections are encrypted but
-not authenticated, and are therefore open to interception.
+.B wss
+connections are verified against the system trust store, so a server whose
+certificate is self\-signed, or issued by a CA the system does not already know,
+can only be reached with
+.BR \-\-ssl\-insecure ,
+which skips verification entirely rather than trusting that one certificate. Such
+a connection is encrypted but not authenticated, and is therefore open to
+interception.
 .PP
 Under a native Wayland session, the Wayland protocol does not let a client query or
 set its absolute position on the desktop, and has no equivalent of X11's

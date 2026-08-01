@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project status
 
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
-Not usable yet: `tcp`/`ssl`/`ws`/`wss` connections (and `ssl`/`wss` don't verify certificates yet — see
+Not usable yet: `tcp`/`ssl`/`ws`/`wss` connections (`ssl`/`wss` verify certificates against the system trust
+store, with `--ssl-insecure` to opt out; there is still no way to trust a private CA — see
 `README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard support. Password
 authentication *is* supported (the `hmac+sha256` challenge digest only — see the `challenge` flow below and
 `README.md`). See `README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock
@@ -75,8 +76,12 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     below) rather than the generic `Write::write_all`.
   - `net/tls.rs`: `ssl://`/`wss://`, via `native-tls` (OpenSSL/Schannel/Security.framework) rather than a
     hand-rolled implementation — unlike WebSocket masking, TLS encryption is a real security boundary.
-    **Certificate verification is currently disabled** (`danger_accept_invalid_certs`/`danger_accept_invalid_hostnames`)
-    since there's no way to configure a custom CA yet; see `README.md`. `SharedTlsStream` wraps the single
+    The certificate chain and the hostname **are verified** against the platform trust store, which is what
+    `native-tls` does with no configuration at all; `--ssl-insecure` turns both off
+    (`danger_accept_invalid_certs`/`danger_accept_invalid_hostnames`), mirroring the go client's flag of the same
+    name, and `main::connect` rejects that flag on a target that is not `ssl://`/`wss://`. There is still no way
+    to trust a private CA, so that flag is the only escape hatch for the self-signed certificates xpra servers
+    commonly use; see `README.md`. `SharedTlsStream` wraps the single
     `TlsStream` in an `Arc<Mutex<_>>` so the reader thread and the UI thread (writer) can share it — a single TLS
     session isn't safe for concurrent use by two threads (see xpra's own `SSLSocketConnection`, which hits the
     same OpenSSL issue). The socket is put in **true non-blocking mode**, not a read *timeout* on an otherwise-
