@@ -14,9 +14,8 @@ store, unless `--ssl-insecure` says otherwise. Password authentication is suppor
 see [Authentication](#authentication) below).
 
 It requires an **xpra 6.6 or later** server: every packet it sends uses the packet types introduced in
-xpra 6.5, two of which (`clipboard-data`, and the argument order of `window-draw-ack`) only settled in
-6.6. The server must be left in its default backwards-compatible mode, since the packets the client
-*receives* are still the pre-6.5 ones.
+xpra 6.5, and the `clipboard-data` layout only settled in 6.6. The server must be left in its default
+backwards-compatible mode, since the packets the client *receives* are still the pre-6.5 ones.
 
 There is no server implementation. Plain-text clipboard synchronization is supported, as is automatic
 server-to-client speaker forwarding on Windows. On Linux, a server running on the same host sends its pixels

@@ -149,6 +149,10 @@ fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
 pub struct XpraClient {
     pub hello_sent: bool,
     pub server_version: String,
+    // The server lists the packet types it accepts when we request them in `hello`. A server in
+    // backwards-compatible mode includes the legacy `damage-sequence` alias; older servers which
+    // do not return the list are assumed to be compatible, since that remains xpra's default.
+    pub server_backwards_compatible: bool,
     pub windows: HashMap<u64, XpraWindow>,
     pub id_map: HashMap<WindowId, u64>,
     pub stream: Connection,
@@ -325,6 +329,33 @@ fn ring_bell(pitch: i32, duration: i32) {
     }
 }
 
+fn draw_ack_packet(backwards_compatible: bool, packet_sequence: u64, wid: u64,
+                   width: u32, height: u32, decode_time: i128, message: String) -> Value {
+    if backwards_compatible {
+        json!([
+            "window-draw-ack", packet_sequence, wid, width, height, decode_time, message,
+        ])
+    } else {
+        json!([
+            "window-ack", wid, width, height, packet_sequence, decode_time, message,
+        ])
+    }
+}
+
+fn server_backwards_compatible(hello: &Yaml) -> Option<bool> {
+    let Yaml::Hash(hash) = hello else {
+        return None;
+    };
+    let Some(Yaml::Array(packet_types)) =
+        hash.get(&Yaml::String("packet-types".to_string()))
+    else {
+        return None;
+    };
+    let has_packet_type = |name: &str| packet_types.iter()
+        .any(|value| matches!(value, Yaml::String(s) if s == name));
+    has_packet_type("window-ack").then(|| has_packet_type("damage-sequence"))
+}
+
 impl fmt::Debug for XpraClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("XpraClient")
@@ -350,6 +381,7 @@ impl XpraClient {
         XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
+            server_backwards_compatible: true,
             windows: HashMap::new(),
             id_map: HashMap::new(),
             stream,
@@ -451,6 +483,9 @@ impl XpraClient {
         }
         let mut packet = json!(["hello", {
             "version": VERSION,
+            // Needed to distinguish the legacy draw acknowledgement layout from `window-ack`.
+            // Backwards-compatible servers include the `damage-sequence` alias in this list.
+            "wants": ["packet-types"],
             // the packet encoders we can read, negotiated against the server's own list
             // (enable_encoder_from_caps, xpra net/protocol/socket_handler.py).
             "encoders": ["yaml"],
@@ -674,13 +709,14 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    // Acknowledge a `draw` packet, which is what paces the server's damage output. `window-draw-ack`
-    // replaced `damage-sequence`, and it does *not* just rename it: the packet sequence moved from
-    // the front to after the geometry, so the fields now read wid, w, h, seq (xpra
-    // server/subsystem/window.py _process_window_draw_ack). Sending the legacy order under the new
-    // name would have the server read our sequence number as the window id.
+    // Acknowledge a `draw` packet, which is what paces the server's damage output. The legacy
+    // `window-draw-ack` packet starts with the packet sequence. The modern, wid-first layout has a
+    // distinct name, `window-ack`; reusing `window-draw-ack` for it would make a compatible server
+    // interpret the packet sequence as a window id.
     fn send_draw_ack(&mut self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
-        let packet = json!(["window-draw-ack", wid, w, h, seq, decode_time, message]);
+        let packet = draw_ack_packet(
+            self.server_backwards_compatible, seq, wid, w, h, decode_time, message,
+        );
         self.write_json(packet);
     }
 
@@ -1222,6 +1258,17 @@ impl XpraClient {
                 if let Yaml::String(version_str) = version {
                     info!("server version {:?}", version_str);
                     self.server_version = version_str.to_string();
+                }
+                // `damage-sequence` is registered only when the server runs in backwards-
+                // compatible mode. `window-ack` confirms this is a new enough server for the
+                // modern acknowledgement; if the capability is absent or predates that packet,
+                // retain the safe default above.
+                if let Some(backwards_compatible) = server_backwards_compatible(hello) {
+                    self.server_backwards_compatible = backwards_compatible;
+                    debug!(
+                        "server backwards-compatible packet mode: {}",
+                        self.server_backwards_compatible,
+                    );
                 }
                 // The server advertises whether it accepts forwarded client logs as
                 // `remote-logging: {receive, send}` (xpra server/subsystem/logging.py). When it
@@ -2331,7 +2378,10 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{WindowMetadataUpdate, WindowSizeConstraints};
+    use super::{
+        draw_ack_packet, server_backwards_compatible, WindowMetadataUpdate, WindowSizeConstraints,
+    };
+    use serde_json::json;
     use yaml_rust2::YamlLoader;
 
     fn parse_metadata(yaml: &str) -> WindowMetadataUpdate {
@@ -2394,5 +2444,36 @@ mod tests {
             metadata.size_constraints,
             Some(WindowSizeConstraints::default())
         );
+    }
+
+    #[test]
+    fn draw_ack_uses_legacy_layout_in_backwards_compatible_mode() {
+        assert_eq!(
+            draw_ack_packet(true, 17, 3, 640, 480, 2500, "decoded".to_string()),
+            json!(["window-draw-ack", 17, 3, 640, 480, 2500, "decoded"]),
+        );
+    }
+
+    #[test]
+    fn draw_ack_uses_window_ack_layout_in_modern_mode() {
+        assert_eq!(
+            draw_ack_packet(false, 17, 3, 640, 480, 2500, "decoded".to_string()),
+            json!(["window-ack", 3, 640, 480, 17, 2500, "decoded"]),
+        );
+    }
+
+    #[test]
+    fn packet_types_identify_server_compatibility_mode() {
+        let compatible = YamlLoader::load_from_str(
+            "{packet-types: [window-ack, window-draw-ack, damage-sequence]}",
+        ).unwrap();
+        let modern = YamlLoader::load_from_str(
+            "{packet-types: [window-ack, window-draw-ack]}",
+        ).unwrap();
+        let unspecified = YamlLoader::load_from_str("{version: 6.6}").unwrap();
+
+        assert_eq!(server_backwards_compatible(&compatible[0]), Some(true));
+        assert_eq!(server_backwards_compatible(&modern[0]), Some(false));
+        assert_eq!(server_backwards_compatible(&unspecified[0]), None);
     }
 }

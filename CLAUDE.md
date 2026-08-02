@@ -173,22 +173,24 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `lost-window`, `window-metadata`, `draw`, `draw-decoded`, `draw-failed`, `disconnect`, ...); outgoing packets
     are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
     `window-focus`, `pointer-motion`, `pointer-button`, `keyboard-event`, `window-map`, `window-configure`,
-    `window-close`, `window-draw-ack`, `ping`, `ping_echo`, `logging-event`, `connection-close`, the
+    `window-close`, `window-draw-ack`/`window-ack`, `ping`, `ping_echo`, `logging-event`, `connection-close`, the
     `clipboard-*` family and the `audio-*` family). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
-    - **Packet names are the post-6.5 ones** — the outgoing side uses no legacy packet type. xpra 6.5
-      renamed most client→server packets and put the old names behind `add_legacy_alias(...)` calls that
-      only run when the server has `BACKWARDS_COMPATIBLE` (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
+    - **Packet names use the post-6.5 forms** — apart from the mode-sensitive draw acknowledgement
+      detailed below. xpra 6.5 renamed most client→server packets and put the old names behind
+      `add_legacy_alias(...)` calls that only run when the server has `BACKWARDS_COMPATIBLE`
+      (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
       authoritative old→new table is xpra's `net/packet_type.py`. Three of the renames are *not* plain
       renames and must not be "simplified" back into positional packets: `keyboard-event` moved
       everything after `pressed` into an attributes dict, `window-configure` moved geometry/state/
       properties into a config dict, and `clipboard-data` (which replaced `clipboard-token`) moved the
-      targets and per-target payloads into an options dict. `window-draw-ack` is the sharp edge:
-      it replaced `damage-sequence` *and* reordered the fields to `wid, w, h, seq` — sending the old
-      order under the new name has the server read the packet sequence as a window id, which silently
-      wrecks its damage/batching bookkeeping. To check for regressions, run a server with
-      `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy name outright.
+      targets and per-target payloads into an options dict. Draw acknowledgement is the sharp edge:
+      the legacy `window-draw-ack` layout starts with `seq, wid, w, h`, while its modern replacement
+      `window-ack` uses `wid, w, h, seq`. The client requests the server's `packet-types` capability;
+      the legacy `damage-sequence` alias in that list identifies backwards-compatible mode. Older
+      servers which do not return the list default to the legacy layout. To check for regressions,
+      run a server with `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy name outright.
       Two hello capabilities are part of the same move: the packet encoder (`encoders: ["yaml"]`) and
       the picture encodings (`encoding.options`/`encoding.core`). Each replaced a pre-6.5 spelling —
       a bare `yaml: true` and a top-level `encodings` list — that the server reads only in
