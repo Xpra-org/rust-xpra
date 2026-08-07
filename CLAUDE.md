@@ -211,6 +211,19 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `pointer-ungrab` packets when a remote application grabs its pointer. The client asks winit
       for `CursorGrabMode::Confined`, falls back to `Locked`, tracks the owning `wid`, and releases
       the grab on an ungrab packet or before destroying the grabbed window.
+    - **Local display size**: the hello carries a nested `display` caps dict holding
+      `desktop_size` — the bounding box of every monitor winit reports, in physical pixels
+      (`total_display_size`, measured in `resumed` since that is the first callback with an
+      `ActiveEventLoop`, and cached on `XpraClient` so the challenge-reply hello matches). The
+      server logs it as "client total display size" and a seamless server resizes its virtual
+      screen to it (`do_parse_screen_info`, xpra `server/subsystem/display.py`). Two traps:
+      sending this dict is what instantiates the server's `DisplayConnection` subsystem at all
+      (`is_needed`), and once it is present the flattened pre-6.5 top-level spelling of these
+      attributes is no longer read — which is why `show-desktop` had to move *into* the dict.
+      `resize-events: false` opts out of the server's legacy `desktop_size` notifications, which
+      this client could not act on. No `screen_sizes`/`monitors` breakdown is sent: the server
+      would use it to place windows per-monitor, which needs the absolute desktop positions
+      Wayland does not give us.
     - **Window metadata**: `metadata.supported` is limited to the properties this backend applies:
       title, decorations, fullscreen, maximized/iconic state, above/below level, and size
       constraints. The same `apply_window_metadata` path handles initial `new-window` metadata and

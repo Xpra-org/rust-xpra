@@ -145,6 +145,41 @@ fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
     Some((*width as u32, *height as u32))
 }
 
+// The total size of the local display area, in physical pixels: the bounding box of every monitor
+// winit knows about, which is the "virtual screen" on Windows and the root window size on X11 (both
+// of which is what xpra's own client reports as `desktop_size`). The box is measured min-to-max
+// rather than from the origin because a monitor placed left of / above the primary one has negative
+// coordinates on Windows.
+//
+// `None` when there is no monitor to measure, or when the result falls outside what the server will
+// accept - it rejects anything above 32767 as invalid (`parse_client_caps`, xpra
+// server/source/display.py), and would then have no size at all, so send none rather than a bogus
+// one. `available_monitors` can legitimately come back empty (some Wayland compositors, a headless
+// X11 display), which is why this is an `Option` rather than a `(0, 0)` fallback.
+fn total_display_size(event_loop: &ActiveEventLoop) -> Option<(u32, u32)> {
+    let mut bounds: Option<(i64, i64, i64, i64)> = None;
+    for monitor in event_loop.available_monitors() {
+        let position = monitor.position();
+        let size = monitor.size();
+        if size.width == 0 || size.height == 0 {
+            continue;
+        }
+        let (left, top) = (position.x as i64, position.y as i64);
+        let (right, bottom) = (left + size.width as i64, top + size.height as i64);
+        bounds = Some(match bounds {
+            None => (left, top, right, bottom),
+            Some((l, t, r, b)) => (l.min(left), t.min(top), r.max(right), b.max(bottom)),
+        });
+    }
+    let (left, top, right, bottom) = bounds?;
+    let (width, height) = (right - left, bottom - top);
+    if width <= 0 || height <= 0 || width >= 32768 || height >= 32768 {
+        warn!("not reporting the invalid local display size {width}x{height}");
+        return None;
+    }
+    Some((width as u32, height as u32))
+}
+
 
 pub struct XpraClient {
     pub hello_sent: bool,
@@ -173,6 +208,12 @@ pub struct XpraClient {
     // kept so it can be applied to windows created after the last "cursor" packet. `None` = the
     // platform default cursor.
     pub current_cursor: Option<CustomCursor>,
+    // the total size of the local display area (the bounding box of every monitor, in physical
+    // pixels), sent to the server in `hello` - see `total_display_size` and `send_hello`. Filled in
+    // from `resumed`, which is the first callback that hands us an `ActiveEventLoop` to enumerate
+    // monitors with; `None` when winit reports no usable monitor, in which case we send no size at
+    // all rather than a bogus one.
+    pub desktop_size: Option<(u32, u32)>,
     // the window whose pointer is currently grabbed at the server's request. The grab is applied
     // through winit and must be explicitly released on pointer-ungrab or before that window is
     // destroyed.
@@ -393,6 +434,7 @@ impl XpraClient {
             start: Instant::now(),
             last_client_latency_ms: -1,
             current_cursor: None,
+            desktop_size: None,
             pointer_grabbed: None,
             auth_dialog: None,
             pending_challenge: None,
@@ -481,6 +523,32 @@ impl XpraClient {
             // that has an alpha channel for us.
             encoding_caps["rgb_formats"] = json!(["BGRX"]);
         }
+        // The nested "display" caps dict (xpra server/source/display.py, DisplayConnection). Sending
+        // it is what instantiates that subsystem server-side at all: `is_needed` looks for this key
+        // and, failing that, for the pre-6.5 spelling where these attributes were flattened into the
+        // top level - which it only accepts in backwards-compatible mode, so like the packet renames
+        // the legacy form is dead weight and is not sent. Watch out for the flattened keys the
+        // subsystem still reads from the *top* level when this dict is absent (`show-desktop`
+        // below): once the dict is present, only what is inside it is read.
+        let mut display_caps = json!({
+            // let the server forward "show the desktop" requests (EWMH _NET_SHOWING_DESKTOP); it
+            // only sends `show-desktop` packets if we advertise this. We honour them by minimizing
+            // / restoring our windows (see process_show_desktop).
+            "show-desktop": true,
+            // we have no way to resize the local display, so the server's notifications that *its*
+            // root window changed size (the legacy `desktop_size` packet) are of no use to us.
+            "resize-events": false,
+        });
+        // the total size of the local display area, which the server logs as "client total display
+        // size" and - on a seamless server that can resize its virtual screen - adopts as the size
+        // of that screen (`do_parse_screen_info` / `configure_best_screen_size`, xpra
+        // server/subsystem/display.py), so that remote windows are laid out for a desktop we can
+        // actually show them on. We deliberately send no `screen_sizes` / `monitors` breakdown: the
+        // server would use it to place windows per-monitor, which needs absolute desktop positions
+        // this client does not have on Wayland (see README.md).
+        if let Some((w, h)) = self.desktop_size {
+            display_caps["desktop_size"] = json!([w, h]);
+        }
         let mut packet = json!(["hello", {
             "version": VERSION,
             // Needed to distinguish the legacy draw acknowledgement layout from `window-ack`.
@@ -505,10 +573,7 @@ impl XpraClient {
             "mouse": true,
             "sharing": true,
             "bell": true,
-            // let the server forward "show the desktop" requests (EWMH _NET_SHOWING_DESKTOP); the
-            // server only sends `show-desktop` packets if we advertise this (server/source/display.py).
-            // We honour them by minimizing / restoring our windows (see process_show_desktop).
-            "show-desktop": true,
+            "display": display_caps,
             // authentication: we only implement the hmac+sha256 password digest, so advertise
             // just that. The server picks the challenge digest from these lists (choose_digest,
             // xpra auth/sys_auth_base.py), so listing one forces both to hmac+sha256 - the one
@@ -2277,6 +2342,14 @@ impl ApplicationHandler<Packet> for XpraClient {
             }
         }
         if !self.hello_sent {
+            // measured here because this is the first callback that hands us an `ActiveEventLoop`,
+            // which is what winit enumerates monitors through. Kept on `self` so the second hello
+            // that answers an authentication challenge reports the same size.
+            self.desktop_size = total_display_size(event_loop);
+            match self.desktop_size {
+                Some((w, h)) => info!("local display size: {w}x{h}"),
+                None => warn!("no local display size to report to the server"),
+            }
             self.start_read_loop();
             self.hello_sent = true;
             self.send_hello(None);
