@@ -211,19 +211,39 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `pointer-ungrab` packets when a remote application grabs its pointer. The client asks winit
       for `CursorGrabMode::Confined`, falls back to `Locked`, tracks the owning `wid`, and releases
       the grab on an ungrab packet or before destroying the grabbed window.
-    - **Local display size**: the hello carries a nested `display` caps dict holding
-      `desktop_size` — the bounding box of every monitor winit reports, in physical pixels
-      (`total_display_size`, measured in `resumed` since that is the first callback with an
-      `ActiveEventLoop`, and cached on `XpraClient` so the challenge-reply hello matches). The
-      server logs it as "client total display size" and a seamless server resizes its virtual
-      screen to it (`do_parse_screen_info`, xpra `server/subsystem/display.py`). Two traps:
-      sending this dict is what instantiates the server's `DisplayConnection` subsystem at all
-      (`is_needed`), and once it is present the flattened pre-6.5 top-level spelling of these
-      attributes is no longer read — which is why `show-desktop` had to move *into* the dict.
-      `resize-events: false` opts out of the server's legacy `desktop_size` notifications, which
-      this client could not act on. No `screen_sizes`/`monitors` breakdown is sent: the server
-      would use it to place windows per-monitor, which needs the absolute desktop positions
-      Wayland does not give us.
+    - **Local display**: the hello carries a nested `display` caps dict holding `desktop_size`
+      (the bounding box of every monitor, in physical pixels) and `monitors` (their individual
+      geometries). Both come from `local_monitors`/`total_display_size`, measured in `resumed`
+      since that is the first callback with an `ActiveEventLoop` — winit enumerates monitors
+      through it — and cached on `XpraClient` so the challenge-reply hello matches. The server
+      logs the total as "client total display size" and a seamless server resizes its virtual
+      screen to it (`do_parse_screen_info`, xpra `server/subsystem/display.py`); with `monitors`
+      as well, an X11 server whose dummy driver has RandR 1.6 goes further and *reproduces* the
+      layout as real virtual monitors (`mirror_client_monitor_layout` → `set_crtc_config`, xpra
+      `x11/subsystem/display.py`), so remote applications snap and maximize to the same edges the
+      user sees. Verified: the server's log goes from `monitor 0 is 'VFB-0'` to the local
+      connector's name and size. Traps:
+      - Sending this dict is what instantiates the server's `DisplayConnection` subsystem at all
+        (`is_needed`), and once it is present the flattened pre-6.5 top-level spelling of these
+        attributes is no longer read — which is why `show-desktop` had to move *into* the dict.
+      - `resize-events: false` opts out of the server's legacy `desktop_size` notifications, which
+        this client could not act on: it cannot resize the local display.
+      - Monitor geometries are **physical** pixels with their raw, possibly negative coordinates
+        (a monitor left of the primary one on Windows); the server rebases them itself
+        (`get_normalized_monitor_definitions`). This is why no `scale-factor` is sent — xpra's own
+        client reports GDK *logical* geometry plus an integer scale, and mixing the two
+        conventions would have the server apply the scale twice. `width-mm`/`height-mm` are
+        omitted too: winit exposes no physical dimensions and a number invented from an assumed
+        DPI would poison the server's DPI heuristics.
+      - The keys of the `monitors` dict are indices as *strings*, all our JSON-as-YAML writer can
+        emit; the server puts them back through `int()` (`validated_monitor_data`, xpra
+        `util/parsing.py` — also the list of every monitor attribute it accepts).
+      - `primary` is always false on Wayland, where winit's `primary_monitor` returns nothing by
+        design, and `available_monitors` can legitimately be empty (some compositors, a headless
+        X11 display) — hence no size being sent at all rather than a `0x0` fallback.
+      The legacy `screen_sizes` list is not sent: `monitors` replaced it in xpra 4.4, and the
+      server only falls back to parsing it when a client sends no `monitors`
+      (`get_monitor_definitions`).
     - **Window metadata**: `metadata.supported` is limited to the properties this backend applies:
       title, decorations, fullscreen, maximized/iconic state, above/below level, and size
       constraints. The same `apply_window_metadata` path handles initial `new-window` metadata and

@@ -145,27 +145,71 @@ fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
     Some((*width as u32, *height as u32))
 }
 
-// The total size of the local display area, in physical pixels: the bounding box of every monitor
-// winit knows about, which is the "virtual screen" on Windows and the root window size on X11 (both
-// of which is what xpra's own client reports as `desktop_size`). The box is measured min-to-max
-// rather than from the origin because a monitor placed left of / above the primary one has negative
-// coordinates on Windows.
+// One local monitor, in the terms xpra's `monitors` capability describes them (see
+// `validated_monitor_data`, xpra util/parsing.py, for the full set of attributes it accepts - these
+// are the ones winit can answer for).
+pub struct MonitorInfo {
+    pub name: String,
+    pub primary: bool,
+    // x, y, width, height in *physical* pixels. x/y may be negative: a monitor placed left of or
+    // above the primary one has negative coordinates on Windows.
+    pub geometry: (i32, i32, u32, u32),
+    // milli-hertz - so a 60Hz panel is 60000, not 60 - which is the unit xpra's monitor definitions
+    // use ("value is pre-multiplied by 1000", `get_client_refresh_rate` in xpra
+    // server/subsystem/display.py, which divides by 1000 again to get Hz) and, conveniently, the one
+    // winit reports in. `None` when winit does not know the mode's refresh rate.
+    pub refresh_rate_millihertz: Option<u32>,
+}
+
+// Every monitor winit knows about, in its own order - which is the order xpra indexes them by.
+//
+// Two attributes of xpra's monitor definitions are deliberately never filled in. `width-mm`/
+// `height-mm`: winit exposes no physical dimensions, and inventing them from an assumed DPI would
+// feed the server's DPI heuristics a fabricated number. `scale-factor`: xpra's own client reports
+// GDK's *logical* geometry alongside an integer scale, whereas everything here - these geometries,
+// `desktop_size`, and every window rectangle this client handles - is in physical pixels, so a
+// scale factor would only invite the server to apply it twice.
+//
+// The list can legitimately come back empty (some Wayland compositors, a headless X11 display), and
+// `primary` is always false on Wayland, where winit's `primary_monitor` returns nothing by design.
+fn local_monitors(event_loop: &ActiveEventLoop) -> Vec<MonitorInfo> {
+    let primary = event_loop.primary_monitor();
+    let mut monitors = Vec::new();
+    for monitor in event_loop.available_monitors() {
+        let size = monitor.size();
+        if size.width == 0 || size.height == 0 {
+            // a monitor with no current video mode tells us nothing and would only confuse the
+            // bounding box below.
+            continue;
+        }
+        let position = monitor.position();
+        monitors.push(MonitorInfo {
+            // xpra generates a name from the index when we send none, but winit's is better when
+            // there is one (the connector name on X11/Wayland, the device name on Windows).
+            name: monitor.name().unwrap_or_default(),
+            primary: Some(&monitor) == primary.as_ref(),
+            geometry: (position.x, position.y, size.width, size.height),
+            refresh_rate_millihertz: monitor.refresh_rate_millihertz(),
+        });
+    }
+    monitors
+}
+
+// The total size of the local display area, in physical pixels: the bounding box of every monitor,
+// which is the "virtual screen" on Windows and the root window size on X11 (both of which is what
+// xpra's own client reports as `desktop_size`). The box is measured min-to-max rather than from the
+// origin, because of those negative coordinates.
 //
 // `None` when there is no monitor to measure, or when the result falls outside what the server will
 // accept - it rejects anything above 32767 as invalid (`parse_client_caps`, xpra
 // server/source/display.py), and would then have no size at all, so send none rather than a bogus
-// one. `available_monitors` can legitimately come back empty (some Wayland compositors, a headless
-// X11 display), which is why this is an `Option` rather than a `(0, 0)` fallback.
-fn total_display_size(event_loop: &ActiveEventLoop) -> Option<(u32, u32)> {
+// one.
+fn total_display_size(monitors: &[MonitorInfo]) -> Option<(u32, u32)> {
     let mut bounds: Option<(i64, i64, i64, i64)> = None;
-    for monitor in event_loop.available_monitors() {
-        let position = monitor.position();
-        let size = monitor.size();
-        if size.width == 0 || size.height == 0 {
-            continue;
-        }
-        let (left, top) = (position.x as i64, position.y as i64);
-        let (right, bottom) = (left + size.width as i64, top + size.height as i64);
+    for monitor in monitors {
+        let (x, y, w, h) = monitor.geometry;
+        let (left, top) = (x as i64, y as i64);
+        let (right, bottom) = (left + w as i64, top + h as i64);
         bounds = Some(match bounds {
             None => (left, top, right, bottom),
             Some((l, t, r, b)) => (l.min(left), t.min(top), r.max(right), b.max(bottom)),
@@ -208,11 +252,12 @@ pub struct XpraClient {
     // kept so it can be applied to windows created after the last "cursor" packet. `None` = the
     // platform default cursor.
     pub current_cursor: Option<CustomCursor>,
-    // the total size of the local display area (the bounding box of every monitor, in physical
-    // pixels), sent to the server in `hello` - see `total_display_size` and `send_hello`. Filled in
-    // from `resumed`, which is the first callback that hands us an `ActiveEventLoop` to enumerate
-    // monitors with; `None` when winit reports no usable monitor, in which case we send no size at
-    // all rather than a bogus one.
+    // the local monitors and the total size of the display area they span (in physical pixels),
+    // both sent to the server in `hello` - see `local_monitors` / `total_display_size` and
+    // `send_hello`. Filled in from `resumed`, which is the first callback that hands us an
+    // `ActiveEventLoop` to enumerate monitors with. `desktop_size` is `None` when winit reports no
+    // usable monitor, in which case we send no size at all rather than a bogus one.
+    pub monitors: Vec<MonitorInfo>,
     pub desktop_size: Option<(u32, u32)>,
     // the window whose pointer is currently grabbed at the server's request. The grab is applied
     // through winit and must be explicitly released on pointer-ungrab or before that window is
@@ -434,6 +479,7 @@ impl XpraClient {
             start: Instant::now(),
             last_client_latency_ms: -1,
             current_cursor: None,
+            monitors: Vec::new(),
             desktop_size: None,
             pointer_grabbed: None,
             auth_dialog: None,
@@ -543,11 +589,38 @@ impl XpraClient {
         // size" and - on a seamless server that can resize its virtual screen - adopts as the size
         // of that screen (`do_parse_screen_info` / `configure_best_screen_size`, xpra
         // server/subsystem/display.py), so that remote windows are laid out for a desktop we can
-        // actually show them on. We deliberately send no `screen_sizes` / `monitors` breakdown: the
-        // server would use it to place windows per-monitor, which needs absolute desktop positions
-        // this client does not have on Wayland (see README.md).
+        // actually show them on.
         if let Some((w, h)) = self.desktop_size {
             display_caps["desktop_size"] = json!([w, h]);
+        }
+        // ... and its breakdown into individual monitors. An X11 server whose dummy driver has
+        // RandR 1.6 goes one better than resizing: it reproduces this layout as real virtual
+        // monitors (`mirror_client_monitor_layout` -> `set_crtc_config`, xpra
+        // x11/subsystem/display.py), so remote applications maximize and snap to the same edges the
+        // user sees locally. Everywhere else it is what makes per-monitor window placement possible
+        // (`MonitorLayout`, xpra util/screen.py).
+        //
+        // The keys are the monitor indices as strings, which is all our JSON-as-YAML writer can
+        // emit; the server puts them back through `int()` (`validated_monitor_data`). Geometries go
+        // out with their raw - possibly negative - coordinates, which the server rebases itself
+        // (`get_normalized_monitor_definitions`).
+        if !self.monitors.is_empty() {
+            let mut monitors = json!({});
+            for (index, monitor) in self.monitors.iter().enumerate() {
+                let (x, y, w, h) = monitor.geometry;
+                let mut mdef = json!({
+                    "geometry": [x, y, w, h],
+                    "primary": monitor.primary,
+                });
+                if !monitor.name.is_empty() {
+                    mdef["name"] = json!(monitor.name);
+                }
+                if let Some(rate) = monitor.refresh_rate_millihertz {
+                    mdef["refresh-rate"] = json!(rate);
+                }
+                monitors[index.to_string()] = mdef;
+            }
+            display_caps["monitors"] = monitors;
         }
         let mut packet = json!(["hello", {
             "version": VERSION,
@@ -2344,11 +2417,17 @@ impl ApplicationHandler<Packet> for XpraClient {
         if !self.hello_sent {
             // measured here because this is the first callback that hands us an `ActiveEventLoop`,
             // which is what winit enumerates monitors through. Kept on `self` so the second hello
-            // that answers an authentication challenge reports the same size.
-            self.desktop_size = total_display_size(event_loop);
+            // that answers an authentication challenge reports the same layout.
+            self.monitors = local_monitors(event_loop);
+            self.desktop_size = total_display_size(&self.monitors);
             match self.desktop_size {
                 Some((w, h)) => info!("local display size: {w}x{h}"),
                 None => warn!("no local display size to report to the server"),
+            }
+            for (index, monitor) in self.monitors.iter().enumerate() {
+                let (x, y, w, h) = monitor.geometry;
+                let primary = if monitor.primary { " (primary)" } else { "" };
+                info!("monitor {index} {:?}: {w}x{h} at {x},{y}{primary}", monitor.name);
             }
             self.start_read_loop();
             self.hello_sent = true;
