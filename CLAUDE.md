@@ -244,6 +244,33 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       The legacy `screen_sizes` list is not sent: `monitors` replaced it in xpra 4.4, and the
       server only falls back to parsing it when a client sends no `monitors`
       (`get_monitor_definitions`).
+    - **Monitor-relative coordinates**: every outgoing packet carrying a position sends, next to
+      the absolute pair, a `{"index", "position"}` descriptor naming the monitor the point falls on
+      and its offset within that monitor — `monitor_relative_position` /
+      `monitor_descriptor` / `window_monitor_descriptor` in `client.rs`. This is what makes the
+      absolute coordinates unambiguous: the geometries we send in `hello` keep their raw, possibly
+      negative origin, but the server rebases the layout to a non-negative one before mirroring it
+      (`normalized_monitors`), so it cannot map our absolute coordinates back on its own. Given the
+      index and the offset it can — `get_monitor_position` (xpra `server/source/display.py`)
+      resolves the pair against its *normalized* copy of the same layout. The descriptor is left
+      out entirely when the point is on no known monitor; the server then falls back to the
+      absolute coordinates. Where it goes differs per packet, and it is a trailing *positional*
+      field on the one packet that stayed positional:
+      - `pointer-motion` / `pointer-button`: the properties dict (fields 5 and 7). The dict has no
+        other key to fill: the absolute pair is the packet's own pointer field, and
+        `window-position` describes a position within the window, which the caller has already
+        converted away.
+      - `window-configure`: `monitor` in the config dict, next to `geometry`.
+      - `window-map`: **appended as field 8**, since the server reads it only when the packet is
+        long enough (`len(packet) >= 9`, xpra `x11/subsystem/window.py`) — hence an append rather
+        than a null placeholder.
+      For a *window* origin, the containing-monitor lookup is not enough: a top-left corner
+      dragged past the left or top edge of its screen is outside every monitor, which is exactly
+      when the server most needs the descriptor, so `window_monitor_descriptor` asks winit
+      (`current_monitor`, matched back to our list by geometry) first and takes the offset against
+      that monitor, negative or not. Which monitor gets named does not affect correctness: the
+      server resolves the pair as `(monitor origin) + offset` with the offset measured against that
+      same monitor, so the absolute point it lands on is the same whichever one is picked.
     - **Window metadata**: `metadata.supported` is limited to the properties this backend applies:
       title, decorations, fullscreen, maximized/iconic state, above/below level, and size
       constraints. The same `apply_window_metadata` path handles initial `new-window` metadata and

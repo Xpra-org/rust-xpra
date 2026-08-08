@@ -195,6 +195,32 @@ fn local_monitors(event_loop: &ActiveEventLoop) -> Vec<MonitorInfo> {
     monitors
 }
 
+// The monitor-relative form of an absolute point, as xpra's `MonitorLayout.relative_position`
+// computes it (xpra util/screen.py): the index of the monitor the point falls in, and the point
+// rebased against that monitor's top-left corner. `None` when no monitor contains it - which
+// includes having no monitor list at all (Wayland compositors that enumerate none, a headless X11
+// display), and the dead space a non-rectangular multi-monitor arrangement leaves between panels.
+//
+// This is what lets the server place a pointer or a window where the user actually sees it. The
+// absolute coordinates we send are raw and can be negative (a monitor left of or above the primary
+// one on Windows), whereas the server rebases the layout we sent in `hello` to a non-negative
+// origin before mirroring it onto its virtual screen (`normalized_monitors`) - so it cannot map our
+// absolute coordinates back on its own. Given the index and the offset within that monitor it can:
+// `get_monitor_position` (xpra server/source/display.py) resolves the pair against its *normalized*
+// copy of the same layout, and the coordinate spaces line up again.
+fn monitor_relative_position(monitors: &[MonitorInfo], x: i32, y: i32) -> Option<(usize, i32, i32)> {
+    for (index, monitor) in monitors.iter().enumerate() {
+        let (mx, my, w, h) = monitor.geometry;
+        // the width/height are u32 and the coordinates i32, so compare in i64: a monitor at
+        // i32::MAX-ish coordinates would otherwise wrap.
+        let (x64, y64, mx64, my64) = (x as i64, y as i64, mx as i64, my as i64);
+        if x64 >= mx64 && x64 < mx64 + w as i64 && y64 >= my64 && y64 < my64 + h as i64 {
+            return Some((index, x - mx, y - my));
+        }
+    }
+    None
+}
+
 // The total size of the local display area, in physical pixels: the bounding box of every monitor,
 // which is the "virtual screen" on Windows and the root window size on X11 (both of which is what
 // xpra's own client reports as `desktop_size`). The box is measured min-to-max rather than from the
@@ -734,17 +760,73 @@ impl XpraClient {
         self.write_json(packet);
     }
 
+    // The `monitor` descriptor xpra puts next to an absolute position - `{"index", "position"}`,
+    // the monitor the point falls in and its offset within it (see `monitor_relative_position` for
+    // why the server needs it). `None` when the point is on no known monitor, in which case the
+    // caller leaves the key out and the server keeps using the absolute coordinates it was sent
+    // alongside.
+    fn monitor_descriptor(&self, x: i32, y: i32) -> Option<Value> {
+        let (index, mx, my) = monitor_relative_position(&self.monitors, x, y)?;
+        Some(json!({ "index": index, "position": [mx, my] }))
+    }
+
+    // The same descriptor for a *window* origin. A window's top-left corner is regularly outside
+    // every monitor - dragged past the left or top edge of its own screen - so the plain
+    // containing-monitor lookup would drop the descriptor at exactly the positions the server most
+    // needs help with. winit still knows which monitor the window is on, so ask it first and rebase
+    // against that one; the resulting offset may be negative, which is fine, since the server only
+    // adds it back to the monitor's origin (`MonitorLayout.position`). This mirrors what xpra's own
+    // client does with `get_monitor_at_window` (client/gtk3/window/base.py get_monitor_position).
+    //
+    // Which monitor we name does not have to be the "right" one for the result to be right: the
+    // server resolves the pair as `(monitor origin) + (offset)`, and the offset is measured against
+    // that same monitor, so the absolute point it lands on is the same whichever one we pick. The
+    // preference only buys a descriptor where the containment test has none to give.
+    fn window_monitor_descriptor(&self, wid: u64, x: i32, y: i32) -> Option<Value> {
+        let current = self
+            .windows
+            .get(&wid)
+            .and_then(|window| window.window.current_monitor())
+            .and_then(|monitor| {
+                // winit hands back a fresh `MonitorHandle`, so match it to the list we sent in
+                // `hello` by geometry - two monitors cannot share a rectangle, and it is the only
+                // attribute both sides are guaranteed to agree on (a name can be missing).
+                let (position, size) = (monitor.position(), monitor.size());
+                let geometry = (position.x, position.y, size.width, size.height);
+                self.monitors.iter().position(|m| m.geometry == geometry)
+            });
+        match current {
+            Some(index) => {
+                let (mx, my, _, _) = self.monitors[index].geometry;
+                Some(json!({ "index": index, "position": [x - mx, y - my] }))
+            }
+            None => self.monitor_descriptor(x, y),
+        }
+    }
+
+    // The properties dict of a pointer packet. `monitor` is the only key we can fill in: the
+    // absolute pair is already the packet's own pointer field, and `window-position` would be the
+    // position within the window, which the caller has converted away by this point.
+    fn pointer_props(&self, x: i32, y: i32) -> Value {
+        let mut props = json!({});
+        if let Some(monitor) = self.monitor_descriptor(x, y) {
+            props["monitor"] = monitor;
+        }
+        props
+    }
+
     fn send_pointer_position(&mut self, wid: u64, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
-        let packet = json!(["pointer-motion", device_id, sequence, wid, [x, y], {}]);
+        let packet = json!(["pointer-motion", device_id, sequence, wid, [x, y], self.pointer_props(x, y)]);
         self.write_json(packet);
     }
 
     fn send_pointer_button(&mut self, wid: u64, button: i8, pressed: bool, x: i32, y: i32) {
         let device_id = 0;
         let sequence = 0;
-        let packet = json!(["pointer-button", device_id, sequence, wid, button, pressed, [x, y], {}]);
+        let props = self.pointer_props(x, y);
+        let packet = json!(["pointer-button", device_id, sequence, wid, button, pressed, [x, y], props]);
         self.write_json(packet);
     }
 
@@ -780,18 +862,36 @@ impl XpraClient {
         modifiers
     }
 
+    // `window-map` stayed positional, so the monitor descriptor is an *optional trailing field*
+    // (index 8) rather than a dict key: the server reads it only when the packet is long enough
+    // (`len(packet) >= 9`, xpra x11/subsystem/window.py _process_window_map), which is why it is
+    // appended rather than sent as a null placeholder. It goes through `resolve_monitor_geometry`
+    // there and replaces the x,y of the geometry that follows it. The x,y we are given here is the
+    // position `process_new_common` asked winit to place the window at, so it is a local position -
+    // which is what the descriptor has to describe.
     fn send_window_map(&mut self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
-        let packet = json!(["window-map", wid, x, y, w, h, {}, {}]);
+        let mut packet = json!(["window-map", wid, x, y, w, h, {}, {}]);
+        if let Some(monitor) = self.window_monitor_descriptor(wid, x, y) {
+            // json! builds an array here, so this cannot fail.
+            if let Some(fields) = packet.as_array_mut() {
+                fields.push(monitor);
+            }
+        }
         self.write_json(packet);
     }
 
     // `window-configure` replaced the positional `configure-window` packet: the geometry, client
     // properties, window state and pointer data all moved into one dict, keyed by name, and every
-    // key is optional (xpra server/subsystem/window.py _process_window_configure). We only ever had
-    // a geometry to report, so that is all we put in it - omitting "state"/"properties" is the same
-    // as the empty dicts the old packet had to carry.
+    // key is optional (xpra server/subsystem/window.py _process_window_configure). We have a
+    // geometry to report and, when we can place its origin on a local monitor, the monitor-relative
+    // form of that origin - omitting "state"/"properties" is the same as the empty dicts the old
+    // packet had to carry.
     fn send_window_configure(&mut self, wid: u64, x: i32, y: i32, w: u32, h: u32) {
-        let packet = json!(["window-configure", wid, { "geometry": [x, y, w, h] }]);
+        let mut config = json!({ "geometry": [x, y, w, h] });
+        if let Some(monitor) = self.window_monitor_descriptor(wid, x, y) {
+            config["monitor"] = monitor;
+        }
+        let packet = json!(["window-configure", wid, config]);
         self.write_json(packet);
     }
 
