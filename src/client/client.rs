@@ -284,10 +284,6 @@ fn total_display_size(monitors: &[MonitorInfo]) -> Option<(u32, u32)> {
 pub struct XpraClient {
     pub hello_sent: bool,
     pub server_version: String,
-    // The server lists the packet types it accepts when we request them in `hello`. A server in
-    // backwards-compatible mode includes the legacy `damage-sequence` alias; older servers which
-    // do not return the list are assumed to be compatible, since that remains xpra's default.
-    pub server_backwards_compatible: bool,
     // Whether the server runs the ping subsystem and wants pings: it advertises its own ping
     // interval as the `ping` capability (0 when started with `--pings=0`, absent entirely when
     // the subsystem is not loaded). Only then do we start the ping timer - see process_hello.
@@ -475,17 +471,11 @@ fn ring_bell(pitch: i32, duration: i32) {
     }
 }
 
-fn draw_ack_packet(backwards_compatible: bool, packet_sequence: u64, wid: u64,
-                   width: u32, height: u32, decode_time: i128, message: String) -> Value {
-    if backwards_compatible {
-        json!([
-            "window-draw-ack", packet_sequence, wid, width, height, decode_time, message,
-        ])
-    } else {
-        json!([
-            "window-ack", wid, width, height, packet_sequence, decode_time, message,
-        ])
-    }
+fn draw_ack_packet(packet_sequence: u64, wid: u64, width: u32, height: u32,
+                   decode_time: i128, message: String) -> Value {
+    json!([
+        "window-ack", wid, width, height, packet_sequence, decode_time, message,
+    ])
 }
 
 // The picture encodings this client can decode, which is what the hello advertises as
@@ -509,20 +499,6 @@ fn server_encodings(caps: &Yaml) -> Vec<String> {
     };
     let core = yaml_hash_strings(encodings, "core");
     if core.is_empty() { yaml_hash_strings(encodings, "") } else { core }
-}
-
-fn server_backwards_compatible(hello: &Yaml) -> Option<bool> {
-    let Yaml::Hash(hash) = hello else {
-        return None;
-    };
-    let Some(Yaml::Array(packet_types)) =
-        hash.get(&Yaml::String("packet-types".to_string()))
-    else {
-        return None;
-    };
-    let has_packet_type = |name: &str| packet_types.iter()
-        .any(|value| matches!(value, Yaml::String(s) if s == name));
-    has_packet_type("window-ack").then(|| has_packet_type("damage-sequence"))
 }
 
 impl fmt::Debug for XpraClient {
@@ -550,7 +526,6 @@ impl XpraClient {
         XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
-            server_backwards_compatible: true,
             server_ping: false,
             windows: HashMap::new(),
             id_map: HashMap::new(),
@@ -714,9 +689,6 @@ impl XpraClient {
         }
         let mut packet = json!(["hello", {
             "version": VERSION,
-            // Needed to distinguish the legacy draw acknowledgement layout from `window-ack`.
-            // Backwards-compatible servers include the `damage-sequence` alias in this list.
-            "wants": ["packet-types"],
             // the packet encoders we can read, negotiated against the server's own list
             // (enable_encoder_from_caps, xpra net/protocol/socket_handler.py).
             "encoders": ["yaml"],
@@ -731,18 +703,20 @@ impl XpraClient {
             // only; our own outgoing packets are small input events, sent uncompressed.
             "compressors": ["lz4"],
             "compression_level": 1,
-            // window forwarding. A modern server reads this from the `window` namespace and only
-            // falls back to the plural `windows` flag in backwards-compatible mode (`wants_windows`,
-            // xpra server/common.py), so without the dict a server run with
-            // XPRA_BACKWARDS_COMPATIBLE=0 never even instantiates its window subsystem
-            // (`WindowsConnection.is_needed`) and forwards no windows at all.
-            // `grabs` belongs in here too: it is the current spelling of the `pointer.grabs`
-            // capability below, which `parse_client_caps` (xpra server/source/window.py) only
-            // consults in that same compatibility mode.
+            // window forwarding: sending this dict is what instantiates the server's window
+            // subsystem at all (`wants_windows` -> `WindowsConnection.is_needed`, xpra
+            // server/common.py), and without it no window is ever forwarded. `grabs` belongs in
+            // here too - it lets a remote application confine the local pointer to its forwarded
+            // window (`parse_client_caps` reads it as `window.grabs`, xpra server/source/window.py).
             "window": { "enabled": true, "grabs": true },
-            "windows": true,
             "keyboard": true,
-            "mouse": true,
+            // the pointer subsystem, which is what turns our `pointer-motion` / `pointer-button`
+            // packets into input events (`PointerConnection.is_needed`, xpra
+            // server/source/pointer.py). Only the truthiness of this key is read - none of the
+            // options the dict can carry apply here (double-click timings, an initial position,
+            // pointer echo) - but it has to be a *dict*: the subsystem parses it with `dictget`,
+            // which logs a conversion warning for the bare `true` the flag looks like it wants.
+            "pointer": { "enabled": true },
             "sharing": true,
             "bell": true,
             "display": display_caps,
@@ -760,17 +734,12 @@ impl XpraClient {
             // pointer coordinates and cursor-size list. Note the server's default is *true*, so
             // this key cannot be left out.
             "cursor": { "encodings": ["png"], "backwards-compatible": false },
-            "cursors": true,
-            // allow remote applications to confine the local pointer to their forwarded window:
-            // the legacy spelling of `window.grabs` above, which a backwards-compatible server
-            // falls back to when the modern one is absent (server/source/window.py).
-            "pointer": { "grabs": true },
             // advertise only the window metadata keys we actually apply. Without this list, the
             // server assumes the broad legacy default and sends properties this client ignores.
             // `override-redirect` is in the list because the server filters *every* metadata
-            // property through it (`_make_metadata`, xpra server/source/window.py) - and with no
-            // `new-override-redirect` packet left to identify them, that flag is the only thing
-            // marking an unmanaged window on a server run with `XPRA_BACKWARDS_COMPATIBLE=0`.
+            // property through it (`_make_metadata`, xpra server/source/window.py) - and a
+            // server that sends no `new-override-redirect` packet leaves that flag as the only
+            // thing marking an unmanaged window.
             "metadata": {
                 "supported": [
                     "title", "size-constraints", "fullscreen", "maximized", "iconic",
@@ -1032,14 +1001,12 @@ impl XpraClient {
         self.write_json(packet);
     }
 
-    // Acknowledge a `draw` packet, which is what paces the server's damage output. The legacy
-    // `window-draw-ack` packet starts with the packet sequence. The modern, wid-first layout has a
-    // distinct name, `window-ack`; reusing `window-draw-ack` for it would make a compatible server
-    // interpret the packet sequence as a window id.
+    // Acknowledge a `draw` packet, which is what paces the server's damage output. `window-ack`
+    // is the wid-first layout xpra 6.6 introduced (`_process_ack`, xpra server/subsystem/
+    // window.py), registered whatever mode the server runs in - unlike the two names for the
+    // older sequence-first packet, `window-draw-ack` and its `damage-sequence` alias.
     fn send_draw_ack(&mut self, seq: u64, wid: u64, w: u32, h: u32, decode_time: i128, message: String) {
-        let packet = draw_ack_packet(
-            self.server_backwards_compatible, seq, wid, w, h, decode_time, message,
-        );
+        let packet = draw_ack_packet(seq, wid, w, h, decode_time, message);
         self.write_json(packet);
     }
 
@@ -1276,11 +1243,10 @@ impl XpraClient {
             "audio-latency" => self.report_audio_latency(p.get_u32(1)),
             #[cfg(windows)]
             "audio-worker-failed" => self.disable_audio(&p.get_str(1)),
-            "encoding-set" => self.process_encoding_set(&p),
-            // the pre-6.5 alias for the same packet: the server only registers it while it runs
-            // in backwards-compatible mode (`add_legacy_alias`, xpra net/packet_type.py), which
-            // is the mode the hello's `packet-types` list told us about.
-            "encodings" if self.server_backwards_compatible => self.process_encoding_set(&p),
+            // `encodings` is the pre-6.5 name of the same packet, which a server still sends in
+            // backwards-compatible mode (xpra net/packet_type.py `ENCODING_SET`). Nothing else
+            // uses that name, so both go to the one handler.
+            "encoding-set" | "encodings" => self.process_encoding_set(&p),
             "startup-complete" => {
                 info!("startup complete!");
                 // the session is up: start pinging the server so it can track our latency -
@@ -1653,17 +1619,6 @@ impl XpraClient {
                 if let Yaml::String(version_str) = version {
                     info!("server version {:?}", version_str);
                     self.server_version = version_str.to_string();
-                }
-                // `damage-sequence` is registered only when the server runs in backwards-
-                // compatible mode. `window-ack` confirms this is a new enough server for the
-                // modern acknowledgement; if the capability is absent or predates that packet,
-                // retain the safe default above.
-                if let Some(backwards_compatible) = server_backwards_compatible(hello) {
-                    self.server_backwards_compatible = backwards_compatible;
-                    debug!(
-                        "server backwards-compatible packet mode: {}",
-                        self.server_backwards_compatible,
-                    );
                 }
                 // The server advertises the ping subsystem's own ping interval as `ping` (xpra
                 // server/subsystem/ping.py get_caps) - 0 when it was started with `--pings=0`,
@@ -2826,7 +2781,7 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, server_backwards_compatible, server_encodings,
+        client_encodings, draw_ack_packet, server_encodings,
         WindowMetadataUpdate, WindowSizeConstraints,
     };
     use serde_json::json;
@@ -2895,34 +2850,11 @@ mod tests {
     }
 
     #[test]
-    fn draw_ack_uses_legacy_layout_in_backwards_compatible_mode() {
+    fn draw_ack_uses_the_wid_first_window_ack_layout() {
         assert_eq!(
-            draw_ack_packet(true, 17, 3, 640, 480, 2500, "decoded".to_string()),
-            json!(["window-draw-ack", 17, 3, 640, 480, 2500, "decoded"]),
-        );
-    }
-
-    #[test]
-    fn draw_ack_uses_window_ack_layout_in_modern_mode() {
-        assert_eq!(
-            draw_ack_packet(false, 17, 3, 640, 480, 2500, "decoded".to_string()),
+            draw_ack_packet(17, 3, 640, 480, 2500, "decoded".to_string()),
             json!(["window-ack", 3, 640, 480, 17, 2500, "decoded"]),
         );
-    }
-
-    #[test]
-    fn packet_types_identify_server_compatibility_mode() {
-        let compatible = YamlLoader::load_from_str(
-            "{packet-types: [window-ack, window-draw-ack, damage-sequence]}",
-        ).unwrap();
-        let modern = YamlLoader::load_from_str(
-            "{packet-types: [window-ack, window-draw-ack]}",
-        ).unwrap();
-        let unspecified = YamlLoader::load_from_str("{version: 6.6}").unwrap();
-
-        assert_eq!(server_backwards_compatible(&compatible[0]), Some(true));
-        assert_eq!(server_backwards_compatible(&modern[0]), Some(false));
-        assert_eq!(server_backwards_compatible(&unspecified[0]), None);
     }
 
     #[test]

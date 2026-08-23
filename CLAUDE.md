@@ -174,24 +174,26 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `draw-decoded`, `draw-failed`, `disconnect`/`connection-close`, `interrupt`, ...);
     outgoing packets are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
     `window-focus`, `pointer-motion`, `pointer-button`, `keyboard-event`, `window-map`, `window-configure`,
-    `window-close`, `window-draw-ack`/`window-ack`, `ping`, `ping-echo`, `logging-event`, `connection-close`, the
+    `window-close`, `window-ack`, `ping`, `ping-echo`, `logging-event`, `connection-close`, the
     `clipboard-*` family and the `audio-*` family). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
-    - **Packet names use the post-6.5 forms** — apart from the mode-sensitive draw acknowledgement
-      detailed below. xpra 6.5 renamed most client→server packets and put the old names behind
-      `add_legacy_alias(...)` calls that only run when the server has `BACKWARDS_COMPATIBLE`
-      (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
+    - **Packet names use the post-6.5 forms.** xpra 6.5 renamed most client→server packets and put
+      the old names behind `add_legacy_alias(...)` calls that only run when the server has
+      `BACKWARDS_COMPATIBLE` (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
       authoritative old→new table is xpra's `net/packet_type.py`. Three of the renames are *not* plain
       renames and must not be "simplified" back into positional packets: `keyboard-event` moved
       everything after `pressed` into an attributes dict, `window-configure` moved geometry/state/
       properties into a config dict, and `clipboard-data` (which replaced `clipboard-token`) moved the
-      targets and per-target payloads into an options dict. Draw acknowledgement is the sharp edge:
-      the legacy `window-draw-ack` layout starts with `seq, wid, w, h`, while its modern replacement
-      `window-ack` uses `wid, w, h, seq`. The client requests the server's `packet-types` capability;
-      the legacy `damage-sequence` alias in that list identifies backwards-compatible mode. Older
-      servers which do not return the list default to the legacy layout. To check for regressions,
-      run a server with `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy name outright.
+      targets and per-target payloads into an options dict. Draw acknowledgement was the sharp edge
+      and no longer is: the sequence-first `seq, wid, w, h` layout has *two* names (`damage-sequence`
+      in backwards-compatible mode, `window-draw-ack` without it), but its wid-first replacement
+      `window-ack` — `wid, w, h, seq` — is named unconditionally and its handler registered in both
+      modes (xpra `server/subsystem/window.py` `_process_ack`), so that is the only one sent. It
+      arrived in 6.6, not 6.5: a 6.5 server has no `window-ack` at all, which is why the real
+      minimum server version is 6.6. To check for
+      regressions, run a server with `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy
+      name outright.
       Two hello capabilities are part of the same move: the packet encoder (`encoders: ["yaml"]`) and
       the picture encodings (`encoding.options`/`encoding.core`). Each replaced a pre-6.5 spelling —
       a bare `yaml: true` and a top-level `encodings` list — that the server reads only in
@@ -212,9 +214,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `display-show-desktop`/`show-desktop`, `clipboard-status`/`set-clipboard-enabled`,
       `events`/`server-event`, `ping-echo`/`ping_echo`, `connection-close`/`disconnect`,
       `audio-data`/`sound-data`. `window-move-resize` covers the legacy
-      `configure-override-redirect` as well. Three need more than an alias:
-      - `encoding-set`/`encodings` — the legacy name is gated on `server_backwards_compatible`,
-        being too generic to accept unconditionally.
+      `configure-override-redirect` as well, and `encoding-set` the legacy `encodings` (nothing
+      else uses that name, so it needs no gating). Two need more than an alias:
       - `clipboard-data` — the replacement for `clipboard-token` is a different *shape*, so it has
         its own handler (`process_clipboard_data`); see the clipboard note below.
       - `window-create` — it also replaces `new-override-redirect`, which a modern server never
@@ -226,8 +227,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       the legacy `cursor` packet — pointer coordinates and cursor-size list included — is not
       handled at all. Still unimplemented in either spelling: `window-restack`/`restack-window`,
       `window-resized`, the file-transfer and webcam families. Adding an incoming rename means
-      matching both names on one arm; gate the *legacy* one on `server_backwards_compatible` only
-      when it is ambiguous enough to collide with something else.
+      matching both names on one arm.
     - **Server encodings** (`process_encoding_set`): `["encoding-set", {"encodings": {...},
       "video": {...}}]` carries the picture encodings the server can send. It is a packet rather
       than a hello capability because the server only knows them once its codecs have loaded in its
@@ -259,25 +259,33 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       server with pings, with `--pings=0`, and with `--minimal`.
     - **Window forwarding** is advertised in the nested `window` caps dict (`enabled`), *not* by
       the top-level `windows` flag, which `wants_windows` (xpra `server/common.py`) only consults
-      in backwards-compatible mode. Sending the flag alone leaves a server run with
-      `XPRA_BACKWARDS_COMPATIBLE=0` without a window subsystem at all
-      (`WindowsConnection.is_needed`), so it forwards no windows whatsoever — verified: adding the
-      dict is what makes such a server start sending `window-create`. The flag is still sent
-      alongside, like the other legacy spellings.
+      in backwards-compatible mode and which is no longer sent. Without the dict a server run with
+      `XPRA_BACKWARDS_COMPATIBLE=0` has no window subsystem at all
+      (`WindowsConnection.is_needed`) and forwards no windows whatsoever — verified: adding the
+      dict is what makes such a server start sending `window-create`.
     - **Pointer grabs**: `window.grabs` — in that same dict, since the window subsystem is what
       parses it (`parse_client_caps`) — enables `pointer-grab` and `pointer-ungrab` packets when a
-      remote application grabs its pointer. The legacy spelling is `pointer.grabs`, which the
-      server reads only in backwards-compatible mode and only when `window.grabs` is absent; both
-      are sent. The client asks winit
+      remote application grabs its pointer. (The legacy spelling was `pointer.grabs`, which a
+      backwards-compatible server still falls back to; it is not sent.) The client asks winit
       for `CursorGrabMode::Confined`, falls back to `Locked`, tracks the owning `wid`, and releases
       the grab on an ungrab packet or before destroying the grabbed window.
-    - **Notification capabilities** are advertised under **both** spellings. `notification` is
-      the current one, and either satisfies `NotificationConnection.is_needed`, but
-      `parse_client_caps` (xpra `server/source/notification.py`) reads *only* the pre-6.5
-      `notifications: {enabled: true}` dict when the server is backwards-compatible — the
-      default — with no fallback to the modern flag, so sending the flag alone loads the
-      subsystem and then never delivers a notification (verified: `client.0.notification=False`
-      in `xpra info`). Sending both gives `notification=True` in either mode.
+    - **The other subsystem gates.** A subsystem the hello does not ask for is never instantiated
+      server-side (`is_needed`, xpra `server/source/*.py`), so each of these keys is load-bearing
+      and each has a pre-6.5 spelling that only a backwards-compatible server reads:
+      `pointer` (legacy: `mouse`) is what makes our `pointer-motion`/`pointer-button` packets do
+      anything, and must be a **dict** — `parse_client_caps` reads it with `dictget`, which logs
+      "failed to convert 'pointer'" for a bare `true` — while only its truthiness matters, since
+      none of its options (double-click timings, initial position, pointer echo) apply here;
+      `cursor` (legacy: `cursors`) is a dict too, holding the encodings and the packet-layout
+      choice; `keyboard`, `bell`, `ping`, `events`, `clipboard` and `display` are read under those
+      names in both modes.
+      **`notification` is the one exception and both spellings are sent.** Its `is_needed` takes
+      either, but `NotificationConnection.parse_client_caps` (xpra
+      `server/source/notification.py`) reads *only* the pre-6.5 `notifications: {enabled: true}`
+      dict when the server is backwards-compatible — the default — with no fallback to the modern
+      flag, so sending the flag alone loads the subsystem and then never delivers a notification
+      (verified: `client.0.notification=False` in `xpra info`). Sending both gives
+      `notification=True` in either mode.
     - **Local display**: the hello carries a nested `display` caps dict holding `desktop_size`
       (the bounding box of every monitor, in physical pixels) and `monitors` (their individual
       geometries). Both come from `local_monitors`/`total_display_size`, measured in `resumed`
