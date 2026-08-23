@@ -557,6 +557,15 @@ impl XpraClient {
         }
     }
 
+    // Leave the session for a local reason (the tray's "Exit" item, an interrupt): tell the
+    // server why - the way xpra's own client does, `disconnect` having become `connection-close` -
+    // and then stop. The packet has to go out *before* quit(), which sets exit_code and thereby
+    // turns write_json into a no-op.
+    fn disconnect_and_quit(&mut self, event_loop: &ActiveEventLoop, reason: &str) {
+        self.write_json(json!(["connection-close", reason]));
+        self.quit(event_loop, ExitCode::Ok);
+    }
+
     // stop the event loop, remembering what to exit the process with (the first cause wins).
     fn quit(&mut self, event_loop: &ActiveEventLoop, exit_code: ExitCode) {
         if self.exit_code.is_none() {
@@ -1308,11 +1317,14 @@ impl XpraClient {
             // thread but has no `ActiveEventLoop`, so it posts this and the quit happens here.
             "tray-exit" => {
                 info!("exit requested from the system tray");
-                // say goodbye the way xpra's own client does (`disconnect` is now `connection-close`).
-                // This has to come before quit(), which sets exit_code and turns write_json into a
-                // no-op.
-                self.write_json(json!(["connection-close", "client exit"]));
-                self.quit(event_loop, ExitCode::Ok);
+                self.disconnect_and_quit(event_loop, "client exit");
+            }
+            // ["interrupt", name]: a signal (or a Windows console control event) caught by
+            // client/signals.rs, which cannot reach the `ActiveEventLoop` from where it runs any
+            // more than the tray's window procedure can. `name` is only there for this log line.
+            "interrupt" => {
+                info!("caught {}, disconnecting", p.get_str(1));
+                self.disconnect_and_quit(event_loop, "client interrupted");
             }
             "disconnect" => self.process_disconnect(event_loop, &p),
             "connection-lost" => {

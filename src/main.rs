@@ -27,6 +27,7 @@ use client::client::{client_packet, XpraClient};
 use client::connect_dialog::{ConnectAction, ConnectDetails, ConnectDialog};
 use client::mmap::MmapArea;
 use client::remote_logging::{self, LogSink};
+use client::signals;
 
 
 fn main() {
@@ -192,6 +193,10 @@ fn run(log_sink: LogSink) -> ExitCode {
     // decode thread in place of a decoder for the `mmap` encoding.
     let mmap = MmapArea::create().map(Arc::new);
     XpraClient::start_draw_decode_loop(proxy.clone(), decode_rx, mmap.clone());
+
+    // Ctrl-C (and SIGTERM/SIGHUP on Unix) ends the session the way the tray's "Exit" item
+    // does, rather than killing the process under a live connection - see client/signals.rs.
+    signals::install(proxy.clone());
 
     let mut app = App::new(proxy, decode_tx, log_sink, mmap, ssl_insecure);
     if let Some((connection, target)) = session {
@@ -449,9 +454,13 @@ impl ApplicationHandler<Packet> for App {
             client.user_event(event_loop, packet);
             return;
         }
-        // nothing generates packets before there is a session, bar the connect worker:
+        // nothing generates packets before there is a session, bar the connect worker and the
+        // interrupt handler - which has no session to say goodbye to, so it just ends the dialog:
         if packet.len() > 0 && packet.get_str(0) == CONNECT_RESULT {
             self.finish_connect(event_loop);
+        } else if packet.len() > 0 && packet.get_str(0) == signals::INTERRUPT {
+            info!("caught {}", packet.get_str(1));
+            self.quit(event_loop, ExitCode::Ok);
         } else {
             debug!("ignoring {:?} received before the session started", packet);
         }

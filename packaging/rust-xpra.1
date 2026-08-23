@@ -238,6 +238,17 @@ interrupted \- typically with
 .B ^C
 in the terminal it was started from.
 .PP
+An interrupt ends the session gracefully rather than killing the client under a
+live connection: the server is told why we are leaving before the process exits
+with status
+.BR 0 .
+.BR SIGINT " (" ^C ),
+.B SIGTERM
+and
+.B SIGHUP
+all do this; a second interrupt terminates the process the ordinary way, so a
+shutdown stuck on a dead connection is still interruptible.
+.PP
 Picture encodings decoded here are
 .BR jpeg ,
 .B png
@@ -308,7 +319,10 @@ The values match those of xpra's own client, so wrapper scripts can treat both t
 same way:
 .TP
 .B 0
-Normal exit: the server said goodbye, or the connection dialog was cancelled.
+Normal exit: the server said goodbye, the session was ended from this side
+(an interrupt, or the system tray's
+.B Exit
+entry), or the connection dialog was cancelled.
 .TP
 .B 1
 The connection was lost after the session had started.

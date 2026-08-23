@@ -25,6 +25,13 @@ On MS Windows there is a system tray icon with an **Exit** menu entry, and serve
 notifications are shown as balloons on it — see [System tray](#system-tray). Elsewhere notifications are only
 written to the client log.
 
+`Ctrl-C` ends the session gracefully rather than killing the client under a live connection: the server is told
+why we are leaving (it logs `client has requested disconnection: client interrupted`) before the process exits
+with code 0. `SIGTERM` and `SIGHUP` do the same on Unix, as does closing the console window on MS Windows. A
+second interrupt terminates the process the ordinary way, so a shutdown stuck on a dead connection is still
+interruptible. On Linux, where there is no tray icon and therefore no **Exit** menu entry, this is the only
+clean way out.
+
 ### Windows speaker forwarding
 
 On Windows 10 and later, server audio is enabled automatically when the system Media Foundation Opus decoder and

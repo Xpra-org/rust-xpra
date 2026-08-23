@@ -170,8 +170,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     used to move packets between threads. Unlike the old Win32 version there's no global singleton — winit hands
     `&mut self` straight into `resumed`/`user_event`/`window_event`. `do_process_packet` dispatches incoming
     packets by their type string (`hello`, `new-window`, `new-override-redirect`, `window-move-resize`,
-    `lost-window`, `window-metadata`, `draw`, `draw-decoded`, `draw-failed`, `disconnect`, ...); outgoing packets
-    are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
+    `lost-window`, `window-metadata`, `draw`, `draw-decoded`, `draw-failed`, `disconnect`, `interrupt`, ...);
+    outgoing packets are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
     `window-focus`, `pointer-motion`, `pointer-button`, `keyboard-event`, `window-map`, `window-configure`,
     `window-close`, `window-draw-ack`/`window-ack`, `ping`, `ping_echo`, `logging-event`, `connection-close`, the
     `clipboard-*` family and the `audio-*` family). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
@@ -354,6 +354,25 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     default `timestamps` feature) and, more importantly, unpinned the build from rustc 1.88: every `time` release
     `simple_logger 5.2.0` allows declares that MSRV, and since `simple_logger` itself declares none, cargo's
     MSRV-aware resolver could not back away from it. See the packaging notes below.
+  - `signals.rs`: **graceful shutdown on an interrupt** — `SIGINT`/`SIGTERM`/`SIGHUP` on Unix, the console
+    control events (`Ctrl-C`, `Ctrl-Break`, console close, logoff, shutdown) on Windows. Installed once from
+    `main::run`, and, like `tray.rs`'s window procedure, it cannot reach the `ActiveEventLoop`, so it posts a
+    synthesized client-side `interrupt` packet through the `EventLoopProxy` and the UI thread does the rest
+    (`disconnect_and_quit` in `client.rs`, or `App::user_event` when the connect dialog is still up and there is
+    no session to say goodbye to). Two platform-specific points:
+    - **Unix is a self-pipe**, not a direct `send_event`: a signal handler may only call async-signal-safe
+      functions, which `EventLoopProxy::send_event` (allocates, locks) and every logging call are not. The
+      handler writes the signal number into a pipe and a `signals` thread blocking in `read` turns it into the
+      packet. `pipe`/`read`/`write`/`signal` are declared as `unsafe extern "C"` rather than pulled in as a libc
+      dependency, the same as `client/mmap.rs`; `signal`'s handler is taken as a `usize` so that `SIG_DFL` (0)
+      and `SIG_ERR` (-1), which are not valid function pointers, can be named. The handler restores `SIG_DFL`
+      first, so a **second** interrupt kills the process outright — a shutdown stuck on a dead connection has to
+      stay interruptible.
+    - **Windows** needs none of that: `SetConsoleCtrlHandler`'s callback runs on an ordinary thread the OS
+      injects, so it may call the proxy directly (handed to it through a `static Mutex`). Returning `TRUE` is
+      what keeps a `Ctrl-C`/`Ctrl-Break` from terminating the process on the spot; close/logoff/shutdown are
+      terminated regardless of the answer, so there the goodbye is a race rather than a guarantee. No new
+      crate or feature: `Win32_System_Console` is already enabled for the logger's ANSI setup.
   - `tray.rs` (Windows-only, `#[cfg(windows)]`): the notification-area icon, its right-click menu (a greyed
     header naming the session, a separator, `Exit`) and the balloon notifications it raises. Hand-rolled on
     `Shell_NotifyIconW` via the `windows` crate
@@ -517,6 +536,13 @@ reachable from an `ApplicationHandler` callback), so the reader thread (on read/
 of which exists on the wire — and send it to the UI thread through the usual `EventLoopProxy`, which logs the
 reason and exits. The decode thread just breaks out of its loop when its `mpsc` channel closes (UI thread gone) —
 a killed server used to abort here with `RecvError`.
+
+A shutdown we *chose* — the Windows tray's `Exit` item, or an interrupt caught by `client/signals.rs` — goes
+through `disconnect_and_quit`, which tells the server why (`["connection-close", reason]`, the packet formerly
+known as `disconnect`) and exits with `Ok`. The packet has to be written **before** `quit`, which sets
+`exit_code` and thereby turns `write_json` into a no-op. Nothing has to flush it: writes are synchronous
+`Connection::write_all` calls on the UI thread, so the bytes are in the socket before the event loop even
+unwinds (verified — the server logs `client has requested disconnection: client interrupted`).
 
 `XpraClient::quit` records the cause in `exit_code: Option<ExitCode>` (first cause wins) and stops the event loop;
 `main::run` returns it and `main` hands it to `process::exit`. A set `exit_code` also silently drops further
