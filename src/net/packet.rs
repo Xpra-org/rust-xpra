@@ -161,6 +161,20 @@ pub fn yaml_hash<'a>(value: &'a Yaml, key: &str) -> Option<&'a Yaml> {
     None
 }
 
+// The string entries of a list-valued key, skipping anything that is not a string: xpra sends
+// its capability lists (a server's picture encodings, its packet types) as tuples of strings.
+pub fn yaml_hash_strings(value: &Yaml, key: &str) -> Vec<String> {
+    match yaml_hash(value, key) {
+        Some(Yaml::Array(values)) => values.iter()
+            .filter_map(|item| match item {
+                Yaml::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 pub fn yaml_hash_str(value: &Yaml, key: String) -> String {
     if let Yaml::Hash(hash) = value {
         let yaml_key: Yaml = Yaml::String(key);

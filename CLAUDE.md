@@ -198,10 +198,23 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       dead weight; neither is sent any more. Without `encoders` a non-backwards-compatible server
       drops the connection with "failed to negotiate a packet encoder", and without
       `encoding.options` with "client failed to specify any supported encodings".
-      The *incoming* side is still on the legacy names (`new-window`, `draw`, `lost-window`, `notify_show`,
-      ...), which is why the client only works against a server left in its default backwards-compatible
-      mode; against `XPRA_BACKWARDS_COMPATIBLE=0` the handshake and input now succeed but no window is
-      created (the server sends `window-create`/`encoding-set`, which `do_process_packet` doesn't know).
+      The *incoming* side is mostly still on the legacy names (`new-window`, `draw`, `lost-window`,
+      `notify_show`, ...), which is why the client only works against a server left in its default
+      backwards-compatible mode; against `XPRA_BACKWARDS_COMPATIBLE=0` the handshake and input succeed
+      but no window is created (the server sends `window-create`, which `do_process_packet` doesn't
+      know, and `events`/`ping-echo` go unhandled too). The exception is `encoding-set`, which *is*
+      handled under both names: the modern one unconditionally, the legacy `encodings` alias only while
+      `server_backwards_compatible` says the server registered it — the pattern any further incoming
+      rename should follow.
+    - **Server encodings** (`process_encoding_set`): `["encoding-set", {"encodings": {...},
+      "video": {...}}]` carries the picture encodings the server can send. It is a packet rather
+      than a hello capability because the server only knows them once its codecs have loaded in its
+      init thread (`threaded_init_complete`, xpra `server/source/encoding.py`); a pre-6.5 server
+      sends the same dict without `video`. Nothing is applied from it — what *we* decode is fixed in
+      the hello (`client_encodings`, the one list `encoding.options`/`encoding.core` are built from)
+      and the server picks a per-window encoding out of the intersection itself — so the handler logs
+      the lists and warns only when that intersection is empty, which would otherwise show up as a
+      session that simply stays blank.
     - **Server events**: the hello advertises `events: true`, enabling informational
       `server-event` packets for lifecycle events such as `handshake-complete`, `startup-complete`,
       `suspend`, `resume`, and `exit`. `process_server_event` logs the event name and optional

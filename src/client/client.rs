@@ -32,7 +32,9 @@ use xpra::VERSION;
 use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_packet;
-use xpra::net::packet::{Packet, yaml_hash, yaml_hash_bool, yaml_hash_str, yaml_i32};
+use xpra::net::packet::{
+    Packet, yaml_hash, yaml_hash_bool, yaml_hash_str, yaml_hash_strings, yaml_i32, yaml_str,
+};
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
 use super::auth_dialog::{AuthDialog, DialogAction};
@@ -454,6 +456,29 @@ fn draw_ack_packet(backwards_compatible: bool, packet_sequence: u64, wid: u64,
     }
 }
 
+// The picture encodings this client can decode, which is what the hello advertises as
+// `encoding.options` / `encoding.core` and what an `encoding-set` packet is checked against.
+// h264 is decoded through Media Foundation, so it only exists on Windows.
+fn client_encodings() -> Vec<&'static str> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut encodings = vec!["jpeg", "png", "webp"];
+    #[cfg(windows)]
+    encodings.push("h264");
+    encodings
+}
+
+// The server's picture encodings out of an `encoding-set` payload: field 1 is a dict holding an
+// `encodings` sub-dict (`get_encoding_info`, xpra server/subsystem/encoding.py). "core" is the
+// authoritative list - the `""` entry is the same thing with the containers collapsed, and xpra
+// documents it as redundant since v6 - but fall back to it in case a server sends only that.
+fn server_encodings(caps: &Yaml) -> Vec<String> {
+    let Some(encodings) = yaml_hash(caps, "encodings") else {
+        return Vec::new();
+    };
+    let core = yaml_hash_strings(encodings, "core");
+    if core.is_empty() { yaml_hash_strings(encodings, "") } else { core }
+}
+
 fn server_backwards_compatible(hello: &Yaml) -> Option<bool> {
     let Yaml::Hash(hash) = hello else {
         return None;
@@ -560,9 +585,7 @@ impl XpraClient {
         // matches against (and what its password prompt names).
         let env_username = env::var("USERNAME").or_else(|_| env::var("USER")).unwrap_or_default();
         let username = self.username.clone().unwrap_or(env_username);
-        // h264 is decoded via Media Foundation, which is Windows-only:
-        #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut encodings = vec!["jpeg", "png", "webp"];
+        let encodings = client_encodings();
         // The nested "encoding" caps dict (read server-side as hello["encoding"], see xpra's
         // server/source/encoding.py). For a video encoding to be offered at all, the server needs
         // `full_csc_modes[<enc>]` to list at least one colourspace its encoder can produce that we
@@ -576,7 +599,6 @@ impl XpraClient {
         });
         #[cfg(windows)]
         {
-            encodings.push("h264");
             encoding_caps["full_csc_modes"] = json!({ "h264": ["YUV420P"] });
             encoding_caps["h264"] = json!({ "YUV420P.profile": "high" });
         }
@@ -1185,7 +1207,11 @@ impl XpraClient {
             "audio-latency" => self.report_audio_latency(p.get_u32(1)),
             #[cfg(windows)]
             "audio-worker-failed" => self.disable_audio(&p.get_str(1)),
-            "encodings" => debug!("got server encodings: {:?}", p.main[1]),
+            "encoding-set" => self.process_encoding_set(&p),
+            // the pre-6.5 alias for the same packet: the server only registers it while it runs
+            // in backwards-compatible mode (`add_legacy_alias`, xpra net/packet_type.py), which
+            // is the mode the hello's `packet-types` list told us about.
+            "encodings" if self.server_backwards_compatible => self.process_encoding_set(&p),
             "startup-complete" => {
                 info!("startup complete!");
                 // the session is up: start pinging the server so it can track our latency.
@@ -1329,6 +1355,39 @@ impl XpraClient {
         info!("server event: {}", event_type);
         if packet.len() > 2 {
             debug!("server event {:?} arguments: {:?}", event_type, &packet.main[2..]);
+        }
+    }
+
+    // ["encoding-set", {"encodings": {...}, "video": {...}}]: the picture encodings the server
+    // can send us. It arrives as its own packet rather than in the hello because the server only
+    // knows them once its codecs have finished loading in its init thread (`threaded_init_complete`,
+    // xpra server/source/encoding.py); pre-6.5 servers send the same dict without the `video` entry
+    // and under the legacy `encodings` name. There is nothing to apply: what *we* decode was fixed
+    // in our hello, and the server picks a per-window encoding out of the intersection itself. What
+    // is worth saying is when that intersection is empty - such a server can send us no window
+    // contents at all, which otherwise just looks like a session that stays blank.
+    fn process_encoding_set(&self, packet: &Packet) {
+        if packet.len() < 2 {
+            warn!("ignoring malformed encoding-set packet with no capabilities");
+            return;
+        }
+        let caps = &packet.main[1];
+        let encodings = server_encodings(caps);
+        if encodings.is_empty() {
+            warn!("the server advertised no picture encodings: {:?}", caps);
+            return;
+        }
+        debug!("server encodings: {}", encodings.join(", "));
+        // `video` maps each video encoding to its encoders' colourspace specifications - tens of
+        // kilobytes of them, which no amount of logging would make useful here. Name the encodings.
+        if let Some(Yaml::Hash(video)) = yaml_hash(caps, "video") {
+            let video_encodings: Vec<String> = video.keys().map(yaml_str).collect();
+            debug!("server video encodings: {}", video_encodings.join(", "));
+        }
+        let ours = client_encodings();
+        if !encodings.iter().any(|encoding| ours.contains(&encoding.as_str())) {
+            warn!("no picture encoding in common with the server: it can send {}, \
+                   this client decodes {}", encodings.join(", "), ours.join(", "));
         }
     }
 
@@ -2631,7 +2690,8 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        draw_ack_packet, server_backwards_compatible, WindowMetadataUpdate, WindowSizeConstraints,
+        client_encodings, draw_ack_packet, server_backwards_compatible, server_encodings,
+        WindowMetadataUpdate, WindowSizeConstraints,
     };
     use serde_json::json;
     use yaml_rust2::YamlLoader;
@@ -2727,5 +2787,40 @@ mod tests {
         assert_eq!(server_backwards_compatible(&compatible[0]), Some(true));
         assert_eq!(server_backwards_compatible(&modern[0]), Some(false));
         assert_eq!(server_backwards_compatible(&unspecified[0]), None);
+    }
+
+    #[test]
+    fn encoding_set_lists_the_server_core_encodings() {
+        let caps = YamlLoader::load_from_str(
+            r#"{
+                encodings: {
+                    "": [rgb, png, jpeg],
+                    core: [rgb24, rgb32, png, jpeg, webp],
+                    lossless: [rgb24, rgb32, png]
+                },
+                video: {h264: {YUV420P: []}}
+            }"#,
+        ).unwrap();
+        assert_eq!(
+            server_encodings(&caps[0]),
+            vec!["rgb24", "rgb32", "png", "jpeg", "webp"],
+        );
+        // a pre-v6 server sending only the collapsed list:
+        let collapsed = YamlLoader::load_from_str(
+            r#"{encodings: {"": [png, jpeg]}}"#,
+        ).unwrap();
+        assert_eq!(server_encodings(&collapsed[0]), vec!["png", "jpeg"]);
+        // and anything that is not an encodings dict at all:
+        let empty = YamlLoader::load_from_str("{video: {}}").unwrap();
+        assert!(server_encodings(&empty[0]).is_empty());
+    }
+
+    #[test]
+    fn client_encodings_are_advertised_and_decodable() {
+        let encodings = client_encodings();
+        for encoding in ["jpeg", "png", "webp"] {
+            assert!(encodings.contains(&encoding), "missing {encoding}");
+        }
+        assert_eq!(encodings.contains(&"h264"), cfg!(windows));
     }
 }
