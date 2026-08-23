@@ -33,7 +33,8 @@ use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_packet;
 use xpra::net::packet::{
-    Packet, yaml_hash, yaml_hash_bool, yaml_hash_str, yaml_hash_strings, yaml_i32, yaml_str,
+    Packet, yaml_bytes, yaml_hash, yaml_hash_bool, yaml_hash_str, yaml_hash_strings, yaml_i32,
+    yaml_str,
 };
 use xpra::net::rand::secure_hex;
 use xpra::net::sha256::hmac_sha256_hex;
@@ -54,6 +55,33 @@ use super::tray;
 use super::windows_audio::{AudioWorker, EnqueueError};
 use super::window::XpraWindow;
 
+
+// The plain-text clipboard targets we handle, best first: what we claim the clipboard with, what
+// we serve a request for, and what we look for in an incoming payload. Anything else (an image, a
+// file list, a TARGETS enumeration) is not text and is declined.
+const CLIPBOARD_TEXT_TARGETS: [&str; 5] =
+    ["UTF8_STRING", "TEXT", "STRING", "text/plain;charset=utf-8", "text/plain"];
+
+// Pick the plain text out of a `clipboard-data` payload dict, which maps each target to its own
+// [dtype, dformat, wire_encoding, wire_data] tuple. Only "bytes" is a text wire encoding
+// (clipboard/core.py), and a nested payload is never compressed nor sent as an out-of-band chunk
+// (the sender strips the Compressible marker it cannot nest), so the bytes are always a plain
+// YAML binary scalar here - hence `yaml_bytes` rather than `Packet::get_bytes`.
+fn clipboard_data_text(data: &Yaml) -> Option<String> {
+    for target in CLIPBOARD_TEXT_TARGETS {
+        let Some(Yaml::Array(item)) = yaml_hash(data, target) else {
+            continue;
+        };
+        if item.len() < 4 || yaml_str(&item[2]) != "bytes" {
+            continue;
+        }
+        let bytes = yaml_bytes(&item[3]);
+        if !bytes.is_empty() {
+            return Some(String::from_utf8_lossy(&bytes).into_owned());
+        }
+    }
+    None
+}
 
 // How often we send our own `ping` once the session is up. A few seconds keeps the server's view
 // of our latency fresh without being chatty; xpra's own client pings on a similar cadence.
@@ -736,10 +764,14 @@ impl XpraClient {
             "pointer": { "grabs": true },
             // advertise only the window metadata keys we actually apply. Without this list, the
             // server assumes the broad legacy default and sends properties this client ignores.
+            // `override-redirect` is in the list because the server filters *every* metadata
+            // property through it (`_make_metadata`, xpra server/source/window.py) - and with no
+            // `new-override-redirect` packet left to identify them, that flag is the only thing
+            // marking an unmanaged window on a server run with `XPRA_BACKWARDS_COMPATIBLE=0`.
             "metadata": {
                 "supported": [
                     "title", "size-constraints", "fullscreen", "maximized", "iconic",
-                    "decorations", "above", "below",
+                    "decorations", "above", "below", "override-redirect",
                 ],
             },
             // desktop notifications: shown as balloons on the system tray icon on Windows, logged
@@ -960,7 +992,7 @@ impl XpraClient {
     // server defaulted claim=true and kept the greedy flag from our hello); they are now named
     // fields, so we state both (xpra clipboard/core.py _process_clipboard_data).
     fn send_clipboard_data(&mut self, text: &str) {
-        let targets = ["UTF8_STRING", "TEXT", "STRING", "text/plain;charset=utf-8", "text/plain"];
+        let targets = CLIPBOARD_TEXT_TARGETS;
         let packet = json!(["clipboard-data", "CLIPBOARD", {
             "claim": true,
             "greedy": true,
@@ -1125,7 +1157,8 @@ impl XpraClient {
                 // thread: release this window's h264 decoder so a following stream restarts from a
                 // keyframe (Windows). Both drain the draw queue first (see the dispatch side).
                 let ptype = packet.get_str(0);
-                if ptype == "lost-window" || ptype == "eos" {
+                if matches!(ptype.as_str(),
+                            "lost-window" | "window-destroy" | "eos" | "window-eos") {
                     #[cfg(windows)]
                     {
                         let key = packet.get_u64(1);
@@ -1249,17 +1282,27 @@ impl XpraClient {
                     }
                 }
             }
-            "new-window" => self.process_new_common(event_loop, &p, false),
+            // `window-create` is what xpra 6.5 renamed `new-window` to; the fields are
+            // unchanged. It also *replaces* `new-override-redirect`, which a server running with
+            // `XPRA_BACKWARDS_COMPATIBLE=0` never sends: an override-redirect window is then just
+            // a `window-create` whose metadata carries the `override-redirect` flag, which
+            // process_new_common honours either way (xpra client/subsystem/window/manager.py).
+            "new-window" | "window-create" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
             "window-move-resize" => self.process_window_move_resize(&p),
+            // a modern server sends `window-move-resize` for these too, so the legacy name is
+            // all this arm adds:
             "configure-override-redirect" => self.process_window_move_resize(&p),
-            "initiate-moveresize" => self.process_initiate_moveresize(&p),
-            "raise-window" => self.process_raise_window(&p),
-            "show-desktop" => self.process_show_desktop(&p),
+            "initiate-moveresize" | "window-initiate-moveresize" =>
+                self.process_initiate_moveresize(&p),
+            "raise-window" | "window-raise" => self.process_raise_window(&p),
+            "show-desktop" | "display-show-desktop" => self.process_show_desktop(&p),
             "pointer-position" => self.process_pointer_position(&p),
-            "pointer-grab" => self.process_pointer_grab(&p),
-            "pointer-ungrab" => self.process_pointer_ungrab(&p),
-            "lost-window" => {
+            // grabs moved into the `window` namespace, since they belong to a window (they
+            // always carried a wid):
+            "pointer-grab" | "window-grab" => self.process_pointer_grab(&p),
+            "pointer-ungrab" | "window-ungrab" => self.process_pointer_ungrab(&p),
+            "lost-window" | "window-destroy" => {
                 self.process_lost_window(&p);
                 // forward to the decode thread so it can drop this window's persistent h264
                 // decoder; routed through the same channel as draws, so any still-queued draws
@@ -1267,7 +1310,7 @@ impl XpraClient {
                 #[cfg(windows)]
                 { let _ = self.decode_sender.send(p); }
             }
-            "eos" => {
+            "eos" | "window-eos" => {
                 // video stream ended: forward to the decode thread to drop this window's h264
                 // decoder, over the draw channel so any queued draws for the old stream drain first.
                 #[cfg(windows)]
@@ -1276,14 +1319,22 @@ impl XpraClient {
             // ["setting-change", setting, value]: server-pushed session settings we don't act on
             // (xpra's own client no-ops most of these); log rather than warn about "unhandled".
             "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
-            "bell" => self.process_bell(&p),
+            "bell" | "window-bell" => self.process_bell(&p),
+            // no modern alias for `cursor`: the layout changed with the name (`cursor-data` drops
+            // the coordinates and the cursor sizes, `cursor-default` replaces an empty `cursor`),
+            // but our hello asks for the legacy packet (`cursor.backwards-compatible`), which the
+            // server honours whatever mode it runs in (xpra server/source/cursor.py).
             "cursor" => self.process_cursor(event_loop, &mut p),
-            "notify_show" => self.process_notify_show(&p),
-            "notify_close" => self.process_notify_close(&p),
+            "notify_show" | "notification-show" => self.process_notify_show(&p),
+            "notify_close" | "notification-close" => self.process_notify_close(&p),
             "window-icon" => self.process_window_icon(&mut p),
             "window-metadata" => self.process_window_metadata(&p),
-            "server-event" => self.process_server_event(&p),
-            "draw" => {
+            // `server-event` is the legacy name; a server running with
+            // `XPRA_BACKWARDS_COMPATIBLE=0` sends the same packet as `events` (xpra
+            // net/packet_type.py `EVENTS`, server/source/events.py). Identical layout, so both
+            // names go to the same handler.
+            "server-event" | "events" => self.process_server_event(&p),
+            "draw" | "window-draw" => {
                 if self.decode_sender.send(p).is_err() {
                     error!("cannot decode: the decoding thread has stopped");
                 }
@@ -1301,7 +1352,7 @@ impl XpraClient {
             // be turned into a wire `logging` packet; "send-log" is client-side only, like above.
             "send-log" => self.send_log(p.get_i64(1), p.get_str(2)),
             // the server's echo of one of our pings: measures the client->server round-trip.
-            "ping_echo" => self.process_ping_echo(&p),
+            "ping_echo" | "ping-echo" => self.process_ping_echo(&p),
             "challenge" => self.process_challenge(event_loop, &mut p),
             // ["challenge-password", pw] / ["challenge-cancel"]: synthesized locally by the
             // pinentry worker thread (see prompt_password_pinentry), delivered on the UI thread so
@@ -1322,11 +1373,14 @@ impl XpraClient {
             // token/data, and pulls/pushes contents; see the process_clipboard_* handlers below and
             // clipboard.rs. "clipboard-changed" is our own synthesized type, posted by the clipboard
             // thread when the local OS clipboard changed - the analogue of "send-ping"/"draw-decoded".
-            "set-clipboard-enabled" => {
+            "set-clipboard-enabled" | "clipboard-status" => {
                 self.clipboard_enabled = p.get_bool(1);
                 debug!("clipboard sync {}", if self.clipboard_enabled { "enabled" } else { "disabled" });
             }
             "clipboard-token" => self.process_clipboard_token(&mut p),
+            // the modern replacement for `clipboard-token` - a different shape, not just a
+            // different name, so it gets its own handler (see process_clipboard_data).
+            "clipboard-data" => self.process_clipboard_data(&p),
             "clipboard-request" => self.process_clipboard_request(&p),
             "clipboard-contents" => self.process_clipboard_contents(&mut p),
             "clipboard-contents-none" => debug!("clipboard-contents-none"),
@@ -1346,7 +1400,7 @@ impl XpraClient {
                 info!("caught {}, disconnecting", p.get_str(1));
                 self.disconnect_and_quit(event_loop, "client interrupted");
             }
-            "disconnect" => self.process_disconnect(event_loop, &p),
+            "disconnect" | "connection-close" => self.process_disconnect(event_loop, &p),
             "connection-lost" => {
                 // synthesized locally (see `client_packet`): the write path has already logged
                 // the error that got it here, so only log if this is the first we hear of it.
@@ -1937,6 +1991,26 @@ impl XpraClient {
         }
     }
 
+    // ["clipboard-data", selection, options]: the modern replacement for `clipboard-token` - the
+    // packet a server run with `XPRA_BACKWARDS_COMPATIBLE=0` claims the clipboard with. Same
+    // meaning, different shape, which is why it cannot share the token handler: the targets and
+    // the payloads moved into an options dict, and `data` now holds one
+    // [dtype, dformat, wire_encoding, wire_data] entry *per target* rather than a single
+    // positional one (xpra clipboard/core.py `_send_clipboard_token_handler`). As with a bare
+    // token, a claim carrying no data means we have to ask for the contents ourselves.
+    fn process_clipboard_data(&mut self, packet: &Packet) {
+        if !self.clipboard_enabled {
+            return;
+        }
+        let text = packet.main.get(2)
+            .and_then(|options| yaml_hash(options, "data"))
+            .and_then(clipboard_data_text);
+        match text {
+            Some(text) => self.set_local_clipboard(text),
+            None => self.send_clipboard_request(),
+        }
+    }
+
     // The server asks for our clipboard contents (a remote app is pasting). Reply with the latest
     // local text, which the clipboard thread's poll keeps in `last_clipboard`. We only serve plain
     // text, so a request for anything else (a TARGETS enumeration, an image, ...) gets "none" - and
@@ -1944,8 +2018,7 @@ impl XpraClient {
     fn process_clipboard_request(&mut self, packet: &Packet) {
         let request_id = packet.get_u64(1);
         let target = packet.get_str(3);
-        let is_text = matches!(target.as_str(),
-            "UTF8_STRING" | "TEXT" | "STRING" | "text/plain;charset=utf-8" | "text/plain");
+        let is_text = CLIPBOARD_TEXT_TARGETS.contains(&target.as_str());
         if !self.clipboard_enabled || !is_text || self.last_clipboard.is_empty() {
             self.send_clipboard_contents_none(request_id);
             return;
@@ -2010,11 +2083,16 @@ impl XpraClient {
 
     fn process_new_common(&mut self, event_loop: &ActiveEventLoop, packet: &Packet, override_redirect: bool) {
         let wid = packet.get_u64(1);
-        debug!("new-window {:#x}, override-redirect={:?}", wid, override_redirect);
         let x = packet.get_i32(2);
         let y = packet.get_i32(3);
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
+        // the dedicated `new-override-redirect` packet is the only signal in backwards-compatible
+        // mode; a modern server drops that packet type and flags the window in its metadata
+        // instead, so take either (xpra client/subsystem/window/manager.py _process_new_common).
+        let override_redirect = override_redirect
+            || metadata_bool(&packet.main[6], "override-redirect").unwrap_or(false);
+        debug!("new window {:#x}, override-redirect={:?}", wid, override_redirect);
         let metadata = WindowMetadataUpdate::parse(&packet.main[6]);
         let title = metadata.title.clone().unwrap_or_default();
         // override-redirect windows are never decorated; otherwise honour the metadata flag
@@ -2042,7 +2120,7 @@ impl XpraClient {
                 return;
             }
         };
-        info!("new-window {:#x} : {:?}", wid, title);
+        info!("new window {:#x} : {:?}", wid, title);
 
         // start the window off with the current session cursor (see process_cursor):
         if let Some(cursor) = self.current_cursor.clone() {

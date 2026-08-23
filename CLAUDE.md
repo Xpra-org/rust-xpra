@@ -169,8 +169,9 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `window_event`, the shared `softbuffer::Context`, and the `EventLoopProxy<Packet>`/`mpsc::Sender<Packet>`
     used to move packets between threads. Unlike the old Win32 version there's no global singleton — winit hands
     `&mut self` straight into `resumed`/`user_event`/`window_event`. `do_process_packet` dispatches incoming
-    packets by their type string (`hello`, `new-window`, `new-override-redirect`, `window-move-resize`,
-    `lost-window`, `window-metadata`, `draw`, `draw-decoded`, `draw-failed`, `disconnect`, `interrupt`, ...);
+    packets by their type string (`hello`, `new-window`/`window-create`, `new-override-redirect`,
+    `window-move-resize`, `lost-window`/`window-destroy`, `window-metadata`, `draw`/`window-draw`,
+    `draw-decoded`, `draw-failed`, `disconnect`/`connection-close`, `interrupt`, ...);
     outgoing packets are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
     `window-focus`, `pointer-motion`, `pointer-button`, `keyboard-event`, `window-map`, `window-configure`,
     `window-close`, `window-draw-ack`/`window-ack`, `ping`, `ping_echo`, `logging-event`, `connection-close`, the
@@ -198,14 +199,33 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       dead weight; neither is sent any more. Without `encoders` a non-backwards-compatible server
       drops the connection with "failed to negotiate a packet encoder", and without
       `encoding.options` with "client failed to specify any supported encodings".
-      The *incoming* side is mostly still on the legacy names (`new-window`, `draw`, `lost-window`,
-      `notify_show`, ...), which is why the client only works against a server left in its default
-      backwards-compatible mode; against `XPRA_BACKWARDS_COMPATIBLE=0` the handshake and input succeed
-      but no window is created (the server sends `window-create`, which `do_process_packet` doesn't
-      know, and `events`/`ping-echo` go unhandled too). The exception is `encoding-set`, which *is*
-      handled under both names: the modern one unconditionally, the legacy `encodings` alias only while
-      `server_backwards_compatible` says the server registered it — the pattern any further incoming
-      rename should follow.
+      The *incoming* side accepts **both** spellings of every packet this client handles, so a
+      server run with `XPRA_BACKWARDS_COMPATIBLE=0` gets a full session — verified against 6.6:
+      windows (including override-redirect ones), draws, input, clipboard both ways, pings and a
+      clean shutdown. Almost all of them are pure renames — the server has a single send site
+      picking the name off a `net/packet_type.py` constant, so the layouts cannot drift — and
+      those simply share one match arm: `window-draw`/`draw`, `window-destroy`/`lost-window`,
+      `window-eos`/`eos`, `window-create`/`new-window`, `window-raise`/`raise-window`,
+      `window-initiate-moveresize`/`initiate-moveresize`, `window-grab`/`pointer-grab`,
+      `window-ungrab`/`pointer-ungrab`, `window-bell`/`bell`,
+      `notification-show`/`notify_show`, `notification-close`/`notify_close`,
+      `display-show-desktop`/`show-desktop`, `clipboard-status`/`set-clipboard-enabled`,
+      `events`/`server-event`, `ping-echo`/`ping_echo`, `connection-close`/`disconnect`,
+      `audio-data`/`sound-data`. `window-move-resize` covers the legacy
+      `configure-override-redirect` as well. Three need more than an alias:
+      - `encoding-set`/`encodings` — the legacy name is gated on `server_backwards_compatible`,
+        being too generic to accept unconditionally.
+      - `clipboard-data` — the replacement for `clipboard-token` is a different *shape*, so it has
+        its own handler (`process_clipboard_data`); see the clipboard note below.
+      - `window-create` — it also replaces `new-override-redirect`, which a modern server never
+        sends; see the override-redirect note below.
+      The one packet with no modern name here is `cursor`: `cursor-data`/`cursor-default` changed
+      the layout too, and our hello's `cursor.backwards-compatible` keeps the server on the legacy
+      packet whatever mode it runs in (xpra `server/source/cursor.py`), so there is nothing to
+      handle. Still unimplemented in either spelling: `window-restack`/`restack-window`,
+      `window-resized`, the file-transfer and webcam families. Adding an incoming rename means
+      matching both names on one arm; gate the *legacy* one on `server_backwards_compatible` only
+      when it is ambiguous enough to collide with something else.
     - **Server encodings** (`process_encoding_set`): `["encoding-set", {"encodings": {...},
       "video": {...}}]` carries the picture encodings the server can send. It is a packet rather
       than a hello capability because the server only knows them once its codecs have loaded in its
@@ -305,9 +325,31 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       server resolves the pair as `(monitor origin) + offset` with the offset measured against that
       same monitor, so the absolute point it lands on is the same whichever one is picked.
     - **Window metadata**: `metadata.supported` is limited to the properties this backend applies:
-      title, decorations, fullscreen, maximized/iconic state, above/below level, and size
-      constraints. The same `apply_window_metadata` path handles initial `new-window` metadata and
-      incremental `window-metadata` packets; fixed minimum/maximum sizes disable resizing.
+      title, decorations, fullscreen, maximized/iconic state, above/below level, size
+      constraints — and `override-redirect`, which is not applied but *classifies* the window.
+      The same `apply_window_metadata` path handles initial `new-window`/`window-create` metadata
+      and incremental `window-metadata` packets; fixed minimum/maximum sizes disable resizing.
+      The list is a filter the server applies to **every** metadata property it would send
+      (`_make_metadata`, xpra `server/source/window.py`), so a property left out of it never
+      arrives — which is the trap behind `override-redirect`: a server run with
+      `XPRA_BACKWARDS_COMPATIBLE=0` sends no `new-override-redirect` packet at all (unmanaged
+      windows are ordinary `window-create` packets flagged in their metadata), so without that
+      entry every override-redirect window would arrive looking like a normal, decorated one.
+      `process_new_common` therefore ORs the metadata flag into the packet-type one and works
+      unchanged in both modes, as xpra's own client does
+      (`client/subsystem/window/manager.py`). Trays are overloaded onto `window-create` the same
+      way (`tray: true`), but we never advertise system-tray forwarding, so none are ever sent.
+    - **Clipboard** (plain text only, `clipboard.rs` + the `process_clipboard_*` handlers): the
+      server claims the clipboard with `clipboard-token` in backwards-compatible mode and with
+      `clipboard-data` otherwise — the same event, but the second is not a rename: the targets,
+      the `claim`/`greedy` flags and one `[dtype, dformat, wire_encoding, wire_data]` entry *per
+      target* moved into an options dict, where the legacy packet was positional and could carry a
+      single payload (xpra `clipboard/core.py` `_send_clipboard_token_handler`). Hence a second
+      handler, `process_clipboard_data`. Either way a claim with no payload means "ask me", so
+      both fall back to `send_clipboard_request`. One subtlety: a nested payload is never
+      compressed nor sent as an out-of-band chunk (the sender strips the `Compressible` marker it
+      cannot nest), so it is read with `yaml_bytes` on the dict value rather than
+      `Packet::get_bytes` on a field index. What we send is already the modern `clipboard-data`.
     - **Authentication** (`process_challenge` in `client.rs`): a password-requiring server replies to our first
       `hello` with a `challenge` packet instead of its own hello. We advertise only `digest`/`salt-digest` =
       `["hmac+sha256"]`, so the server always picks that one digest (`choose_digest`, xpra `auth/sys_auth_base.py`).
