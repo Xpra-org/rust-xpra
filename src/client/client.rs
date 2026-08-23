@@ -260,6 +260,10 @@ pub struct XpraClient {
     // backwards-compatible mode includes the legacy `damage-sequence` alias; older servers which
     // do not return the list are assumed to be compatible, since that remains xpra's default.
     pub server_backwards_compatible: bool,
+    // Whether the server runs the ping subsystem and wants pings: it advertises its own ping
+    // interval as the `ping` capability (0 when started with `--pings=0`, absent entirely when
+    // the subsystem is not loaded). Only then do we start the ping timer - see process_hello.
+    pub server_ping: bool,
     pub windows: HashMap<u64, XpraWindow>,
     pub id_map: HashMap<WindowId, u64>,
     pub stream: Connection,
@@ -519,6 +523,7 @@ impl XpraClient {
             hello_sent: false,
             server_version: "".to_string(),
             server_backwards_compatible: true,
+            server_ping: false,
             windows: HashMap::new(),
             id_map: HashMap::new(),
             stream,
@@ -1086,7 +1091,8 @@ impl XpraClient {
     // reader and decode threads, this posts a synthesized client packet ("send-ping") to the UI
     // thread rather than touching the socket itself - only the UI thread writes to the connection.
     // The thread ends by itself once the event loop is gone (send_event then errors). Started at
-    // startup-complete so we never ping before the session is up.
+    // startup-complete so we never ping before the session is up, and only when the server's
+    // hello advertised the ping subsystem (`server_ping`).
     fn start_ping_loop(&self) {
         let proxy = self.proxy.clone();
         thread::Builder::new().name("ping".to_string()).spawn(move || loop {
@@ -1232,10 +1238,15 @@ impl XpraClient {
             "encodings" if self.server_backwards_compatible => self.process_encoding_set(&p),
             "startup-complete" => {
                 info!("startup complete!");
-                // the session is up: start pinging the server so it can track our latency.
+                // the session is up: start pinging the server so it can track our latency -
+                // but only if it advertised the ping subsystem (see process_hello).
                 if !self.startup_complete {
                     self.startup_complete = true;
-                    self.start_ping_loop();
+                    if self.server_ping {
+                        self.start_ping_loop();
+                    } else {
+                        debug!("not sending pings: the server does not want them");
+                    }
                 }
             }
             "new-window" => self.process_new_common(event_loop, &p, false),
@@ -1588,6 +1599,16 @@ impl XpraClient {
                         self.server_backwards_compatible,
                     );
                 }
+                // The server advertises the ping subsystem's own ping interval as `ping` (xpra
+                // server/subsystem/ping.py get_caps) - 0 when it was started with `--pings=0`,
+                // and no capability at all when the subsystem is not loaded, in which case it has
+                // no handler for the `ping` packets we would send. So only run the ping timer for
+                // a non-zero value; servers predating the capability send nothing, and there we
+                // fall back to what backwards-compatible mode tells us, which is what xpra's own
+                // client does (`parse_server_capabilities`, client/subsystem/ping.py).
+                self.server_ping = yaml_hash_bool(hello, "ping".to_string())
+                    .unwrap_or(self.server_backwards_compatible);
+                debug!("server ping support: {}", self.server_ping);
                 // The server advertises whether it accepts forwarded client logs as
                 // `remote-logging: {receive, send}` (xpra server/subsystem/logging.py). When it
                 // receives, drop our proxy into the shared sink so the global logger starts
