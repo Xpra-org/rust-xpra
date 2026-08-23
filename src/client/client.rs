@@ -777,9 +777,14 @@ impl XpraClient {
                     "decorations", "above", "below", "override-redirect",
                 ],
             },
-            // desktop notifications: shown as balloons on the system tray icon on Windows, logged
-            // everywhere else (see process_notify_show). The server gates notification sending on
-            // this dict's "enabled" flag.
+            // desktop notifications: shown as balloons on the system tray icon on Windows,
+            // logged everywhere else (see process_notify_show). The singular flag is the current
+            // spelling; the plural dict is the pre-6.5 one and is the only thing a server in
+            // backwards-compatible mode - the default - actually reads: unlike every other
+            // subsystem, `NotificationConnection.parse_client_caps` (xpra
+            // server/source/notification.py) does not fall back to the modern key there, so
+            // sending only that flag gets the subsystem loaded and then never a notification.
+            "notification": true,
             "notifications": { "enabled": true },
             // receive informational server lifecycle events such as "handshake-complete",
             // "startup-complete", "suspend", "resume" and "exit". Dedicated protocol packets
@@ -2376,8 +2381,8 @@ impl XpraClient {
     }
 
     // ["notify_show", dbus_id, nid, app_name, replaces_nid, app_icon, summary, body, expire_timeout,
-    // icon, actions, hints]: a server-forwarded desktop notification. We advertised "notifications"
-    // so the server sends these.
+    // icon, actions, hints]: a server-forwarded desktop notification. We advertised
+    // "notification" so the server sends these.
     //
     // On Windows the notification is shown as a balloon on the system tray icon (see tray.rs) -
     // that icon is already there and `Shell_NotifyIconW` needs nothing else, so notifications come

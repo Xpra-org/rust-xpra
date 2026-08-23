@@ -271,6 +271,13 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       are sent. The client asks winit
       for `CursorGrabMode::Confined`, falls back to `Locked`, tracks the owning `wid`, and releases
       the grab on an ungrab packet or before destroying the grabbed window.
+    - **Notification capabilities** are advertised under **both** spellings. `notification` is
+      the current one, and either satisfies `NotificationConnection.is_needed`, but
+      `parse_client_caps` (xpra `server/source/notification.py`) reads *only* the pre-6.5
+      `notifications: {enabled: true}` dict when the server is backwards-compatible — the
+      default — with no fallback to the modern flag, so sending the flag alone loads the
+      subsystem and then never delivers a notification (verified: `client.0.notification=False`
+      in `xpra info`). Sending both gives `notification=True` in either mode.
     - **Local display**: the hello carries a nested `display` caps dict holding `desktop_size`
       (the bounding box of every monitor, in physical pixels) and `monitors` (their individual
       geometries). Both come from `local_monitors`/`total_display_size`, measured in `resumed`
