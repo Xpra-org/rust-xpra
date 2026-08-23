@@ -1655,13 +1655,13 @@ impl XpraClient {
                 }
                 // The server advertises the ping subsystem's own ping interval as `ping` (xpra
                 // server/subsystem/ping.py get_caps) - 0 when it was started with `--pings=0`,
-                // and no capability at all when the subsystem is not loaded, in which case it has
-                // no handler for the `ping` packets we would send. So only run the ping timer for
-                // a non-zero value; servers predating the capability send nothing, and there we
-                // fall back to what backwards-compatible mode tells us, which is what xpra's own
-                // client does (`parse_server_capabilities`, client/subsystem/ping.py).
-                self.server_ping = yaml_hash_bool(hello, "ping".to_string())
-                    .unwrap_or(self.server_backwards_compatible);
+                // and no capability at all when the subsystem is not loaded (`--minimal`), in
+                // which case it has no handler for the `ping` packets we would send and answers
+                // one with "unknown or invalid packet type". So the timer runs only for a
+                // non-zero value, and a missing capability means off: pings are optional (they
+                // only feed the server's latency statistics), so staying quiet costs nothing,
+                // while guessing wrong is a protocol error.
+                self.server_ping = yaml_hash_bool(hello, "ping".to_string()).unwrap_or(false);
                 debug!("server ping support: {}", self.server_ping);
                 // The server advertises whether it accepts forwarded client logs as
                 // `remote-logging: {receive, send}` (xpra server/subsystem/logging.py). When it

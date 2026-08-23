@@ -243,13 +243,15 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     - **Pings**: we advertise `ping: true` (which is what makes the server instantiate its
       `PingConnection` at all, so that it echoes ours), and the server's hello answers with the
       ping subsystem's *own* interval under the same key — `0` when it was started with
-      `--pings=0`, and no key at all when the subsystem is not loaded, in which case it has no
-      handler for our `ping` packets. So `start_ping_loop` runs only for a non-zero value
-      (`server_ping`, set in `process_hello`); a server too old to send the capability falls back
-      to `server_backwards_compatible`, mirroring xpra's own client
-      (`parse_server_capabilities`, `client/subsystem/ping.py`). Replying to the server's pings
-      (`process_ping` → `ping_echo`) is unconditional. Verified both ways against a real server
-      with and without `--pings=0`.
+      `--pings=0`, and no key at all when the subsystem is not loaded (`--minimal`), in which case
+      it has no handler for the packet and answers one with "unknown or invalid packet type". So
+      `start_ping_loop` runs only for a non-zero value (`server_ping`, set in `process_hello`),
+      and **a missing capability means off** — unlike xpra's own client, which assumes pings are
+      supported when the key is absent (`c.boolget("ping", BACKWARDS_COMPATIBLE)`,
+      `client/subsystem/ping.py`). Pings only feed the server's latency statistics, so not
+      sending them costs nothing, while guessing wrong is a protocol error. Replying to the
+      server's pings (`process_ping` → `ping_echo`) is unconditional. Verified against a real
+      server with pings, with `--pings=0`, and with `--minimal`.
     - **Window forwarding** is advertised in the nested `window` caps dict (`enabled`), *not* by
       the top-level `windows` flag, which `wants_windows` (xpra `server/common.py`) only consults
       in backwards-compatible mode. Sending the flag alone leaves a server run with
