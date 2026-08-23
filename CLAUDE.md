@@ -178,6 +178,16 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `clipboard-*` family and the `audio-*` family). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
+    - **Nothing sent is conditional on the server's backwards-compatible mode.** The hello opens
+      with `protocol: [6, 5]` (`MIN_PROTOCOL_VERSION`, `src/lib.rs`) — the oldest peer this client
+      is willing to talk to, which a server checks against its own version
+      (`protocol_compat_check`, xpra `util/version.py`, reached from `_process_hello`) and refuses
+      with "incompatible version" rather than failing later on a packet type it has never heard
+      of. It is the mirror image of the same key in the server's hello, which announces *its*
+      minimum (`MIN_PROTOCOL_VERSION`, xpra `net/common.py`: `(5, 1)` in backwards-compatible mode,
+      `(6, 6)` without it); we do not check that one, since the protocol version we announce
+      (`VERSION`, "6.4") is older than the packets we actually speak and would fail it. A server
+      too old to know the key at all simply ignores it.
     - **Packet names use the post-6.5 forms.** xpra 6.5 renamed most client→server packets and put
       the old names behind `add_legacy_alias(...)` calls that only run when the server has
       `BACKWARDS_COMPATIBLE` (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
@@ -191,7 +201,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `window-ack` — `wid, w, h, seq` — is named unconditionally and its handler registered in both
       modes (xpra `server/subsystem/window.py` `_process_ack`), so that is the only one sent. It
       arrived in 6.6, not 6.5: a 6.5 server has no `window-ack` at all, which is why the real
-      minimum server version is 6.6. To check for
+      minimum server version is 6.6 even though `MIN_PROTOCOL_VERSION` says 6.5. To check for
       regressions, run a server with `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy
       name outright.
       Two hello capabilities are part of the same move: the packet encoder (`encoders: ["yaml"]`) and
