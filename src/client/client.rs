@@ -693,7 +693,7 @@ impl XpraClient {
             // spellings only, so a server older than this has no chance of understanding us and
             // is better off saying so (`protocol_compat_check`, xpra util/version.py) than
             // dropping the connection later on an unknown packet type.
-            "protocol": MIN_PROTOCOL_VERSION,
+            "protocol-version": MIN_PROTOCOL_VERSION,
             // the packet encoders we can read, negotiated against the server's own list
             // (enable_encoder_from_caps, xpra net/protocol/socket_handler.py).
             "encoders": ["yaml"],
