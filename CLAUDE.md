@@ -174,7 +174,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     `draw-decoded`, `draw-failed`, `disconnect`/`connection-close`, `interrupt`, ...);
     outgoing packets are built with `serde_json::json!` and sent via `write_json` → `net::io::write_packet` (`hello`,
     `window-focus`, `pointer-motion`, `pointer-button`, `keyboard-event`, `window-map`, `window-configure`,
-    `window-close`, `window-draw-ack`/`window-ack`, `ping`, `ping_echo`, `logging-event`, `connection-close`, the
+    `window-close`, `window-draw-ack`/`window-ack`, `ping`, `ping-echo`, `logging-event`, `connection-close`, the
     `clipboard-*` family and the `audio-*` family). Keyboard mapping (`physical_key_to_xpra_keycode`/`key_to_xpra_keyname`) derives the
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
@@ -252,7 +252,10 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       supported when the key is absent (`c.boolget("ping", BACKWARDS_COMPATIBLE)`,
       `client/subsystem/ping.py`). Pings only feed the server's latency statistics, so not
       sending them costs nothing, while guessing wrong is a protocol error. Replying to the
-      server's pings (`process_ping` → `ping_echo`) is unconditional. Verified against a real
+      server's pings (`process_ping` → `ping-echo`) is unconditional — under that name, the one
+      the server registers in both modes (`ping_echo`, with the underscore, is only its legacy
+      alias, so a server run with `XPRA_BACKWARDS_COMPATIBLE=0` answers it with "unknown or
+      invalid packet type"). Verified against a real
       server with pings, with `--pings=0`, and with `--minimal`.
     - **Window forwarding** is advertised in the nested `window` caps dict (`enabled`), *not* by
       the top-level `windows` flag, which `wants_windows` (xpra `server/common.py`) only consults

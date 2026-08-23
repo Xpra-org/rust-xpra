@@ -304,8 +304,8 @@ pub struct XpraClient {
     // value back untouched, so subtracting it from `start.elapsed()` on the echo recovers the
     // round-trip time (both measured with this one clock, so absolute epoch is irrelevant).
     pub start: Instant,
-    // the last client->server round-trip we measured from a `ping_echo`, in milliseconds (-1 until
-    // the first echo). This is what we report back in the `ping_echo` packets we send in reply to
+    // the last client->server round-trip we measured from a `ping-echo`, in milliseconds (-1 until
+    // the first echo). This is what we report back in the `ping-echo` packets we send in reply to
     // the server's own pings - the channel by which the server learns our network latency.
     pub last_client_latency_ms: i64,
     // the current pointer cursor (xpra sends one cursor for the whole session, not per-window);
@@ -1038,17 +1038,21 @@ impl XpraClient {
         self.write_json(packet);
     }
 
+    // Answer the server's `ping`. The name is the current one: the server registers `ping-echo`
+    // whatever mode it runs in and keeps the underscored `ping_echo` as a legacy alias (xpra
+    // server/subsystem/ping.py), so a server run with `XPRA_BACKWARDS_COMPATIBLE=0` answers the
+    // old spelling with "unknown or invalid packet type".
     fn send_ping_echo(&mut self, echotime: u64, sid: String) {
         // fields are echotime, three load averages (we don't report any, hence 0), our last
         // measured client->server latency in ms (or -1 if we've not pinged yet), and the sid. The
         // server stores that latency as its `client_ping_latency` (xpra network_state mixin).
-        let packet = json!(["ping_echo", echotime, 0, 0, 0, self.last_client_latency_ms, sid]);
+        let packet = json!(["ping-echo", echotime, 0, 0, 0, self.last_client_latency_ms, sid]);
         self.write_json(packet);
     }
 
     // Send our own `ping` so the server can time the round-trip back to us. The payload is just a
     // monotonic timestamp in ms (matching xpra's `int(1000*monotonic())`); the server echoes it in
-    // a `ping_echo` we then match up in process_ping_echo. Fired periodically by start_ping_loop.
+    // a `ping-echo` we then match up in process_ping_echo. Fired periodically by start_ping_loop.
     fn send_ping(&mut self) {
         let now_ms = self.start.elapsed().as_millis() as i64;
         let packet = json!(["ping", now_ms]);
@@ -2583,7 +2587,7 @@ impl XpraClient {
 
     // The server's echo of a `ping` we sent (see send_ping): field 1 is the monotonic timestamp we
     // stamped it with, so `now - echoed` is the client->server round-trip. We keep it to report in
-    // the ping_echo replies we send back to the server (send_ping_echo).
+    // the ping-echo replies we send back to the server (send_ping_echo).
     fn process_ping_echo(&mut self, packet: &Packet) {
         let echoedtime = packet.get_i64(1);
         let rtt = self.start.elapsed().as_millis() as i64 - echoedtime;
