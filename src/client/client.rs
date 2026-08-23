@@ -753,10 +753,13 @@ impl XpraClient {
             "digest": ["hmac+sha256"],
             "salt-digest": ["hmac+sha256"],
             // request pointer cursor forwarding. We only advertise the "png" cursor encoding
-            // (decoded like window icons); "backwards-compatible" makes the server send the old
-            // "cursor" packet, matching the rest of this client. The legacy "cursors" bool is a
-            // fallback for how older servers gate cursor sending.
-            "cursor": { "encodings": ["png"], "backwards-compatible": true },
+            // (decoded like window icons). `backwards-compatible` selects the packet layout, and
+            // the server honours our choice whatever mode it runs in (xpra
+            // server/source/cursor.py): false gets us `cursor-data` / `cursor-default`, which
+            // carry just the image and its hotspot instead of the legacy `cursor` packet's
+            // pointer coordinates and cursor-size list. Note the server's default is *true*, so
+            // this key cannot be left out.
+            "cursor": { "encodings": ["png"], "backwards-compatible": false },
             "cursors": true,
             // allow remote applications to confine the local pointer to their forwarded window:
             // the legacy spelling of `window.grabs` above, which a backwards-compatible server
@@ -1320,11 +1323,11 @@ impl XpraClient {
             // (xpra's own client no-ops most of these); log rather than warn about "unhandled".
             "setting-change" => debug!("ignoring setting-change: {:?}", p.get_str(1)),
             "bell" | "window-bell" => self.process_bell(&p),
-            // no modern alias for `cursor`: the layout changed with the name (`cursor-data` drops
-            // the coordinates and the cursor sizes, `cursor-default` replaces an empty `cursor`),
-            // but our hello asks for the legacy packet (`cursor.backwards-compatible`), which the
-            // server honours whatever mode it runs in (xpra server/source/cursor.py).
-            "cursor" => self.process_cursor(event_loop, &mut p),
+            // the cursor packets our hello asked for: `cursor.backwards-compatible: false`
+            // picks these two over the legacy `cursor` packet, whatever mode the server runs in
+            // (xpra server/source/cursor.py), so the old name never arrives and is not handled.
+            "cursor-data" => self.process_cursor_data(event_loop, &mut p),
+            "cursor-default" => self.process_cursor_default(),
             "notify_show" | "notification-show" => self.process_notify_show(&p),
             "notify_close" | "notification-close" => self.process_notify_close(&p),
             "window-icon" => self.process_window_icon(&mut p),
@@ -2315,30 +2318,34 @@ impl XpraClient {
         }
     }
 
-    // ["cursor", encoding, x, y, w, h, xhot, yhot, serial, pixels, name, ...sizes]: the pointer
-    // cursor shape. xpra sends one cursor for the whole session (not per-window), so we apply it to
-    // every window and remember it for windows created later. A 2-item ["cursor", ""] packet resets
-    // to the default. We only advertised the "png" encoding, so pixels decode like a window icon.
-    fn process_cursor(&mut self, event_loop: &ActiveEventLoop, packet: &mut Packet) {
-        // an empty (2-item) packet means "use the default cursor":
-        if packet.len() <= 2 {
-            self.current_cursor = None;
-            for window in self.windows.values() {
-                window.window.set_cursor(CursorIcon::Default);
-            }
+    // ["cursor-default"]: drop back to the local default pointer, which is what the server sends
+    // when the remote pointer has no shape of its own (`send_empty_cursor`).
+    fn process_cursor_default(&mut self) {
+        self.current_cursor = None;
+        for window in self.windows.values() {
+            window.window.set_cursor(CursorIcon::Default);
+        }
+    }
+
+    // ["cursor-data", encoding, w, h, xhot, yhot, serial, pixels, name]: the pointer cursor shape
+    // (`do_send_cursor`, xpra server/source/cursor.py). xpra sends one cursor for the whole
+    // session, not one per window, so we apply it to every window and remember it for windows
+    // created later. We only advertised the "png" encoding, so the pixels decode like a window
+    // icon - and arrive out of band like one, hence get_bytes.
+    fn process_cursor_data(&mut self, event_loop: &ActiveEventLoop, packet: &mut Packet) {
+        // an empty encoding means the server had nothing it could send us:
+        let encoding = packet.get_str(1);
+        if encoding.is_empty() {
+            self.process_cursor_default();
             return;
         }
-        // the encoding may be prefixed "default:" (also marks it as the session default); either
-        // way we just render it, so strip the prefix:
-        let encoding = packet.get_str(1);
-        let encoding = encoding.rsplit(':').next().unwrap_or(&encoding);
         if encoding != "png" {
             debug!("ignoring cursor with unsupported encoding {:?}", encoding);
             return;
         }
-        let xhot = packet.get_u32(6);
-        let yhot = packet.get_u32(7);
-        let data = packet.get_bytes(9);
+        let xhot = packet.get_u32(4);
+        let yhot = packet.get_u32(5);
+        let data = packet.get_bytes(7);
         let (w, h, rgba) = match draw_decoder::decode_png_rgba(&data) {
             Ok(decoded) => decoded,
             Err(e) => {

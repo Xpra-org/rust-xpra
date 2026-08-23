@@ -219,10 +219,12 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
         its own handler (`process_clipboard_data`); see the clipboard note below.
       - `window-create` — it also replaces `new-override-redirect`, which a modern server never
         sends; see the override-redirect note below.
-      The one packet with no modern name here is `cursor`: `cursor-data`/`cursor-default` changed
-      the layout too, and our hello's `cursor.backwards-compatible` keeps the server on the legacy
-      packet whatever mode it runs in (xpra `server/source/cursor.py`), so there is nothing to
-      handle. Still unimplemented in either spelling: `window-restack`/`restack-window`,
+      The cursor packets are the exception to the "accept both spellings" rule, because their
+      layout is *negotiated* rather than inherited from the server's mode: our hello asks for
+      `cursor.backwards-compatible: false`, which the server honours whatever mode it runs in
+      (xpra `server/source/cursor.py`), so only `cursor-data` and `cursor-default` can arrive and
+      the legacy `cursor` packet — pointer coordinates and cursor-size list included — is not
+      handled at all. Still unimplemented in either spelling: `window-restack`/`restack-window`,
       `window-resized`, the file-transfer and webcam families. Adding an incoming rename means
       matching both names on one arm; gate the *legacy* one on `server_backwards_compatible` only
       when it is ambiguous enough to collide with something else.
