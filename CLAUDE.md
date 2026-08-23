@@ -220,8 +220,18 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `suspend`, `resume`, and `exit`. `process_server_event` logs the event name and optional
       arguments but deliberately does not alter client state; dedicated protocol packets remain
       authoritative.
-    - **Pointer grabs**: the hello advertises `pointer.grabs`, which enables `pointer-grab` and
-      `pointer-ungrab` packets when a remote application grabs its pointer. The client asks winit
+    - **Window forwarding** is advertised in the nested `window` caps dict (`enabled`), *not* by
+      the top-level `windows` flag, which `wants_windows` (xpra `server/common.py`) only consults
+      in backwards-compatible mode. Sending the flag alone leaves a server run with
+      `XPRA_BACKWARDS_COMPATIBLE=0` without a window subsystem at all
+      (`WindowsConnection.is_needed`), so it forwards no windows whatsoever — verified: adding the
+      dict is what makes such a server start sending `window-create`. The flag is still sent
+      alongside, like the other legacy spellings.
+    - **Pointer grabs**: `window.grabs` — in that same dict, since the window subsystem is what
+      parses it (`parse_client_caps`) — enables `pointer-grab` and `pointer-ungrab` packets when a
+      remote application grabs its pointer. The legacy spelling is `pointer.grabs`, which the
+      server reads only in backwards-compatible mode and only when `window.grabs` is absent; both
+      are sent. The client asks winit
       for `CursorGrabMode::Confined`, falls back to `Locked`, tracks the owning `wid`, and releases
       the grab on an ungrab packet or before destroying the grabbed window.
     - **Local display**: the hello carries a nested `display` caps dict holding `desktop_size`

@@ -698,6 +698,15 @@ impl XpraClient {
             // only; our own outgoing packets are small input events, sent uncompressed.
             "compressors": ["lz4"],
             "compression_level": 1,
+            // window forwarding. A modern server reads this from the `window` namespace and only
+            // falls back to the plural `windows` flag in backwards-compatible mode (`wants_windows`,
+            // xpra server/common.py), so without the dict a server run with
+            // XPRA_BACKWARDS_COMPATIBLE=0 never even instantiates its window subsystem
+            // (`WindowsConnection.is_needed`) and forwards no windows at all.
+            // `grabs` belongs in here too: it is the current spelling of the `pointer.grabs`
+            // capability below, which `parse_client_caps` (xpra server/source/window.py) only
+            // consults in that same compatibility mode.
+            "window": { "enabled": true, "grabs": true },
             "windows": true,
             "keyboard": true,
             "mouse": true,
@@ -716,9 +725,9 @@ impl XpraClient {
             // fallback for how older servers gate cursor sending.
             "cursor": { "encodings": ["png"], "backwards-compatible": true },
             "cursors": true,
-            // allow remote applications to confine the local pointer to their forwarded window.
-            // The server only emits pointer-grab / pointer-ungrab when this nested capability is
-            // present (server/source/window.py).
+            // allow remote applications to confine the local pointer to their forwarded window:
+            // the legacy spelling of `window.grabs` above, which a backwards-compatible server
+            // falls back to when the modern one is absent (server/source/window.py).
             "pointer": { "grabs": true },
             // advertise only the window metadata keys we actually apply. Without this list, the
             // server assumes the broad legacy default and sends properties this client ignores.
