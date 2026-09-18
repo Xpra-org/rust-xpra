@@ -1,9 +1,10 @@
+use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Instant;
 
 use log::{debug, error, trace};
-use softbuffer::{Context, Surface};
+use softbuffer::{Context, Rect, Surface};
 use winit::dpi::PhysicalPosition;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
@@ -26,6 +27,16 @@ pub struct XpraWindow {
     // absolute position of the pointer as of the last CursorMoved event:
     // button and wheel events don't carry a position of their own.
     pub last_cursor: (i32, i32),
+    // Regions of `framebuffer` written since the last present, and the damage of the frames
+    // before it: softbuffer hands back a recycled buffer holding the pixels we presented `age`
+    // frames ago, so a partial copy has to replay the damage of those frames to catch it up.
+    dirty: Vec<Rect>,
+    history: VecDeque<Vec<Rect>>,
+    // Buffer age is only reported by the backends that also take damage rectangles (Wayland, X11
+    // with XShm, Win32, Web); elsewhere softbuffer always answers 0, which forces a full copy
+    // anyway. Counting the consecutive zeroes gives up on the bookkeeping on such a backend.
+    zero_age_streak: u32,
+    track_damage: bool,
 }
 
 
@@ -50,6 +61,30 @@ impl XpraWindow {
             below: false,
             paint_debug: cfg!(debug_assertions),
             last_cursor: (0, 0),
+            dirty: Vec::new(),
+            history: VecDeque::new(),
+            zero_age_streak: 0,
+            track_damage: true,
+        }
+    }
+
+    // Record a region of the framebuffer as written, clipped to it. A rectangle that falls
+    // entirely outside is dropped, and a softbuffer Rect cannot be empty.
+    fn mark_dirty(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        if !self.track_damage {
+            return;
+        }
+        if let Some(r) = clip_rect(self.width, self.height, x, y, w, h) {
+            self.dirty.push(r);
+        }
+    }
+
+    // Copy one rectangle out of the framebuffer into the surface buffer, row by row.
+    fn blit_rect(fb: &[u32], buffer: &mut [u32], stride: u32, r: &Rect) {
+        let w = r.width.get() as usize;
+        for row in 0..r.height.get() {
+            let off = ((r.y + row) * stride + r.x) as usize;
+            buffer[off..off + w].copy_from_slice(&fb[off..off + w]);
         }
     }
 
@@ -75,6 +110,7 @@ impl XpraWindow {
         if self.paint_debug {
             self.draw_debug_border(x, y, w, h);
         }
+        self.mark_dirty(x, y, w, h);
         self.window.request_redraw();
     }
 
@@ -106,25 +142,84 @@ impl XpraWindow {
 
     pub fn draw_screen(&mut self) {
         trace!("draw_screen wid={:#x}", self.wid);
+        // take this frame's damage before the surface is borrowed
+        let dirty = std::mem::take(&mut self.dirty);
+        let stride = self.width;
+        let (fw, fh) = (self.width, self.height);
+
         let mut buffer = match self.surface.buffer_mut() {
             Ok(buffer) => buffer,
             Err(e) => {
                 error!("failed to get softbuffer buffer: {:?}", e);
+                self.dirty = dirty;
                 return;
             }
         };
         if buffer.len() != self.framebuffer.len() {
-            // surface hasn't been resized to match our framebuffer yet, skip this present:
+            // surface hasn't been resized to match our framebuffer yet: skip this present, but
+            // keep the damage so the next one still paints it.
+            self.dirty = dirty;
             return;
         }
+
+        // `age` is how many presents ago this recycled buffer last held our pixels: 0 means its
+        // contents are undefined and all of it has to be rewritten, anything else means it is
+        // that many frames stale, so replaying the damage of those frames catches it up.
+        let age = if self.track_damage { buffer.age() as usize } else { 0 };
+        let full = age == 0 || age > self.history.len() + 1 || dirty.is_empty();
+
         let t0 = Instant::now();
-        buffer.copy_from_slice(&self.framebuffer);
+        let damage: Vec<Rect> = if full {
+            buffer.copy_from_slice(&self.framebuffer);
+            Vec::new()
+        } else {
+            let mut rects: Vec<Rect> = dirty.clone();
+            for past in self.history.iter().take(age - 1) {
+                rects.extend_from_slice(past);
+            }
+            for r in &rects {
+                Self::blit_rect(&self.framebuffer, &mut buffer, stride, r);
+            }
+            rects
+        };
         let copy_elapsed = t0.elapsed();
         let t1 = Instant::now();
-        let result = buffer.present();
-        trace!("perf: draw_screen wid={:#x} copy={:?} present={:?}", self.wid, copy_elapsed, t1.elapsed());
+        let rects = damage.len();
+        let result = if damage.is_empty() {
+            buffer.present()
+        } else {
+            buffer.present_with_damage(&damage)
+        };
+        trace!("perf: draw_screen wid={:#x} full={} rects={} copy={:?} present={:?}",
+               self.wid, full, rects, copy_elapsed, t1.elapsed());
         if let Err(e) = result {
             error!("failed to present softbuffer buffer: {:?}", e);
+        }
+
+        if self.track_damage {
+            if age == 0 {
+                self.zero_age_streak += 1;
+                if self.zero_age_streak >= 8 {
+                    debug!("wid={:#x} backend never reports a buffer age, not tracking damage",
+                           self.wid);
+                    self.track_damage = false;
+                    self.dirty = Vec::new();
+                    self.history = VecDeque::new();
+                    return;
+                }
+            } else {
+                self.zero_age_streak = 0;
+            }
+            // Remember what this frame wrote so a later partial copy can replay it. A full copy
+            // rewrote everything, which is what the next frame has to assume it must replace.
+            let written = match (NonZeroU32::new(fw), NonZeroU32::new(fh)) {
+                (Some(w), Some(h)) if full => vec![Rect { x: 0, y: 0, width: w, height: h }],
+                _ => dirty,
+            };
+            self.history.push_front(written);
+            while self.history.len() > 8 {
+                self.history.pop_back();
+            }
         }
     }
 
@@ -144,6 +239,10 @@ impl XpraWindow {
         self.width = rw;
         self.height = rh;
         self.framebuffer = vec![0u32; (rw * rh) as usize];
+        // the framebuffer was replaced, so every recorded rectangle describes the old geometry:
+        // drop them all and let the next present rewrite the whole surface.
+        self.dirty.clear();
+        self.history.clear();
         self.window.request_redraw();
     }
 
@@ -213,9 +312,31 @@ fn blit_into<const BGRA: bool>(fb: &mut [u32], fw: u32, fh: u32,
 }
 
 
+// The part of a `w`x`h` rectangle at (x,y) that lies inside a `fw`x`fh` framebuffer, or None if
+// none of it does. Every rectangle handed to `blit_rect` or to `present_with_damage` comes from
+// here, so this is what keeps those row slices inside the buffer; a softbuffer Rect also cannot
+// be empty, which is the other reason an off-screen rectangle has to become None rather than a
+// zero-sized Rect.
+fn clip_rect(fw: u32, fh: u32, x: i32, y: i32, w: u32, h: u32) -> Option<Rect> {
+    let x0 = x.max(0) as u32;
+    let y0 = y.max(0) as u32;
+    let x1 = ((x as i64 + w as i64).max(0) as u64).min(fw as u64) as u32;
+    let y1 = ((y as i64 + h as i64).max(0) as u64).min(fh as u64) as u32;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some(Rect {
+        x: x0,
+        y: y0,
+        width: NonZeroU32::new(x1 - x0)?,
+        height: NonZeroU32::new(y1 - y0)?,
+    })
+}
+
+
 #[cfg(test)]
 mod tests {
-    use super::blit_into;
+    use super::{blit_into, clip_rect};
 
     // the per-pixel loop this replaced, kept as the reference the fast path has to agree with
     fn reference(fb: &mut [u32], fw: u32, fh: u32,
@@ -277,5 +398,44 @@ mod tests {
         assert_eq!(fb[0], 0x00332211);
         blit_into::<false>(&mut fb, 1, 1, 0, 0, 1, 1, &px);
         assert_eq!(fb[0], 0x00112233);
+    }
+
+    // what a clipped rectangle has to satisfy for `blit_rect` to stay inside the framebuffer
+    fn assert_inside(fw: u32, fh: u32, x: i32, y: i32, w: u32, h: u32) {
+        let Some(r) = clip_rect(fw, fh, x, y, w, h) else { return };
+        assert!(r.x + r.width.get() <= fw, "{:?} runs off the right of {fw}", r);
+        assert!(r.y + r.height.get() <= fh, "{:?} runs off the bottom of {fh}", r);
+    }
+
+    #[test]
+    fn a_rectangle_inside_is_unchanged() {
+        let r = clip_rect(64, 48, 10, 8, 20, 16).unwrap();
+        assert_eq!((r.x, r.y, r.width.get(), r.height.get()), (10, 8, 20, 16));
+    }
+
+    #[test]
+    fn overhang_is_trimmed() {
+        let r = clip_rect(64, 48, -5, -7, 20, 16).unwrap();
+        assert_eq!((r.x, r.y, r.width.get(), r.height.get()), (0, 0, 15, 9));
+        let r = clip_rect(64, 48, 50, 40, 20, 16).unwrap();
+        assert_eq!((r.x, r.y, r.width.get(), r.height.get()), (50, 40, 14, 8));
+    }
+
+    #[test]
+    fn a_rectangle_fully_outside_is_none() {
+        assert!(clip_rect(64, 48, -30, -30, 20, 16).is_none());
+        assert!(clip_rect(64, 48, 64, 48, 8, 8).is_none());
+        assert!(clip_rect(64, 48, 0, 0, 0, 0).is_none());
+    }
+
+    #[test]
+    fn the_result_always_fits_the_framebuffer() {
+        for &(x, y, w, h) in &[
+            (0, 0, 64, 48), (-5, -7, 20, 16), (50, 40, 20, 16), (-3, 20, 70, 4),
+            (0, 0, 1, 1), (63, 47, 100, 100), (i32::MIN, 0, 8, 8), (i32::MAX, 0, 8, 8),
+            (0, 0, u32::MAX, u32::MAX),
+        ] {
+            assert_inside(64, 48, x, y, w, h);
+        }
     }
 }
