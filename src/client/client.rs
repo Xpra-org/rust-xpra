@@ -2253,15 +2253,19 @@ impl XpraClient {
                 return;
             }
         };
-        match window
-            .set_cursor_grab(CursorGrabMode::Confined)
-            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Locked))
-        {
+        // Only `Confined` means what the server is asking for: keep the pointer inside this
+        // window, still moving and still reporting where it is. `Locked` is a different feature -
+        // it pins the cursor in place and reports raw deltas instead, for mouse-look in games -
+        // so on a backend where `Confined` is unsupported (macOS, where `Locked` disassociates
+        // the mouse from the cursor) the fallback froze the pointer: a menu opened and then could
+        // not be hovered at all. Leaving the pointer alone is a much closer approximation, and
+        // the server's own grab still dismisses the menu when the pointer leaves it.
+        match window.set_cursor_grab(CursorGrabMode::Confined) {
             Ok(()) => {
                 self.pointer_grabbed = Some(wid);
                 debug!("pointer grabbed by window {:#x}", wid);
             }
-            Err(e) => warn!("failed to grab pointer for window {:#x}: {:?}", wid, e),
+            Err(e) => debug!("not confining the pointer to window {:#x}: {:?}", wid, e),
         }
     }
 
