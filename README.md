@@ -2,11 +2,11 @@
 
 # rust-xpra
 
-Xpra client implemented in [rust](https://www.rust-lang.org/), for MS Windows and Linux.
+Xpra client implemented in [rust](https://www.rust-lang.org/), for MS Windows, Linux and macOS.
 
 ## Status
 
-It builds on MS Windows and Linux (X11 and Wayland).
+It builds on MS Windows, Linux (X11 and Wayland) and macOS.
 
 It supports `tcp`/`ssl`/`ws`/`wss` connections, plus `ssh` (via a subprocess, see below) and direct Unix-domain
 socket connections on Unix platforms. `ssl`/`wss` verify the server's certificate against the system trust
@@ -21,7 +21,7 @@ The server may be run in either mode: nothing sent depends on `XPRA_BACKWARDS_CO
 packets the client *receives* are accepted under both their pre-6.5 and their current names.
 
 There is no server implementation. Plain-text clipboard synchronization is supported, as is automatic
-server-to-client speaker forwarding on Windows. On Linux, a server running on the same host sends its pixels
+server-to-client speaker forwarding on Windows. On Linux and macOS, a server running on the same host sends its pixels
 through shared memory rather than the socket — see [Shared memory transfers](#shared-memory-transfers).
 
 On MS Windows there is a system tray icon with an **Exit** menu entry, and server-forwarded
@@ -32,7 +32,7 @@ written to the client log.
 why we are leaving (it logs `client has requested disconnection: client interrupted`) before the process exits
 with code 0. `SIGTERM` and `SIGHUP` do the same on Unix, as does closing the console window on MS Windows. A
 second interrupt terminates the process the ordinary way, so a shutdown stuck on a dead connection is still
-interruptible. On Linux, where there is no tray icon and therefore no **Exit** menu entry, this is the only
+interruptible. On Linux and macOS, where there is no tray icon and therefore no **Exit** menu entry, this is the only
 clean way out.
 
 ### Windows speaker forwarding
@@ -70,9 +70,26 @@ There is no system tray icon on Linux either (see [System tray](#system-tray) be
 StatusNotifierItem protocol needs a D-Bus dependency, and the older XEmbed tray is X11-only. Server-forwarded
 notifications are shown as balloons on that tray icon, so they too are Windows-only and are merely logged here.
 
+### Known macOS limitations
+
+Everything that is not written against a platform API is the same code as on Linux: the connections, the
+clipboard, [shared memory transfers](#shared-memory-transfers) and the `Ctrl-C` shutdown above. What is
+missing is what is implemented against Windows:
+- no system tray icon, and so no **Exit** menu entry (`Ctrl-C` is the way out) and no desktop notifications —
+  as on Linux, the client only logs them;
+- no `h264`: that decoder is the operating system's, through Media Foundation, so the server picks among
+  `jpeg`/`png`/`webp` — or shared memory, when it runs on the same host;
+- no speaker forwarding;
+- a server-forwarded bell writes the terminal `^G` rather than playing a tone, as on Linux.
+
+Override-redirect windows (tooltips, menus, dropdowns) have no macOS equivalent either: they are created
+undecorated and non-resizable, but remain ordinary managed windows, as on Wayland.
+
+The published binary is Apple silicon (arm64) only; on an Intel Mac, build from source.
+
 ## Downloads
 
-Pre-built binaries for MS Windows and Linux are attached to each
+Pre-built binaries for MS Windows, Linux and macOS are attached to each
 [release](https://github.com/Xpra-org/rust-xpra/releases) on GitHub.
 
 Linux packages (RPM and DEB) are also published to the xpra repositories, under the package name
@@ -148,8 +165,8 @@ flag is currently the only way to reach a server whose certificate the system do
 
 `ssh` shells out to the system `ssh` binary and uses its stdin/stdout pipes as the byte stream (no SSH library
 dependency), running `xpra _proxy [DISPLAY]` on the remote end — the same mechanism xpra's own client uses to
-bridge stdin/stdout to an existing display's socket. This requires a working `ssh` in `PATH` (OpenSSH on Linux,
-or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the remote host. Authentication must
+bridge stdin/stdout to an existing display's socket. This requires a working `ssh` in `PATH` (OpenSSH on Linux and
+macOS, or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the remote host. Authentication must
 not require interactive input on stdin (stdin carries the xpra protocol, not a terminal), so use key-based auth
 via an ssh-agent or a passphrase-less key; host-key confirmation and password prompts still work normally since
 OpenSSH reads those from the controlling terminal, not stdin.
@@ -215,7 +232,8 @@ Xpra's answer is `mmap`: the client creates a backing file, maps it shared and t
 the server writes raw uncompressed frames straight into it — the `draw` packets then carry nothing but offsets
 into that area. Transfers become lossless and cost a `memcpy` instead of a decode.
 
-This is **on by default on Linux** (as it is in xpra's own client), for the server → client direction only.
+This is **on by default on Linux and macOS** (as it is in xpra's own client), for the server → client
+direction only.
 Nothing has to be configured and nothing is lost when it does not apply: the client always offers an area, and a
 server that cannot open the file — because it is on another host — simply declines, leaving the session on the
 usual picture encodings. Neither side compares hostnames; each writes a random token into the area for the other
