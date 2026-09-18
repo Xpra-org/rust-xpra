@@ -281,6 +281,29 @@ fn total_display_size(monitors: &[MonitorInfo]) -> Option<(u32, u32)> {
 }
 
 
+// The origin of the local monitor layout: the top-left corner of the bounding box every monitor
+// lives in. It is negative on an axis whenever a monitor sits left of or above the primary one -
+// on Windows the secondary display to the left of the primary starts at a negative x.
+//
+// This is the offset between the server's coordinate space and ours. We send the monitor
+// geometries with their raw origin (see `local_monitors`), and the server rebases the layout to a
+// non-negative one before mirroring it (`normalized_monitors`, xpra util/screen.py); every
+// position it then sends back is phrased in that rebased space. Adding this origin back undoes
+// the rebase.
+fn layout_origin(monitors: &[MonitorInfo]) -> (i32, i32) {
+    let mut origin: Option<(i32, i32)> = None;
+    for monitor in monitors {
+        let (x, y, _, _) = monitor.geometry;
+        origin = Some(match origin {
+            None => (x, y),
+            Some((ox, oy)) => (ox.min(x), oy.min(y)),
+        });
+    }
+    // no monitors means nothing was sent in `hello` either, so the server has no layout to rebase
+    origin.unwrap_or((0, 0))
+}
+
+
 pub struct XpraClient {
     pub hello_sent: bool,
     pub server_version: String,
@@ -824,6 +847,22 @@ impl XpraClient {
     // why the server needs it). `None` when the point is on no known monitor, in which case the
     // caller leaves the key out and the server keeps using the absolute coordinates it was sent
     // alongside.
+    // Turn a window origin the server sent us into a local desktop position.
+    //
+    // The outgoing direction is already unambiguous - every position we send carries a
+    // `{index, position}` monitor descriptor the server resolves against its own normalized copy
+    // of the layout - but the incoming one has no such descriptor: the server states a window's
+    // position as plain coordinates in its rebased space. With a monitor left of the primary one
+    // the two spaces are a whole screen apart, so applying them verbatim puts the window on the
+    // wrong monitor - and, since we report the placement back and the server rebases it again,
+    // each round trip moves it another screen along until it leaves the desktop entirely.
+    //
+    // Only origins are affected; sizes are the same in both spaces.
+    fn server_to_local(&self, x: i32, y: i32) -> (i32, i32) {
+        let (ox, oy) = layout_origin(&self.monitors);
+        (x.saturating_add(ox), y.saturating_add(oy))
+    }
+
     fn monitor_descriptor(&self, x: i32, y: i32) -> Option<Value> {
         let (index, mx, my) = monitor_relative_position(&self.monitors, x, y)?;
         Some(json!({ "index": index, "position": [mx, my] }))
@@ -2055,8 +2094,7 @@ impl XpraClient {
 
     fn process_new_common(&mut self, event_loop: &ActiveEventLoop, packet: &Packet, override_redirect: bool) {
         let wid = packet.get_u64(1);
-        let x = packet.get_i32(2);
-        let y = packet.get_i32(3);
+        let (x, y) = self.server_to_local(packet.get_i32(2), packet.get_i32(3));
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
         // the dedicated `new-override-redirect` packet is the only signal in backwards-compatible
@@ -2113,6 +2151,8 @@ impl XpraClient {
 
     fn process_window_move_resize(&mut self, packet: &Packet) {
         let wid = packet.get_u64(1);
+        // before the window is borrowed, since this reads the monitor layout off `self`
+        let (x, y) = self.server_to_local(packet.get_i32(2), packet.get_i32(3));
         let window = match self.windows.get_mut(&wid) {
             Some(window) => window,
             None => {
@@ -2120,8 +2160,6 @@ impl XpraClient {
                 return;
             }
         };
-        let x = packet.get_i32(2);
-        let y = packet.get_i32(3);
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
 
@@ -2790,8 +2828,8 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, server_encodings,
-        WindowMetadataUpdate, WindowSizeConstraints,
+        client_encodings, draw_ack_packet, layout_origin, server_encodings,
+        MonitorInfo, WindowMetadataUpdate, WindowSizeConstraints,
     };
     use serde_json::json;
     use yaml_rust2::YamlLoader;
@@ -2799,6 +2837,41 @@ mod tests {
     fn parse_metadata(yaml: &str) -> WindowMetadataUpdate {
         let documents = YamlLoader::load_from_str(yaml).unwrap();
         WindowMetadataUpdate::parse(&documents[0])
+    }
+
+    fn monitor(x: i32, y: i32, w: u32, h: u32) -> MonitorInfo {
+        MonitorInfo {
+            name: String::new(),
+            primary: false,
+            geometry: (x, y, w, h),
+            refresh_rate_millihertz: None,
+        }
+    }
+
+    #[test]
+    fn layout_origin_is_the_offset_the_server_rebases_away() {
+        // a single monitor at the origin, and the layout needs no correction at all
+        assert_eq!(layout_origin(&[monitor(0, 0, 1920, 1200)]), (0, 0));
+        // nothing was sent to the server either, so there is nothing to undo
+        assert_eq!(layout_origin(&[]), (0, 0));
+        // three side by side with the secondary to the *left* of the primary: the server rebases
+        // the layout to start at 0, so its coordinates are ours shifted by a whole screen
+        let three = [
+            monitor(0, 0, 1920, 1200),
+            monitor(-1920, 0, 1920, 1200),
+            monitor(1920, 0, 1920, 1200),
+        ];
+        assert_eq!(layout_origin(&three), (-1920, 0));
+        // a monitor above the primary one moves the origin on the other axis too
+        assert_eq!(
+            layout_origin(&[monitor(0, 0, 1920, 1200), monitor(-1920, -300, 1920, 1200)]),
+            (-1920, -300),
+        );
+        // and a layout that already starts at the origin is left alone
+        assert_eq!(
+            layout_origin(&[monitor(0, 0, 1920, 1200), monitor(1920, 0, 1920, 1200)]),
+            (0, 0),
+        );
     }
 
     #[test]
