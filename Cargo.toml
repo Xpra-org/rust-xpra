@@ -64,6 +64,8 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     # the logger enables ANSI escape processing on the console (see remote_logging.rs)
     "Win32_System_Console",
+    # GetKeyboardLayout, to tell the server which keyboard layout to load (see client/keymap.rs)
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
 # Embeds the application icon and the DPI manifest into the .exe (see build.rs). Build-time only -
