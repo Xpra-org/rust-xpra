@@ -2576,6 +2576,18 @@ impl XpraClient {
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                 if let Some(window) = self.windows.get_mut(&wid) {
+                    // A minimized window has no geometry worth reporting, and reporting it is
+                    // destructive: Windows parks one at -32000,-32000 and collapses it to the size
+                    // of its taskbar button, which we would forward as a `window-configure` and
+                    // the server would apply to the *real* window - which then stays there,
+                    // off-screen and 110x22, long after the local window is restored. Restoring
+                    // sends a second pair of events with the true geometry, so nothing is lost by
+                    // staying quiet here. `None` means the platform cannot tell (Wayland, where
+                    // there is no absolute position to report either way), which is not minimized.
+                    if window.window.is_minimized() == Some(true) {
+                        debug!("window {:#x} is minimized, keeping its remote geometry", wid);
+                        return;
+                    }
                     let size = window.window.inner_size();
                     window.resize(size.width, size.height);
                     let (x, y, w, h) = window.get_geometry();
