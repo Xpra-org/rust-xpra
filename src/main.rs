@@ -30,13 +30,24 @@ use client::remote_logging::{self, LogSink};
 use client::signals;
 
 
+// `-v` / `-vv` raise the log level. This is read straight from `argv` because the logger has to
+// exist before anything else can report a failure, which is earlier than `parse_args` runs; that
+// function accepts both spellings too, so a typo is still an error rather than a hostname.
+fn verbosity<I: IntoIterator<Item = S>, S: AsRef<str>>(args: I, default: LevelFilter) -> LevelFilter {
+    args.into_iter().fold(default, |level, arg| match arg.as_ref() {
+        "-v" => level.max(LevelFilter::Debug),
+        "-vv" => LevelFilter::Trace,
+        _ => level,
+    })
+}
+
 fn main() {
-    let level = if cfg!(debug_assertions) {
+    let level = verbosity(env::args().skip(1), if cfg!(debug_assertions) {
         LevelFilter::Debug
     }
     else {
         LevelFilter::Info
-    };
+    });
     // installs the global logger; the sink stays empty until the server confirms it accepts our
     // logs, at which point info-and-above records are also forwarded (see client::remote_logging).
     let log_sink = remote_logging::init(level);
@@ -70,6 +81,7 @@ certificate needs --ssl-insecure.
 Options:
   -h, --help                          show this help and exit
       --version                       show the version and exit
+  -v, -vv                             log debug, or trace, instead of just info
       --ssl-insecure                  connect to an ssl:// or wss:// server without
                                       verifying its certificate or hostname
 
@@ -115,7 +127,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
     for arg in args.iter().skip(1) {
         match arg.as_str() {
             // dealt with before this runs, but they are still valid arguments:
-            "-h" | "--help" | "--version" => {}
+            "-h" | "--help" | "--version" | "-v" | "-vv" => {}
             "--ssl-insecure" => options.ssl_insecure = true,
             _ if arg.starts_with('-') => return Err(format!("unrecognized option {:?}", arg)),
             _ => match &options.target {
@@ -661,5 +673,31 @@ mod tests {
         };
         assert_eq!(code, ExitCode::ConnectionFailed);
         assert!(message.contains("not supported on this platform"), "{message}");
+    }
+}
+
+
+#[cfg(test)]
+mod verbosity_tests {
+    use super::verbosity;
+    use log::LevelFilter;
+
+    #[test]
+    fn no_flag_keeps_the_default() {
+        assert_eq!(verbosity(["host:100"], LevelFilter::Info), LevelFilter::Info);
+        assert_eq!(verbosity([] as [&str; 0], LevelFilter::Info), LevelFilter::Info);
+    }
+
+    #[test]
+    fn v_asks_for_debug_and_vv_for_trace() {
+        assert_eq!(verbosity(["-v"], LevelFilter::Info), LevelFilter::Debug);
+        assert_eq!(verbosity(["-vv"], LevelFilter::Info), LevelFilter::Trace);
+        assert_eq!(verbosity(["-v", "-vv"], LevelFilter::Info), LevelFilter::Trace);
+        assert_eq!(verbosity(["-vv", "-v"], LevelFilter::Info), LevelFilter::Trace);
+    }
+
+    #[test]
+    fn a_debug_build_is_never_quietened() {
+        assert_eq!(verbosity(["-v"], LevelFilter::Debug), LevelFilter::Debug);
     }
 }
