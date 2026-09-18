@@ -60,34 +60,16 @@ impl XpraWindow {
             error!("pixel data is too small! got {:?} bytes, expected {:?}", pixels.len(), expected);
             return;
         }
-        // convert the decoded bytes into softbuffer's 0x00RRGGBB u32 pixels,
-        // and composite them into our persistent framebuffer at (x,y):
-        let to_pixel: fn(&[u8]) -> u32 = if coding == "jpeg" || coding == "h264" || coding == "webp"
-                || coding == "mmap" {
-            // turbojpeg outputs BGRA, and so do WebPDecodeBGRA, the Media Foundation h264 path
-            // (RGB32) and the shared memory area (we ask the server for BGRX, see send_hello):
-            |px: &[u8]| (px[2] as u32) << 16 | (px[1] as u32) << 8 | (px[0] as u32)
-        } else {
-            // spng outputs RGBA8:
-            |px: &[u8]| (px[0] as u32) << 16 | (px[1] as u32) << 8 | (px[2] as u32)
-        };
+        // The byte order is a property of the decoder, so it selects the instantiation once here
+        // rather than being re-tested for every pixel: turbojpeg outputs BGRA, and so do
+        // WebPDecodeBGRA, the Media Foundation h264 path (RGB32) and the shared memory area (we
+        // ask the server for BGRX, see send_hello), whereas spng outputs RGBA8.
+        let bgra = coding == "jpeg" || coding == "h264" || coding == "webp" || coding == "mmap";
         let t0 = Instant::now();
-        for row in 0..h {
-            let dst_y = y + row as i32;
-            if dst_y < 0 || dst_y as u32 >= self.height {
-                continue;
-            }
-            let src_row_start = (row as usize) * (w as usize) * 4;
-            for col in 0..w {
-                let dst_x = x + col as i32;
-                if dst_x < 0 || dst_x as u32 >= self.width {
-                    continue;
-                }
-                let src_off = src_row_start + (col as usize) * 4;
-                let px = to_pixel(&pixels[src_off..src_off + 4]);
-                let dst_off = (dst_y as u32) as usize * self.width as usize + dst_x as usize;
-                self.framebuffer[dst_off] = px;
-            }
+        if bgra {
+            blit_into::<true>(&mut self.framebuffer, self.width, self.height, x, y, w, h, pixels);
+        } else {
+            blit_into::<false>(&mut self.framebuffer, self.width, self.height, x, y, w, h, pixels);
         }
         trace!("perf: paint wid={:#x} {:?}x{:?} converted in {:?}", self.wid, w, h, t0.elapsed());
         if self.paint_debug {
@@ -189,5 +171,111 @@ impl XpraWindow {
         let outer = self.window.outer_position().ok()?;
         let inner = self.window.inner_position().ok()?;
         Some(PhysicalPosition::new(inner_x + (outer.x - inner.x), inner_y + (outer.y - inner.y)))
+    }
+}
+
+
+// Composite a `w`x`h` BGRA/RGBA image into a `fw`x`fh` framebuffer of 0x00RRGGBB pixels at (x,y).
+//
+// The source rectangle may hang off any edge, so the visible span is worked out once per call
+// instead of being re-tested for every pixel, and each row is then a pair of exactly sized
+// slices: no bounds check and no indirect call survive the inner loop, which is what lets it
+// vectorise. BGRA is a const parameter so each instantiation carries one byte order.
+fn blit_into<const BGRA: bool>(fb: &mut [u32], fw: u32, fh: u32,
+                               x: i32, y: i32, w: u32, h: u32, pixels: &[u8]) {
+    let (xi, yi) = (x as i64, y as i64);
+    // the source columns and rows that land inside the framebuffer
+    let col0 = (-xi).clamp(0, w as i64);
+    let col1 = (fw as i64 - xi).clamp(col0, w as i64);
+    let row0 = (-yi).clamp(0, h as i64);
+    let row1 = (fh as i64 - yi).clamp(row0, h as i64);
+    if col1 <= col0 || row1 <= row0 {
+        return;
+    }
+    let (col0, col1) = (col0 as usize, col1 as usize);
+    let count = col1 - col0;
+    let stride = fw as usize;
+    let src_stride = w as usize * 4;
+    let dst_x = (xi + col0 as i64) as usize;
+    for row in row0 as usize..row1 as usize {
+        let dst_off = ((yi + row as i64) as usize) * stride + dst_x;
+        let src_off = row * src_stride + col0 * 4;
+        let dst = &mut fb[dst_off..dst_off + count];
+        let src = &pixels[src_off..src_off + count * 4];
+        for (d, s) in dst.iter_mut().zip(src.chunks_exact(4)) {
+            *d = if BGRA {
+                (s[2] as u32) << 16 | (s[1] as u32) << 8 | (s[0] as u32)
+            } else {
+                (s[0] as u32) << 16 | (s[1] as u32) << 8 | (s[2] as u32)
+            };
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::blit_into;
+
+    // the per-pixel loop this replaced, kept as the reference the fast path has to agree with
+    fn reference(fb: &mut [u32], fw: u32, fh: u32,
+                 x: i32, y: i32, w: u32, h: u32, pixels: &[u8], bgra: bool) {
+        for row in 0..h {
+            let dst_y = y + row as i32;
+            if dst_y < 0 || dst_y as u32 >= fh {
+                continue;
+            }
+            let src_row_start = (row as usize) * (w as usize) * 4;
+            for col in 0..w {
+                let dst_x = x + col as i32;
+                if dst_x < 0 || dst_x as u32 >= fw {
+                    continue;
+                }
+                let o = src_row_start + (col as usize) * 4;
+                let px = if bgra {
+                    (pixels[o + 2] as u32) << 16 | (pixels[o + 1] as u32) << 8 | (pixels[o] as u32)
+                } else {
+                    (pixels[o] as u32) << 16 | (pixels[o + 1] as u32) << 8 | (pixels[o + 2] as u32)
+                };
+                fb[(dst_y as u32) as usize * fw as usize + dst_x as usize] = px;
+            }
+        }
+    }
+
+    fn check(fw: u32, fh: u32, x: i32, y: i32, w: u32, h: u32, bgra: bool) {
+        let pixels: Vec<u8> = (0..(w * h * 4)).map(|i| (i % 251) as u8).collect();
+        let mut fast = vec![0u32; (fw * fh) as usize];
+        let mut slow = vec![0u32; (fw * fh) as usize];
+        if bgra {
+            blit_into::<true>(&mut fast, fw, fh, x, y, w, h, &pixels);
+        } else {
+            blit_into::<false>(&mut fast, fw, fh, x, y, w, h, &pixels);
+        }
+        reference(&mut slow, fw, fh, x, y, w, h, &pixels, bgra);
+        assert_eq!(fast, slow, "mismatch at ({x},{y}) {w}x{h} in {fw}x{fh} bgra={bgra}");
+    }
+
+    #[test]
+    fn matches_the_per_pixel_reference() {
+        for &bgra in &[true, false] {
+            check(64, 48, 0, 0, 64, 48, bgra);      // exact fit
+            check(64, 48, 10, 8, 20, 16, bgra);     // fully inside
+            check(64, 48, -5, -7, 20, 16, bgra);    // clipped at the top left
+            check(64, 48, 50, 40, 20, 16, bgra);    // clipped at the bottom right
+            check(64, 48, -30, -30, 20, 16, bgra);  // entirely off the top left
+            check(64, 48, 64, 48, 8, 8, bgra);      // entirely off the bottom right
+            check(64, 48, -3, 20, 70, 4, bgra);     // wider than the framebuffer
+            check(64, 48, 0, 0, 1, 1, bgra);        // a single pixel
+        }
+    }
+
+    #[test]
+    fn byte_order_is_0x00rrggbb() {
+        let px = [0x11u8, 0x22, 0x33, 0xff];        // b=0x11 g=0x22 r=0x33 read as BGRA
+        let mut fb = [0u32; 1];
+        blit_into::<true>(&mut fb, 1, 1, 0, 0, 1, 1, &px);
+        assert_eq!(fb[0], 0x00332211);
+        blit_into::<false>(&mut fb, 1, 1, 0, 0, 1, 1, &px);
+        assert_eq!(fb[0], 0x00112233);
     }
 }
