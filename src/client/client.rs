@@ -2247,12 +2247,29 @@ impl XpraClient {
             self.release_pointer_grab();
         }
         let window = match self.windows.get(&wid) {
-            Some(window) => &window.window,
+            Some(window) => window,
             None => {
                 warn!("cannot grab pointer: window {:#x} not found", wid);
                 return;
             }
         };
+        // Never confine the pointer to an override-redirect window. An X11 pointer grab is not a
+        // confinement - `XGrabPointer` is called with `confine_to = None`, and it means "route the
+        // pointer events to this window", not "keep the cursor inside its rectangle" - so taking
+        // it as one is already an approximation. On a menu it is a deadlock: the grab window is
+        // the popup itself (122x50 for a qterminal context menu), dismissing it needs the pointer
+        // to leave, and the confinement is precisely what stops it. Nothing else can release the
+        // grab, since the server only ungrabs once the application drops the menu.
+        //
+        // Not confining is the same approximation already relied on where `Confined` does not
+        // exist (macOS, see below): the server's own grab keeps routing the events and dismisses
+        // the menu when the pointer leaves it.
+        if window.override_redirect {
+            debug!("not confining the pointer to override-redirect window {:#x}", wid);
+            self.pointer_grabbed = None;
+            return;
+        }
+        let window = &window.window;
         // Only `Confined` means what the server is asking for: keep the pointer inside this
         // window, still moving and still reporting where it is. `Locked` is a different feature -
         // it pins the cursor in place and reports raw deltas instead, for mouse-look in games -
