@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod connect_dialog;
 pub mod draw_decoder;
 pub mod font;
+pub mod keymap;
 pub mod mmap;
 pub mod paint;
 pub mod pinentry;

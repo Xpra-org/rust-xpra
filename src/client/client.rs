@@ -46,6 +46,7 @@ use super::audio::{
 };
 use super::clipboard::start_clipboard_loop;
 use super::draw_decoder;
+use super::keymap;
 use super::mmap::{self, MmapArea};
 use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::remote_logging::LogSink;
@@ -803,6 +804,18 @@ impl XpraClient {
         // announce, so the unprefixed legacy form would be dead weight.
         if let Some(area) = &self.mmap {
             packet[1]["mmap"] = json!({ "read": area.caps() });
+        }
+        // The keyboard layout to load. It goes beside `keyboard` at the top level of the hello
+        // rather than inside it, which is where the server reads it from (`parse_layout`, xpra
+        // x11/server/keyboard_config.py) and where xpra's own client puts it (`get_keyboard_caps`,
+        // client/subsystem/keyboard.py). Without it the server keeps its own layout - `us` unless
+        // it was started otherwise - and any key that layout does not have cannot be pressed at
+        // all, however we name it: a Spanish keyboard gets no "\u{f1}", an Arabic one nothing
+        // whatsoever. Left out when we cannot tell, so that the server's own choice stands instead
+        // of being overwritten with a guess.
+        if let Some(layout) = keymap::local_layout() {
+            info!("keyboard layout: {layout}");
+            packet[1]["keymap"] = json!({ "layout": layout });
         }
         // Audio probing happened before this hello was built. Advertise only the asynchronous
         // request here; the decoder list is sent later in `audio-capabilities`.
