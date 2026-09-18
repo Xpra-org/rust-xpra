@@ -2749,6 +2749,34 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             "[" => "bracketleft",
             "]" => "bracketright",
             "\\" => "backslash",
+            // The shifted forms need their own names too: winit reports the *character* the key
+            // produces, so with Shift held this arm sees "+" rather than "=", and a literal "+"
+            // is not a keysym name - the server looks the name up in its keymap and finds
+            // nothing, so the keystroke never reaches the application. That is why Ctrl+minus
+            // (unshifted, already named here) worked while Ctrl+Shift+plus did not.
+            // Names are the X11 ones, from `keysymdef.h`.
+            "+" => "plus",
+            "_" => "underscore",
+            "!" => "exclam",
+            "@" => "at",
+            "#" => "numbersign",
+            "$" => "dollar",
+            "%" => "percent",
+            "^" => "asciicircum",
+            "&" => "ampersand",
+            "*" => "asterisk",
+            "(" => "parenleft",
+            ")" => "parenright",
+            "{" => "braceleft",
+            "}" => "braceright",
+            "|" => "bar",
+            ":" => "colon",
+            "\"" => "quotedbl",
+            "<" => "less",
+            ">" => "greater",
+            "?" => "question",
+            "~" => "asciitilde",
+            // letters and digits are their own keysym name, so they fall through unchanged
             other => other,
         }.to_string(),
         Key::Named(named) => match named {
@@ -2790,15 +2818,56 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, server_encodings,
+        client_encodings, draw_ack_packet, key_to_xpra_keyname, server_encodings,
         WindowMetadataUpdate, WindowSizeConstraints,
     };
+    use winit::keyboard::Key;
     use serde_json::json;
     use yaml_rust2::YamlLoader;
 
     fn parse_metadata(yaml: &str) -> WindowMetadataUpdate {
         let documents = YamlLoader::load_from_str(yaml).unwrap();
         WindowMetadataUpdate::parse(&documents[0])
+    }
+
+    #[test]
+    fn punctuation_keys_are_named_in_both_shift_states() {
+        // Every key whose unshifted form is named here has a shifted form that needs a name too:
+        // winit reports the character produced, so Shift changes what this function is handed.
+        // Sending a literal "+" instead of "plus" is a name the server cannot look up, and the
+        // keystroke is dropped - which is what broke the zoom-in shortcut while zoom-out worked.
+        let pairs = [
+            ("-", "minus"), ("+", "plus"),
+            ("=", "equal"), ("_", "underscore"),
+            (",", "comma"), ("<", "less"),
+            (".", "period"), (">", "greater"),
+            ("/", "slash"), ("?", "question"),
+            (";", "semicolon"), (":", "colon"),
+            ("'", "apostrophe"), ("\"", "quotedbl"),
+            ("`", "grave"), ("~", "asciitilde"),
+            ("[", "bracketleft"), ("{", "braceleft"),
+            ("]", "bracketright"), ("}", "braceright"),
+            ("\\", "backslash"), ("|", "bar"),
+            ("1", "1"), ("!", "exclam"),
+            ("2", "2"), ("@", "at"),
+            ("3", "3"), ("#", "numbersign"),
+            ("4", "4"), ("$", "dollar"),
+            ("5", "5"), ("%", "percent"),
+            ("6", "6"), ("^", "asciicircum"),
+            ("7", "7"), ("&", "ampersand"),
+            ("8", "8"), ("*", "asterisk"),
+            ("9", "9"), ("(", "parenleft"),
+            ("0", "0"), (")", "parenright"),
+        ];
+        for (character, keyname) in pairs {
+            let key = Key::Character(character.into());
+            assert_eq!(key_to_xpra_keyname(&key), keyname, "wrong keysym name for {character:?}");
+        }
+        // letters carry their own name, in either case
+        for character in ["a", "A", "z", "Z"] {
+            let key = Key::Character(character.into());
+            assert_eq!(key_to_xpra_keyname(&key), character);
+        }
     }
 
     #[test]
