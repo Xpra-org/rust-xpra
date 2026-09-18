@@ -894,12 +894,12 @@ impl XpraClient {
     // defaults each key - xpra server/subsystem/keyboard.py do_process_keyboard_event). We fill in
     // the same five keys xpra's own clients send; `keyval` stays 0 because we derive the keyname
     // from winit rather than from an X11 keysym.
-    fn send_key_event(&mut self, wid: u64, keycode: u32, keyname: &str, keystr: &str, pressed: bool) {
+    fn send_key_event(&mut self, wid: u64, keycode: u32, keyname: &str, keystr: &str, keyval: u32, pressed: bool) {
         let modifiers = self.get_modifier_state();
         let group = 0;
         let packet = json!(["keyboard-event", wid, keyname, pressed, {
             "modifiers": modifiers,
-            "keyval": 0,
+            "keyval": keyval,
             "string": keystr,
             "keycode": keycode,
             "group": group,
@@ -917,6 +917,12 @@ impl XpraClient {
         }
         if self.modifiers.alt_key() {
             modifiers.push("mod1".to_string());
+        }
+        // the Super / Windows key is mod4 in every standard X11 modifier map - the same
+        // assumption "mod1" makes for alt just above. Without it the modifier is missing from
+        // every packet we send, so a Super-based shortcut never reaches the remote application.
+        if self.modifiers.super_key() {
+            modifiers.push("mod4".to_string());
         }
         modifiers
     }
@@ -2642,7 +2648,8 @@ impl XpraClient {
                     Key::Character(s) => s.to_string(),
                     _ => "".to_string(),
                 };
-                self.send_key_event(wid, keycode, &keyname, &keystr, pressed);
+                let keyval = key_to_xpra_keyval(&key_event.logical_key);
+                self.send_key_event(wid, keycode, &keyname, &keystr, keyval, pressed);
             }
             WindowEvent::CloseRequested => {
                 self.send_window_close(wid);
@@ -2733,6 +2740,29 @@ fn physical_key_to_xpra_keycode(physical_key: PhysicalKey) -> u32 {
     }
 }
 
+// The X11 keysym *value* of a key, or 0 when we have none to offer. This is the server's last
+// resort when the keysym *name* we send is not one it knows (`find_matching_keycode`, xpra
+// x11/server/keyboard_config.py): keysym names are ascii, so a character key like `\u{f1}` never has
+// one - `canonical_keysym` hands a non-ascii name straight back (xpra x11/xkbhelper.py) - and with
+// the keyval left at 0 the server had nothing else to match on and dropped the keystroke.
+// The mapping is X11's own: a latin-1 character is its own keysym, and anything above that lives
+// in the unicode range at 0x01000000 + codepoint.
+fn key_to_xpra_keyval(key: &Key) -> u32 {
+    let Key::Character(text) = key else {
+        return 0;
+    };
+    let mut chars = text.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        // several characters at once is an input-method commit, not a key we can name
+        return 0;
+    };
+    match c as u32 {
+        codepoint @ 0x20..=0xff => codepoint,
+        codepoint => 0x0100_0000 + codepoint,
+    }
+}
+
+
 fn key_to_xpra_keyname(key: &Key) -> String {
     match key {
         // most printable characters (letters, digits) are their own X11 keysym name,
@@ -2779,6 +2809,21 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             // letters and digits are their own keysym name, so they fall through unchanged
             other => other,
         }.to_string(),
+        // A dead key composes with the keystroke that follows it, so X11 gives it a keysym of
+        // its own rather than the accent it displays. winit hands us that accent as a plain
+        // character (`Key::Dead(Some('\u{b4}'))`), which is neither a name the server can look up
+        // nor the key we want pressed - so every dead key fell through to the catch-all below and
+        // was dropped, which is what made accented characters impossible to type.
+        Key::Dead(Some(accent)) => match accent {
+            '`' => "dead_grave",
+            '\u{b4}' => "dead_acute",
+            '^' => "dead_circumflex",
+            '~' => "dead_tilde",
+            '\u{a8}' => "dead_diaeresis",
+            '\u{b8}' => "dead_cedilla",
+            '\u{b0}' => "dead_abovering",
+            _ => "",
+        }.to_string(),
         Key::Named(named) => match named {
             NamedKey::Enter => "Return",
             NamedKey::Tab => "Tab",
@@ -2795,11 +2840,20 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             NamedKey::PageUp => "Prior",
             NamedKey::PageDown => "Next",
             NamedKey::Insert => "Insert",
-            NamedKey::Shift => "shift",
-            NamedKey::Control => "control",
-            NamedKey::Alt => "mod1",
-            NamedKey::AltGraph => "mod5",
-            NamedKey::Super => "super",
+            // The modifier keys are keysym names too, like everything else in this table. The
+            // X11 *modifier* names these used to send only ever matched through the server's
+            // "could this be a modifier?" fallback, which looks the name up in the X11 modifier
+            // map (`find_matching_keycode`, xpra x11/server/keyboard_config.py) - and that map
+            // has no "super" entry, so the Super key resolved to no keycode at all and was
+            // dropped, the same way the shifted punctuation above was.
+            // Always the left-hand keysym: winit reports the side in `KeyEvent::location`, but
+            // the fallback picked the modifier's first keycode either way, so naming Shift_L for
+            // a right-hand Shift is what the server already did.
+            NamedKey::Shift => "Shift_L",
+            NamedKey::Control => "Control_L",
+            NamedKey::Alt => "Alt_L",
+            NamedKey::AltGraph => "ISO_Level3_Shift",
+            NamedKey::Super => "Super_L",
             NamedKey::CapsLock => "Caps_Lock",
             NamedKey::NumLock => "Num_Lock",
             NamedKey::ScrollLock => "Scroll_Lock",
@@ -2818,10 +2872,10 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, key_to_xpra_keyname, server_encodings,
-        WindowMetadataUpdate, WindowSizeConstraints,
+        client_encodings, draw_ack_packet, key_to_xpra_keyname, key_to_xpra_keyval,
+        server_encodings, WindowMetadataUpdate, WindowSizeConstraints,
     };
-    use winit::keyboard::Key;
+    use winit::keyboard::{Key, NamedKey};
     use serde_json::json;
     use yaml_rust2::YamlLoader;
 
@@ -2868,6 +2922,51 @@ mod tests {
             let key = Key::Character(character.into());
             assert_eq!(key_to_xpra_keyname(&key), character);
         }
+    }
+
+    #[test]
+    fn modifier_keys_are_named_by_their_keysym() {
+        // Same rule as the punctuation above: the server resolves a key event by keysym name, so
+        // the modifier keys need their keysyms rather than the names of the X11 modifiers they
+        // happen to be bound to - a lookup that has no "super" entry to find.
+        let named = |key| key_to_xpra_keyname(&Key::Named(key));
+        assert_eq!(named(NamedKey::Shift), "Shift_L");
+        assert_eq!(named(NamedKey::Control), "Control_L");
+        assert_eq!(named(NamedKey::Alt), "Alt_L");
+        assert_eq!(named(NamedKey::AltGraph), "ISO_Level3_Shift");
+        assert_eq!(named(NamedKey::Super), "Super_L");
+        // the rest of the table was already made of keysyms
+        assert_eq!(named(NamedKey::PageUp), "Prior");
+        assert_eq!(named(NamedKey::CapsLock), "Caps_Lock");
+    }
+
+    #[test]
+    fn dead_keys_are_named_as_dead_keysyms() {
+        // winit reports the accent a dead key displays, but pressing that accent is not what the
+        // key does: it has to arrive as the composing keysym or nothing ever combines with it.
+        let dead = |accent| key_to_xpra_keyname(&Key::Dead(Some(accent)));
+        assert_eq!(dead('\u{b4}'), "dead_acute");
+        assert_eq!(dead('`'), "dead_grave");
+        assert_eq!(dead('~'), "dead_tilde");
+        assert_eq!(dead('^'), "dead_circumflex");
+        assert_eq!(dead('\u{a8}'), "dead_diaeresis");
+        // an accent we have no keysym for stays empty rather than being sent as a character
+        assert_eq!(dead('\u{2d9}'), "");
+        assert_eq!(key_to_xpra_keyname(&Key::Dead(None)), "");
+    }
+
+    #[test]
+    fn keyvals_are_the_x11_keysym_values() {
+        let keyval = |text: &str| key_to_xpra_keyval(&Key::Character(text.into()));
+        // a latin-1 character is its own keysym, which is the only way the server can resolve a
+        // key whose *name* is not ascii and therefore not a keysym name at all
+        assert_eq!(keyval("a"), 0x61);
+        assert_eq!(keyval("\u{f1}"), 0xf1);
+        // above latin-1 the unicode keysym range is used
+        assert_eq!(keyval("\u{20ac}"), 0x0100_20ac);
+        // nothing to offer for a named key, or for an input-method commit of several characters
+        assert_eq!(key_to_xpra_keyval(&Key::Named(NamedKey::Enter)), 0);
+        assert_eq!(keyval("ok"), 0);
     }
 
     #[test]
