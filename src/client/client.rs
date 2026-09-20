@@ -2101,6 +2101,21 @@ impl XpraClient {
 
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
         let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
+        // The x,y the server sends is where the *client area* goes, but the position attribute
+        // above places the window's frame (winit's docs for `with_position` on Windows and X11,
+        // and on Windows it is literally a `set_outer_position` call at creation) - so a decorated
+        // window opened a title bar's worth below and to the right of where the server put it,
+        // and the `window-map` below reported an origin the window did not actually have.
+        // The correction is the same one `process_window_move_resize` makes for every later move,
+        // and it has to happen here rather than in the attributes because the frame only exists
+        // once the window does. On a reparenting X11 window manager the frame is not there yet
+        // either, which leaves the offset at zero and this a no-op - the `Moved` event that
+        // follows the reparenting is what reports the real origin there.
+        if decorated {
+            if let Some(outer) = xpra_window.to_outer_position(x, y) {
+                xpra_window.window.set_outer_position(outer);
+            }
+        }
         Self::apply_window_metadata(&mut xpra_window, metadata);
         xpra_window.mapped = true;
         self.id_map.insert(window.id(), wid);
