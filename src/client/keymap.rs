@@ -46,6 +46,9 @@ fn platform_layout() -> Option<&'static str> {
     None
 }
 
+// Only Windows names its layouts this way, so everywhere else the table below is dead weight -
+// kept for the tests, which are what verify it against xpra's own.
+#[cfg(any(windows, test))]
 fn layout_for_langid(langid: u16) -> Option<&'static str> {
     LANGID_LAYOUTS
         .binary_search_by_key(&langid, |&(id, _)| id)
@@ -54,6 +57,7 @@ fn layout_for_langid(langid: u16) -> Option<&'static str> {
 }
 
 /// LANGID -> xkb layout, sorted so it can be searched. From xpra `keyboard/layouts.py`.
+#[cfg(any(windows, test))]
 static LANGID_LAYOUTS: &[(u16, &str)] = &[
     (0x401, "ar"),
     (0x402, "bg"),

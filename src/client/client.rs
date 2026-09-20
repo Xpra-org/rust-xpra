@@ -339,6 +339,11 @@ pub struct XpraClient {
     // usable monitor, in which case we send no size at all rather than a bogus one.
     pub monitors: Vec<MonitorInfo>,
     pub desktop_size: Option<(u32, u32)>,
+    // the keyboard layout to ask the server for, or `None` to leave the one it already has alone
+    // (see client/keymap.rs). Detected once and kept, since both the hello and the
+    // `keyboard-config` packet that follows it have to agree - and on the authentication path the
+    // hello is built twice.
+    pub keyboard_layout: Option<String>,
     // the window whose pointer is currently grabbed at the server's request. The grab is applied
     // through winit and must be explicitly released on pointer-ungrab or before that window is
     // destroyed.
@@ -564,6 +569,7 @@ impl XpraClient {
             current_cursor: None,
             monitors: Vec::new(),
             desktop_size: None,
+            keyboard_layout: keymap::local_layout(),
             pointer_grabbed: None,
             auth_dialog: None,
             pending_challenge: None,
@@ -828,17 +834,16 @@ impl XpraClient {
         if let Some(area) = &self.mmap {
             packet[1]["mmap"] = json!({ "read": area.caps() });
         }
-        // The keyboard layout to load. It goes beside `keyboard` at the top level of the hello
-        // rather than inside it, which is where the server reads it from (`parse_layout`, xpra
-        // x11/server/keyboard_config.py) and where xpra's own client puts it (`get_keyboard_caps`,
-        // client/subsystem/keyboard.py). Without it the server keeps its own layout - `us` unless
-        // it was started otherwise - and any key that layout does not have cannot be pressed at
-        // all, however we name it: a Spanish keyboard gets no "\u{f1}", an Arabic one nothing
-        // whatsoever. Left out when we cannot tell, so that the server's own choice stands instead
-        // of being overwritten with a guess.
-        if let Some(layout) = keymap::local_layout() {
-            info!("keyboard layout: {layout}");
-            packet[1]["keymap"] = json!({ "layout": layout });
+        // The keyboard layout itself is *not* sent here: it goes in the `keyboard-config` packet
+        // once the handshake is over (see `process_hello`), which is how modern xpra wants
+        // subsystem state synchronised rather than overloading the hello (Xpra-org/xpra#4557).
+        // All the hello does is ask the server to wait for it - `keymap.delay` is what makes
+        // `parse_hello_ui_keyboard` skip its own `set_keymap(ss)` (xpra
+        // server/subsystem/keyboard.py), the same `DELAY_KEYBOARD_DATA` path xpra's own client
+        // takes. Claimed only when we actually have a layout to send: once the server is waiting,
+        // the packet has to follow or the keymap is never configured at all.
+        if self.keyboard_layout.is_some() {
+            packet[1]["keymap"] = json!({ "delay": true });
         }
         // Audio probing happened before this hello was built. Advertise only the asynchronous
         // request here; the decoder list is sent later in `audio-capabilities`.
@@ -1712,6 +1717,24 @@ impl XpraClient {
                     self.clipboard = Some(tx);
                     self.clipboard_enabled = true;
                     info!("clipboard sync enabled");
+                }
+                // The keyboard layout, in a packet of its own now that the handshake is done -
+                // the hello only asked the server to hold off (see `send_hello`). Without one the
+                // server keeps its own layout - `us` unless it was started otherwise - and any
+                // key that layout does not have cannot be pressed at all, however we name it: a
+                // Spanish keyboard gets no "\u{f1}", an Arabic one nothing whatsoever.
+                // `KeyboardConfig.parse` takes the attributes flat and re-nests them into
+                // `keymap` itself, and `force` makes the server apply the layout even when
+                // nothing else about the config changed. The handler is registered outside the
+                // server's `BACKWARDS_COMPATIBLE` branch (`init_packet_handlers`, xpra
+                // server/subsystem/keyboard.py), so this reaches a server run with
+                // XPRA_BACKWARDS_COMPATIBLE=0 as well.
+                if let Some(layout) = self.keyboard_layout.clone() {
+                    info!("keyboard layout: {layout}");
+                    self.write_json(json!([
+                        "keyboard-config",
+                        { "layout": layout, "force": true },
+                    ]));
                 }
                 #[cfg(windows)]
                 if self.audio_worker.is_some()
