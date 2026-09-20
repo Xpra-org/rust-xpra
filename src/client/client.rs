@@ -2139,6 +2139,21 @@ impl XpraClient {
 
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
         let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
+        // The x,y the server sends is where the *client area* goes, but the position attribute
+        // above places the window's frame (winit's docs for `with_position` on Windows and X11,
+        // and on Windows it is literally a `set_outer_position` call at creation) - so a decorated
+        // window opened a title bar's worth below and to the right of where the server put it,
+        // and the `window-map` below reported an origin the window did not actually have.
+        // The correction is the same one `process_window_move_resize` makes for every later move,
+        // and it has to happen here rather than in the attributes because the frame only exists
+        // once the window does. On a reparenting X11 window manager the frame is not there yet
+        // either, which leaves the offset at zero and this a no-op - the `Moved` event that
+        // follows the reparenting is what reports the real origin there.
+        if decorated {
+            if let Some(outer) = xpra_window.to_outer_position(x, y) {
+                xpra_window.window.set_outer_position(outer);
+            }
+        }
         Self::apply_window_metadata(&mut xpra_window, metadata);
         xpra_window.mapped = true;
         self.id_map.insert(window.id(), wid);
@@ -2787,6 +2802,34 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             "[" => "bracketleft",
             "]" => "bracketright",
             "\\" => "backslash",
+            // The shifted forms need their own names too: winit reports the *character* the key
+            // produces, so with Shift held this arm sees "+" rather than "=", and a literal "+"
+            // is not a keysym name - the server looks the name up in its keymap and finds
+            // nothing, so the keystroke never reaches the application. That is why Ctrl+minus
+            // (unshifted, already named here) worked while Ctrl+Shift+plus did not.
+            // Names are the X11 ones, from `keysymdef.h`.
+            "+" => "plus",
+            "_" => "underscore",
+            "!" => "exclam",
+            "@" => "at",
+            "#" => "numbersign",
+            "$" => "dollar",
+            "%" => "percent",
+            "^" => "asciicircum",
+            "&" => "ampersand",
+            "*" => "asterisk",
+            "(" => "parenleft",
+            ")" => "parenright",
+            "{" => "braceleft",
+            "}" => "braceright",
+            "|" => "bar",
+            ":" => "colon",
+            "\"" => "quotedbl",
+            "<" => "less",
+            ">" => "greater",
+            "?" => "question",
+            "~" => "asciitilde",
+            // letters and digits are their own keysym name, so they fall through unchanged
             other => other,
         }.to_string(),
         Key::Named(named) => match named {
@@ -2828,9 +2871,11 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, layout_origin, server_encodings,
+        client_encodings, draw_ack_packet, server_encodings,
+        layout_origin, key_to_xpra_keyname,
         MonitorInfo, WindowMetadataUpdate, WindowSizeConstraints,
     };
+    use winit::keyboard::Key;
     use serde_json::json;
     use yaml_rust2::YamlLoader;
 
@@ -2872,6 +2917,46 @@ mod tests {
             layout_origin(&[monitor(0, 0, 1920, 1200), monitor(1920, 0, 1920, 1200)]),
             (0, 0),
         );
+    }
+
+    #[test]
+    fn punctuation_keys_are_named_in_both_shift_states() {
+        // Every key whose unshifted form is named here has a shifted form that needs a name too:
+        // winit reports the character produced, so Shift changes what this function is handed.
+        // Sending a literal "+" instead of "plus" is a name the server cannot look up, and the
+        // keystroke is dropped - which is what broke the zoom-in shortcut while zoom-out worked.
+        let pairs = [
+            ("-", "minus"), ("+", "plus"),
+            ("=", "equal"), ("_", "underscore"),
+            (",", "comma"), ("<", "less"),
+            (".", "period"), (">", "greater"),
+            ("/", "slash"), ("?", "question"),
+            (";", "semicolon"), (":", "colon"),
+            ("'", "apostrophe"), ("\"", "quotedbl"),
+            ("`", "grave"), ("~", "asciitilde"),
+            ("[", "bracketleft"), ("{", "braceleft"),
+            ("]", "bracketright"), ("}", "braceright"),
+            ("\\", "backslash"), ("|", "bar"),
+            ("1", "1"), ("!", "exclam"),
+            ("2", "2"), ("@", "at"),
+            ("3", "3"), ("#", "numbersign"),
+            ("4", "4"), ("$", "dollar"),
+            ("5", "5"), ("%", "percent"),
+            ("6", "6"), ("^", "asciicircum"),
+            ("7", "7"), ("&", "ampersand"),
+            ("8", "8"), ("*", "asterisk"),
+            ("9", "9"), ("(", "parenleft"),
+            ("0", "0"), (")", "parenright"),
+        ];
+        for (character, keyname) in pairs {
+            let key = Key::Character(character.into());
+            assert_eq!(key_to_xpra_keyname(&key), keyname, "wrong keysym name for {character:?}");
+        }
+        // letters carry their own name, in either case
+        for character in ["a", "A", "z", "Z"] {
+            let key = Key::Character(character.into());
+            assert_eq!(key_to_xpra_keyname(&key), character);
+        }
     }
 
     #[test]
