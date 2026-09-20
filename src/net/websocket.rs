@@ -265,3 +265,201 @@ fn random_bytes8() -> [u8; 8] {
     let mut state = (nanos ^ count.wrapping_mul(0x9E3779B97F4A7C15)) | 1;
     xorshift_next(&mut state).to_le_bytes()
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    // An in-memory peer: `input` is what the server sends us, `output` collects what we send it.
+    // With `handshake` set it answers the upgrade request instead, which it can only do once it
+    // has seen the nonce we generated - hence a fake that reacts rather than a canned script.
+    struct Fake {
+        input: Vec<u8>,
+        pos: usize,
+        output: Rc<RefCell<Vec<u8>>>,
+        handshake: bool,
+    }
+
+    impl Fake {
+        fn new(input: Vec<u8>) -> Self {
+            Fake { input, pos: 0, output: Rc::new(RefCell::new(Vec::new())), handshake: false }
+        }
+
+        fn answering_the_handshake() -> Self {
+            Fake { input: Vec::new(), pos: 0, output: Rc::new(RefCell::new(Vec::new())),
+                   handshake: true }
+        }
+    }
+
+    impl Read for Fake {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.handshake && self.pos >= self.input.len() {
+                self.handshake = false;
+                let request = String::from_utf8(self.output.borrow().clone()).unwrap();
+                let key = request.lines()
+                    .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+                    .expect("no Sec-WebSocket-Key in the request")
+                    .trim()
+                    .to_string();
+                self.input = format!("HTTP/1.1 101 Switching Protocols\r\n\
+                                      Upgrade: websocket\r\n\
+                                      Sec-WebSocket-Accept: {}\r\n\r\n", accept_key(&key))
+                    .into_bytes();
+                self.pos = 0;
+            }
+            let mut source = &self.input[self.pos..];
+            let read = source.read(buf)?;
+            self.pos += read;
+            Ok(read)
+        }
+    }
+
+    impl Write for Fake {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.output.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    impl CloneableStream for Fake {
+        fn try_clone(&self) -> io::Result<Self> {
+            Ok(Fake { input: Vec::new(), pos: 0, output: self.output.clone(), handshake: false })
+        }
+        fn write_frame(&mut self, data: &[u8]) -> io::Result<()> {
+            self.write_all(data)
+        }
+    }
+
+    // a server->client frame, which is never masked
+    fn frame(fin: bool, opcode: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![if fin { 0x80 | opcode } else { opcode }];
+        if payload.len() <= 125 {
+            out.push(payload.len() as u8);
+        } else {
+            out.push(126);
+            out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        }
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn socket(input: Vec<u8>) -> WebSocketStream<Fake> {
+        WebSocketStream { stream: Fake::new(input), read_buf: Vec::new(), read_pos: 0 }
+    }
+
+    fn read_all(socket: &mut WebSocketStream<Fake>, len: usize) -> Vec<u8> {
+        let mut out = vec![0u8; len];
+        let read = socket.read(&mut out).unwrap();
+        out.truncate(read);
+        out
+    }
+
+    #[test]
+    fn the_accept_key_matches_the_rfc_6455_example() {
+        // section 1.3 of the RFC: this exact pair is what every server computes, so getting it
+        // wrong means every handshake is rejected
+        assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+    }
+
+    #[test]
+    fn a_binary_frame_reads_back_as_its_payload() {
+        let mut socket = socket(frame(true, OPCODE_BINARY, b"packet"));
+        assert_eq!(read_all(&mut socket, 64), b"packet");
+    }
+
+    #[test]
+    fn a_fragmented_message_is_reassembled_before_it_is_served() {
+        // the xpra packet layer above reads whole packets, so a message split across frames must
+        // not surface as two short reads
+        let mut wire = frame(false, OPCODE_BINARY, b"one ");
+        wire.extend(frame(false, OPCODE_CONTINUATION, b"two "));
+        wire.extend(frame(true, OPCODE_CONTINUATION, b"three"));
+        let mut socket = socket(wire);
+        assert_eq!(read_all(&mut socket, 64), b"one two three");
+    }
+
+    #[test]
+    fn a_ping_is_answered_with_a_pong_and_does_not_interrupt_the_data() {
+        let mut wire = frame(true, OPCODE_PING, b"hi");
+        wire.extend(frame(true, OPCODE_BINARY, b"packet"));
+        let mut socket = socket(wire);
+        assert_eq!(read_all(&mut socket, 64), b"packet");
+        // the pong went back masked (client->server frames always are), so only the header and
+        // the length are checked here
+        let sent = socket.stream.output.borrow().clone();
+        assert_eq!(sent[0], 0x80 | OPCODE_PONG);
+        assert_eq!(sent[1], 0x80 | 2);
+        assert_eq!(sent.len(), 2 + 4 + 2);
+    }
+
+    #[test]
+    fn an_unsolicited_pong_is_skipped() {
+        let mut wire = frame(true, OPCODE_PONG, b"late");
+        wire.extend(frame(true, OPCODE_BINARY, b"packet"));
+        let mut socket = socket(wire);
+        assert_eq!(read_all(&mut socket, 64), b"packet");
+    }
+
+    #[test]
+    fn a_close_frame_ends_the_stream() {
+        let mut socket = socket(frame(true, OPCODE_CLOSE, b""));
+        assert_eq!(socket.read(&mut [0u8; 8]).unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
+    }
+
+    #[test]
+    fn an_unknown_opcode_is_rejected() {
+        let mut socket = socket(frame(true, 0x0B, b""));
+        assert_eq!(socket.read(&mut [0u8; 8]).unwrap_err().kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_payload_over_125_bytes_uses_the_extended_length() {
+        // the length field switches to a 16-bit extension at 126, the boundary worth pinning
+        let payload = vec![b'x'; 300];
+        let mut socket = socket(frame(true, OPCODE_BINARY, &payload));
+        assert_eq!(read_all(&mut socket, 512), payload);
+    }
+
+    #[test]
+    fn the_handshake_asks_for_the_binary_subprotocol() {
+        let fake = Fake::answering_the_handshake();
+        let output = fake.output.clone();
+        connect(fake, "server:10000", "/ws").unwrap();
+        let request = String::from_utf8(output.borrow().clone()).unwrap();
+        // without this header the xpra server refuses the upgrade
+        assert!(request.contains("Sec-WebSocket-Protocol: binary\r\n"), "{request}");
+        assert!(request.starts_with("GET /ws HTTP/1.1\r\n"), "{request}");
+        assert!(request.contains("Host: server:10000\r\n"), "{request}");
+        assert!(request.contains("Sec-WebSocket-Version: 13\r\n"), "{request}");
+    }
+
+    #[test]
+    fn an_empty_path_becomes_a_slash() {
+        let fake = Fake::answering_the_handshake();
+        let output = fake.output.clone();
+        connect(fake, "server:10000", "").unwrap();
+        assert!(String::from_utf8(output.borrow().clone()).unwrap().starts_with("GET / HTTP/1.1\r\n"));
+    }
+
+    #[test]
+    fn a_handshake_that_is_not_a_101_is_rejected() {
+        // a plain http server on the port, or an xpra server without websocket support
+        let response = b"HTTP/1.1 404 Not Found\r\n\r\n".to_vec();
+        assert!(connect(Fake::new(response), "server:10000", "/").is_err());
+    }
+
+    #[test]
+    fn a_wrong_accept_header_is_rejected() {
+        // the accept hash is what proves the peer really spoke websocket rather than echoing
+        let response = b"HTTP/1.1 101 Switching Protocols\r\n\
+                         Sec-WebSocket-Accept: bm90IHRoZSByaWdodCBoYXNo\r\n\r\n".to_vec();
+        assert!(connect(Fake::new(response), "server:10000", "/").is_err());
+        // as is one that is missing altogether
+        let response = b"HTTP/1.1 101 Switching Protocols\r\n\r\n".to_vec();
+        assert!(connect(Fake::new(response), "server:10000", "/").is_err());
+    }
+}
