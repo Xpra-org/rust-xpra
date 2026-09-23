@@ -338,6 +338,10 @@ pub struct XpraClient {
     // usable monitor, in which case we send no size at all rather than a bogus one.
     pub monitors: Vec<MonitorInfo>,
     pub desktop_size: Option<(u32, u32)>,
+    // keysym -> the X11 modifier it is bound to on the server ("Super_L" -> "mod4"), read out of
+    // the server's hello - see `parse_modifier_keysyms`. Empty until then, and empty for a server
+    // that sends neither map, which is what the fallbacks in `get_modifier_state` are for.
+    pub modifier_names: HashMap<String, String>,
     // the window whose pointer is currently grabbed at the server's request. The grab is applied
     // through winit and must be explicitly released on pointer-ungrab or before that window is
     // destroyed.
@@ -524,6 +528,47 @@ fn server_encodings(caps: &Yaml) -> Vec<String> {
     if core.is_empty() { yaml_hash_strings(encodings, "") } else { core }
 }
 
+// The server's modifier map, flattened to keysym -> modifier name ("Super_L" -> "mod4"). It comes
+// in the hello under either of two keys (xpra server/source/keyboard.py `get_caps`), which carry
+// the same thing in different shapes, so both are accepted:
+//   `modifiers-keynames`  {"mod4": ["Super_L", "Super_R"]}               (its `keynames_for_mod`)
+//   `modifier_keycodes`   {"mod4": [[115, "Super_L"], [116, "Super_R"]]} (client keycodes)
+// Only the keysyms are wanted, and a pair is walked for its string half rather than indexed:
+// xpra builds those pairs as both (keycode, keysym) and (keysym, level)
+// (`compute_client_modifier_keycodes`). A server with no X11 keyboard configuration sends
+// neither key, which leaves the map empty and the conventional names in `get_modifier_state`
+// standing.
+fn parse_modifier_keysyms(hello: &Yaml) -> HashMap<String, String> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for key in ["modifiers-keynames", "modifier_keycodes"] {
+        let Some(Yaml::Hash(entries)) = yaml_hash(hello, key) else {
+            continue;
+        };
+        for (modifier, keysyms) in entries {
+            let (Yaml::String(modifier), Yaml::Array(keysyms)) = (modifier, keysyms) else {
+                continue;
+            };
+            for keysym in keysyms {
+                match keysym {
+                    Yaml::String(keysym) => {
+                        names.insert(keysym.clone(), modifier.clone());
+                    },
+                    Yaml::Array(pair) => for item in pair {
+                        if let Yaml::String(keysym) = item {
+                            names.insert(keysym.clone(), modifier.clone());
+                        }
+                    },
+                    _ => {},
+                }
+            }
+        }
+        if !names.is_empty() {
+            break;
+        }
+    }
+    names
+}
+
 impl fmt::Debug for XpraClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("XpraClient")
@@ -563,6 +608,7 @@ impl XpraClient {
             current_cursor: None,
             monitors: Vec::new(),
             desktop_size: None,
+            modifier_names: HashMap::new(),
             pointer_grabbed: None,
             auth_dialog: None,
             pending_challenge: None,
@@ -948,6 +994,9 @@ impl XpraClient {
 
     fn get_modifier_state(&self) -> Vec<String> {
         let mut modifiers: Vec<String> = Vec::new();
+        // "shift" and "control" are modifier names in their own right, the same on every keymap.
+        // Alt and Super are the ones that are only bound to a *numbered* modifier by convention,
+        // so those two are looked up in the map the server sent us (`modifier_for`).
         if self.modifiers.shift_key() {
             modifiers.push("shift".to_string());
         }
@@ -955,15 +1004,27 @@ impl XpraClient {
             modifiers.push("control".to_string());
         }
         if self.modifiers.alt_key() {
-            modifiers.push("mod1".to_string());
+            modifiers.push(self.modifier_for(&["Alt_L", "Alt_R", "Meta_L", "Meta_R"], "mod1"));
         }
-        // the Super / Windows key is mod4 in every standard X11 modifier map - the same
-        // assumption "mod1" makes for alt just above. Without it the modifier is missing from
-        // every packet we send, so a Super-based shortcut never reaches the remote application.
         if self.modifiers.super_key() {
-            modifiers.push("mod4".to_string());
+            modifiers.push(self.modifier_for(&["Super_L", "Super_R"], "mod4"));
         }
         modifiers
+    }
+
+    // The X11 modifier one of these keysyms is bound to on the server, or `fallback` when the
+    // server told us nothing. The name matters because it is what the server turns back into a
+    // key to press (`keynames_for_mod`, used by `make_keymask_match` in xpra
+    // x11/server/keyboard_config.py), so a guess presses whatever else happens to sit on that
+    // modifier. The conventional mod1=Alt / mod4=Super holds on a normal desktop keymap, but not
+    // when the server has fallen back to its own defaults - `DEFAULT_MODIFIER_MEANINGS` (xpra
+    // keyboard/mask.py) puts Super on mod3 and leaves mod4 to Hyper, which is what this client
+    // gets today since it sends the server no keycodes to work from.
+    fn modifier_for(&self, keysyms: &[&str], fallback: &str) -> String {
+        keysyms.iter()
+            .find_map(|keysym| self.modifier_names.get(*keysym))
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
     }
 
     // `window-map` stayed positional, so the monitor descriptor is an *optional trailing field*
@@ -1662,6 +1723,10 @@ impl XpraClient {
 
     fn process_hello(&mut self, event_loop: &ActiveEventLoop, hello: &Yaml) {
         self.process_mmap_caps(event_loop, hello);
+        // How this server's keymap names its modifiers, so that the ones we report are the names
+        // it can turn back into keys - see `get_modifier_state`.
+        self.modifier_names = parse_modifier_keysyms(hello);
+        debug!("server modifier map: {:?}", self.modifier_names);
         match &hello {
             Yaml::Hash(hash) => {
                 let version_key: Yaml = Yaml::String(VERSION_KEY_STR.to_string());
@@ -2954,7 +3019,7 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, server_encodings,
+        client_encodings, draw_ack_packet, parse_modifier_keysyms, server_encodings,
         layout_origin, key_to_xpra_keyname, key_to_xpra_keyval,
         MonitorInfo, WindowMetadataUpdate, WindowSizeConstraints,
     };
@@ -2965,6 +3030,38 @@ mod tests {
     fn parse_metadata(yaml: &str) -> WindowMetadataUpdate {
         let documents = YamlLoader::load_from_str(yaml).unwrap();
         WindowMetadataUpdate::parse(&documents[0])
+    }
+
+    #[test]
+    fn the_modifier_map_is_read_from_either_spelling() {
+        let parse = |yaml: &str| {
+            let documents = YamlLoader::load_from_str(yaml).unwrap();
+            parse_modifier_keysyms(&documents[0])
+        };
+        // `modifiers-keynames` is the map the server itself uses to turn a modifier name back
+        // into a key to press, so it is the one to read when both are there. Note mod3 rather
+        // than mod4: that is what a server with no client keycodes to work from falls back to
+        // (`DEFAULT_MODIFIER_MEANINGS`), and the whole reason for not assuming.
+        let names = parse("
+modifiers-keynames:
+  mod3: [Super_L, Super_R]
+  mod1: [Alt_L, Alt_R]
+");
+        assert_eq!(names.get("Super_L"), Some(&"mod3".to_string()));
+        assert_eq!(names.get("Alt_R"), Some(&"mod1".to_string()));
+
+        // `modifier_keycodes` nests each keysym in a pair, and xpra builds those as both
+        // (keycode, keysym) and (keysym, level) - so the string is taken from either position.
+        let names = parse("
+modifier_keycodes:
+  mod4: [[115, Super_L], [Super_R, 1]]
+");
+        assert_eq!(names.get("Super_L"), Some(&"mod4".to_string()));
+        assert_eq!(names.get("Super_R"), Some(&"mod4".to_string()));
+
+        // a server with no X11 keyboard configuration sends neither, and the conventional names
+        // in `get_modifier_state` are left to stand
+        assert!(parse("keyboard: true").is_empty());
     }
 
     fn monitor(x: i32, y: i32, w: u32, h: u32) -> MonitorInfo {
