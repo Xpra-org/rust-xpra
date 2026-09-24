@@ -740,6 +740,14 @@ Pages site, since only `docs/` is published.
 
 ## Known repo quirks
 
+- **Every release binary ships a CycloneDX SBOM** (`xpra-<platform>.cdx.json`, attached to the release and
+  uploaded as the `sbom` artifact; `.github/workflows/release.yml`). Each build job runs `cargo cyclonedx` right
+  after building, in the same job, because it has to read the `Cargo.lock` that build resolved — it is
+  gitignored, so a later job could resolve differently. Separately, the builds that are *not* UPX-compressed
+  (macOS, Windows arm64) use `cargo auditable build` to embed the crate list in the binary too. Do not "unify"
+  the UPX ones (Linux x86_64/arm64, Windows x86_64) onto `cargo auditable`: UPX compresses the `.dep-v0` section
+  along with everything else, so no scanner can read it from a packed binary.
+
 - `build.rs` embeds the Windows resources: `assets/xpra.ico` (name id `1` — the executable's icon in Explorer,
   and what `tray.rs` loads back at runtime with `LoadImageW`) and `exe.manifest` (the per-monitor-V2 DPI
   manifest, which used to be carried in the repo unreferenced). It gates on `CARGO_CFG_TARGET_OS`, **not**

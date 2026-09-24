@@ -20,6 +20,13 @@ jobs:
     - uses: actions/checkout@v4
     - name: Install upx
       run: choco install upx -y
+    # no `cargo auditable` here: UPX compresses its `.dep-v0` section along with
+    # everything else, so no SBOM scanner could read it. The separate SBOM file
+    # generated below is the only one.
+    - name: Install cargo-cyclonedx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-cyclonedx
     - name: Build
       run: cargo build --release --verbose
     - name: Compress
@@ -28,10 +35,15 @@ jobs:
       run: |
         mkdir dist
         copy target\release\xpra.exe dist\xpra-windows-x86_64.exe
+    - name: SBOM
+      shell: bash
+      run: |
+        cargo cyclonedx --format json --spec-version 1.5 --override-filename xpra-windows-x86_64.cdx
+        mv xpra-windows-x86_64.cdx.json dist/
     - uses: actions/upload-artifact@v4
       with:
         name: xpra-windows-x86_64
-        path: dist/xpra-windows-x86_64.exe
+        path: dist/
 
   build-windows-arm64:
 
@@ -40,16 +52,27 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     # no `upx` step here: UPX has no packer for win64/arm64 PE (x86/x86_64 only).
+    - name: Install cargo-auditable and cargo-cyclonedx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-auditable,cargo-cyclonedx
+    # `cargo auditable` embeds the resolved dependency tree in a `.dep-v0` section,
+    # for SBOM scanners (syft, trivy, `cargo audit bin`) that read the binary itself.
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo auditable build --release --verbose
     - name: Package
       run: |
         mkdir dist
         copy target\release\xpra.exe dist\xpra-windows-arm64.exe
+    - name: SBOM
+      shell: bash
+      run: |
+        cargo cyclonedx --format json --spec-version 1.5 --override-filename xpra-windows-arm64.cdx
+        mv xpra-windows-arm64.cdx.json dist/
     - uses: actions/upload-artifact@v4
       with:
         name: xpra-windows-arm64
-        path: dist/xpra-windows-arm64.exe
+        path: dist/
 
   build-linux:
 
@@ -70,6 +93,13 @@ jobs:
           libxkbcommon-dev \
           libwayland-dev \
           upx-ucl
+    # no `cargo auditable` here: UPX compresses its `.dep-v0` section along with
+    # everything else, so no SBOM scanner could read it. The separate SBOM file
+    # generated below is the only one.
+    - name: Install cargo-cyclonedx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-cyclonedx
     - name: Build
       run: cargo build --release --verbose
     - name: Compress
@@ -78,10 +108,15 @@ jobs:
       run: |
         mkdir dist
         cp target/release/xpra dist/xpra-linux-x86_64
+    - name: SBOM
+      shell: bash
+      run: |
+        cargo cyclonedx --format json --spec-version 1.5 --override-filename xpra-linux-x86_64.cdx
+        mv xpra-linux-x86_64.cdx.json dist/
     - uses: actions/upload-artifact@v4
       with:
         name: xpra-linux-x86_64
-        path: dist/xpra-linux-x86_64
+        path: dist/
 
   build-linux-arm64:
 
@@ -102,6 +137,13 @@ jobs:
           libxkbcommon-dev \
           libwayland-dev \
           upx-ucl
+    # no `cargo auditable` here: UPX compresses its `.dep-v0` section along with
+    # everything else, so no SBOM scanner could read it. The separate SBOM file
+    # generated below is the only one.
+    - name: Install cargo-cyclonedx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-cyclonedx
     - name: Build
       run: cargo build --release --verbose
     - name: Compress
@@ -110,10 +152,15 @@ jobs:
       run: |
         mkdir dist
         cp target/release/xpra dist/xpra-linux-arm64
+    - name: SBOM
+      shell: bash
+      run: |
+        cargo cyclonedx --format json --spec-version 1.5 --override-filename xpra-linux-arm64.cdx
+        mv xpra-linux-arm64.cdx.json dist/
     - uses: actions/upload-artifact@v4
       with:
         name: xpra-linux-arm64
-        path: dist/xpra-linux-arm64
+        path: dist/
 
   build-macos:
 
@@ -125,16 +172,27 @@ jobs:
       run: brew install pkg-config
     # no `upx` step here: UPX dropped Mach-O support, and arm64 macOS requires a
     # valid code signature that packing would invalidate (binary killed on launch).
+    - name: Install cargo-auditable and cargo-cyclonedx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-auditable,cargo-cyclonedx
+    # `cargo auditable` embeds the resolved dependency tree in a `.dep-v0` section,
+    # for SBOM scanners (syft, trivy, `cargo audit bin`) that read the binary itself.
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo auditable build --release --verbose
     - name: Package
       run: |
         mkdir dist
         cp target/release/xpra dist/xpra-macos-arm64
+    - name: SBOM
+      shell: bash
+      run: |
+        cargo cyclonedx --format json --spec-version 1.5 --override-filename xpra-macos-arm64.cdx
+        mv xpra-macos-arm64.cdx.json dist/
     - uses: actions/upload-artifact@v4
       with:
         name: xpra-macos-arm64
-        path: dist/xpra-macos-arm64
+        path: dist/
 
   release:
 
@@ -147,6 +205,17 @@ jobs:
     - uses: actions/download-artifact@v4
       with:
         path: dist
+    - name: Collect SBOMs
+      run: |
+        mkdir sbom
+        cp dist/*/*.cdx.json sbom/
+        for f in sbom/*.cdx.json; do
+          echo "$f: $(jq '.components | length' "$f") components"
+        done
+    - uses: actions/upload-artifact@v4
+      with:
+        name: sbom
+        path: sbom/*.cdx.json
     - name: Create release
       env:
         GH_TOKEN: ${{ github.token }}
@@ -157,6 +226,7 @@ jobs:
           dist/xpra-linux-x86_64/xpra-linux-x86_64 \
           dist/xpra-linux-arm64/xpra-linux-arm64 \
           dist/xpra-macos-arm64/xpra-macos-arm64 \
+          sbom/*.cdx.json \
           --repo "${{ github.repository }}" \
           --title "${{ github.ref_name }}" \
           --generate-notes
