@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.4.0] 2026-09-24
+* 🔧 Platforms, build and packaging:
+  * [ship a CycloneDX SBOM with every release binary](https://github.com/Xpra-org/rust-xpra/commit/c0011223f868df7e7ae676c0fe5033b453afef94)
+  * [cover the protocol layer with tests](https://github.com/Xpra-org/rust-xpra/commit/e20e35f97c0ba4f451d58ec6f94f7cdd9672cf05)
+* ✨ Features:
+  * [add `-v` to raise the log level](https://github.com/Xpra-org/rust-xpra/commit/6cf2c452f048ae9fefad950141184d82a9b79c6e)
+  * [send the local display size and per-monitor layout in the hello packet](https://github.com/Xpra-org/rust-xpra/commit/9814ba5a2183570c5b975daea9e639755971d17e)
+  * [send monitor-relative coordinates with every position](https://github.com/Xpra-org/rust-xpra/commit/45233b9b271818a7c55c13a10530537f9ee4a897)
+  * [map server window positions back to local coordinates](https://github.com/Xpra-org/rust-xpra/commit/72a120d4096e7755c640fc34c900c5f28a99a1ac)
+  * [place new windows by their client area, not their frame](https://github.com/Xpra-org/rust-xpra/commit/943c02b0e09a248d24350bf47317d63b67d71785)
+  * [handle interrupts gracefully](https://github.com/Xpra-org/rust-xpra/commit/3423d32f61e30709a37b6c78f7f9dbb291ca1d3a) —
+    `SIGINT`/`SIGTERM`/`SIGHUP` and the Windows console events tell the server why we are leaving
+  * [fix the Super key, the dead keys and the non-ascii ones](https://github.com/Xpra-org/rust-xpra/commit/642b6bd7300e98a45752fb6b404900b14e467021)
+  * [take the modifier names from the server's keymap](https://github.com/Xpra-org/rust-xpra/commit/ddc611fab162d67f00608ef5208755cac7ca39de)
+  * [name the shifted punctuation keysyms](https://github.com/Xpra-org/rust-xpra/commit/c5e62c2b844e257c1862ef681a56cc0ddae1fae4)
+  * [don't confine the pointer to override-redirect windows](https://github.com/Xpra-org/rust-xpra/commit/8a1094fd7fc5a4b3dc40513031559fb4f8467439)
+  * [don't lock the cursor when it cannot be confined](https://github.com/Xpra-org/rust-xpra/commit/a1373d8d6fab7512f45156018da9884052d15499)
+  * [don't report the geometry of a minimized window](https://github.com/Xpra-org/rust-xpra/commit/f07357ff66ac1c2a5c80b2df0b62d66a3c20f650)
+* 🌈 Encodings:
+  * [vectorise the draw blit](https://github.com/Xpra-org/rust-xpra/commit/9101e3eb7154226b09ec1e93f0f4244fb12c5bc9)
+  * [present only the regions that changed](https://github.com/Xpra-org/rust-xpra/commit/480dfe32155cfbee5cd1441980409e351550ed91)
+  * [handle JPEG and PNG draw decode errors](https://github.com/Xpra-org/rust-xpra/commit/04c47137c4f4a4a98ebef895b670dd59cbf4fbd1)
+* 🖧 Network:
+  * [work with servers running without backwards compatibility](https://github.com/Xpra-org/rust-xpra/commit/3abb648c6eaf9e033923048288faaa682c4d3fd2) —
+    every packet is accepted under both its legacy and its current name, and nothing sent depends
+    on the server's `BACKWARDS_COMPATIBLE` mode any more
+  * [announce 6.6 as the minimum protocol version](https://github.com/Xpra-org/rust-xpra/commit/259618eee92405dac24b098282f9fd736ab4c860)
+  * [fix draw acknowledgement packet compatibility](https://github.com/Xpra-org/rust-xpra/commit/e14eba12be62975f900aad04b4f310ad13b7699c)
+  * [advertise window forwarding in the `window` namespace](https://github.com/Xpra-org/rust-xpra/commit/ac18abbf78379a8d11266668e8ea07ffff5e1267)
+  * [handle the modern cursor packets](https://github.com/Xpra-org/rust-xpra/commit/88ac5c708485bb444da642288d7d21db43ef6143)
+  * [handle the `encoding-set` packet](https://github.com/Xpra-org/rust-xpra/commit/0c00383ce9c5de17ed540b7ed88cb6268b1ee1ba)
+  * [don't ping a server that advertises no ping capability](https://github.com/Xpra-org/rust-xpra/commit/5cb9b248dbbe629fdfe663d870cbc61464deeeaa)
+  * [reply to pings under the current packet name](https://github.com/Xpra-org/rust-xpra/commit/785f240562399ff1b6d47d5a8ecca155f6ff3b7e)
+  * [advertise notifications under the current name too](https://github.com/Xpra-org/rust-xpra/commit/ddd5711408cff6516c306ff9c48802ee6a1d62d4)
+  * [don't panic on a hash key the server did not send](https://github.com/Xpra-org/rust-xpra/commit/707c1a7539b06633a5112785f7513b86cfe97dc4)
+* Documentation:
+  * [document macOS support](https://github.com/Xpra-org/rust-xpra/commit/85fbcd98295ff5a00f5d0aecee92c04d8ac6d045)
+
 ## [0.3.1] 2026-08-01
 * 🔧 Platforms, build and packaging:
   * [build on older distributions](https://github.com/Xpra-org/rust-xpra/commit/f90be1a74d1146f8ac66092d538af402bc2b63ad)

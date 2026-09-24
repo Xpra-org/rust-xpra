@@ -33,7 +33,7 @@
 %global turbojpeg_static %(pkg-config --atleast-version=3.0 libturbojpeg 2>/dev/null && echo 0 || echo 1)
 
 Name:				rust-xpra
-Version:			0.3.1
+Version:			0.4.0
 Release:			1%{?dist}
 Summary:			Xpra client written in Rust
 # the client itself is GPL-3.0-or-later; `src/client/font.rs` is the Spleen 8x16
@@ -134,6 +134,26 @@ install -D -p -m 644 packaging/%{name}.1 %{buildroot}%{_mandir}/man1/%{name}.1
 
 
 %changelog
+* Thu Sep 24 2026 Antoine Martin <antoine@xpra.org> 0.4.0-1
+- 🔧 Platforms, build and packaging:
+   ship a CycloneDX SBOM with every release binary
+   cover the protocol layer with tests
+- ✨ Features:
+   add `-v` to raise the log level
+   send the display size and monitor layout to the server
+   monitor-relative coordinates, window placement fixes
+   handle interrupts gracefully
+   keyboard fixes: Super, dead keys, non-ascii, modifiers
+   pointer confinement fixes
+- 🌈 Encodings:
+   faster painting: vectorised blit, partial presents
+   handle JPEG and PNG decode errors
+- 🖧 Network:
+   work with servers running without backwards compatibility
+   announce 6.6 as the minimum protocol version
+- Documentation:
+   document macOS support
+
 * Sat Aug 01 2026 Antoine Martin <antoine@xpra.org> 0.3.1-1
 - 🔧 Platforms, build and packaging:
    build on older distributions
