@@ -500,6 +500,13 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     landing in the Action Center rather than on screen is not a bug. `client.rs`'s `process_notify_show` still
     logs every notification on every platform (that log line is also what remote logging sends the server); the
     tray call is an extra `#[cfg(windows)]` step after it.
+  - `dock.rs` (macOS only; a no-op elsewhere): the client is in the Dock and the app switcher only while it
+    has a window to show — `update_dock` in `client.rs` switches AppKit's activation policy between
+    `Regular` and `Accessory` on every window map/unmap, on the auth dialog, and at `startup-complete`
+    (an empty session starts without an icon). Before, a session whose last window had closed left a Dock
+    icon that did nothing when clicked, and winit has no hook for that click
+    (`applicationShouldHandleReopen`) nor a run-time activation policy, hence the direct AppKit call. It
+    uses the `objc2-app-kit`/`objc2-foundation` versions winit already links, so no crate is added.
   - `window.rs`: `XpraWindow` owns a `winit::window::Window`, a `softbuffer::Surface`, and a persistent
     `framebuffer: Vec<u32>` (softbuffer only hands you the *live* to-be-presented buffer on each
     `buffer_mut()` call, not a persistently addressable store, so `XpraWindow` keeps its own full-window pixel

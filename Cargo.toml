@@ -45,6 +45,11 @@ webp-dylib = ["libwebp-sys/system-dylib"]
 # Windows-only: H.264 video decode via Media Foundation (see src/client/mediafoundation.rs) and the
 # system tray icon (see src/client/tray.rs). Both live in the OS; this only pulls in the thin
 # COM/MF/Win32 bindings.
+# The AppKit bindings winit itself links, for the Dock icon (client/dock.rs): no new crate.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
+objc2-foundation = { version = "0.2.2", default-features = false, features = ["std"] }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",

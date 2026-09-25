@@ -3,6 +3,7 @@ pub mod audio;
 pub mod client;
 pub mod clipboard;
 pub mod connect_dialog;
+pub mod dock;
 pub mod draw_decoder;
 pub mod font;
 pub mod mmap;
