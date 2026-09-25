@@ -262,6 +262,18 @@ Not implemented: the client → server direction (the server only uses it for we
 does not have), and Windows, where the equivalent is a named file mapping rather than a file and would only ever
 help against a shadow server on the same machine.
 
+### HiDPI displays
+
+On a display scaled above 100% (a Retina Mac, a 4K laptop panel at 200%) the session runs in *logical*
+pixels: the client reports its desktop and monitors divided by the display's scale factor, and draws every
+window scaled up by that factor. Remote applications therefore come out at the size they were designed for,
+which is what xpra's own client does through GTK. The factor is the primary monitor's and holds for the whole
+session; scaling is nearest-neighbour, so at an integer factor every server pixel becomes a crisp block.
+
+| Variable               | Effect                                                                    |
+|------------------------|---------------------------------------------------------------------------|
+| `XPRA_DESKTOP_SCALING` | `off` for one server pixel per screen pixel (tiny windows on HiDPI), or a factor such as `1.5` / `150%` to force one; follows the display by default |
+
 ### Linking libwebp
 
 By default `libwebp` is built from the vendored C sources and linked **statically**, so that the release binaries

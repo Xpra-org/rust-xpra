@@ -95,6 +95,9 @@ Environment:
                     directory by default)
   XPRA_MMAP_SIZE    the size of the shared memory area, with an optional K/M/G suffix
                     (128M by default, 64M minimum)
+  XPRA_DESKTOP_SCALING
+                    'off' to show one server pixel per screen pixel on a HiDPI display,
+                    or a factor to scale windows by (follows the display by default)
   NO_COLOR          never colour the log output
 
 See rust-xpra(1), or https://github.com/Xpra-org/rust-xpra, for the full documentation.
