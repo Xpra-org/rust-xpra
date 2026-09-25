@@ -48,6 +48,7 @@ use super::clipboard::start_clipboard_loop;
 use super::draw_decoder;
 use super::mmap::{self, MmapArea};
 use super::pinentry::{find_pinentry, spawn_pinentry};
+use super::dock;
 use super::remote_logging::LogSink;
 #[cfg(windows)]
 use super::tray;
@@ -349,6 +350,8 @@ pub struct XpraClient {
     // the in-app password prompt shown when a server sends a `challenge` and no pinentry is
     // available (see process_challenge); `None` when we are not prompting.
     pub auth_dialog: Option<AuthDialog>,
+    // whether the Dock shows us (macOS, client/dock.rs); `None` until first decided
+    dock_visible: Option<bool>,
     // the server salt from the challenge we are currently answering, held while an interactive
     // prompt (pinentry worker or the dialog) is collecting the password. `None` when not
     // authenticating. Only `hmac+sha256` is advertised/handled, so this salt is all we need.
@@ -611,6 +614,7 @@ impl XpraClient {
             modifier_names: HashMap::new(),
             pointer_grabbed: None,
             auth_dialog: None,
+            dock_visible: None,
             pending_challenge: None,
             exit_code: None,
             log_sink,
@@ -1360,6 +1364,9 @@ impl XpraClient {
             "encoding-set" | "encodings" => self.process_encoding_set(&p),
             "startup-complete" => {
                 info!("startup complete!");
+                // every window the session already had has been sent by now: an empty one
+                // leaves nothing for a Dock icon to show
+                self.update_dock();
                 // the session is up: start pinging the server so it can track our latency -
                 // but only if it advertised the ping subsystem (see process_hello).
                 if !self.startup_complete {
@@ -1673,7 +1680,10 @@ impl XpraClient {
             }
         };
         match AuthDialog::new(event_loop, context, prompt_text) {
-            Ok(dialog) => self.auth_dialog = Some(dialog),
+            Ok(dialog) => {
+                self.auth_dialog = Some(dialog);
+                self.update_dock();
+            }
             Err(e) => {
                 error!("cannot show the password dialog: {e}");
                 self.quit(event_loop, ExitCode::AuthenticationFailed);
@@ -1717,6 +1727,7 @@ impl XpraClient {
     fn cancel_auth(&mut self, event_loop: &ActiveEventLoop) {
         error!("authentication cancelled");
         self.auth_dialog = None;
+        self.update_dock();
         self.pending_challenge = None;
         self.quit(event_loop, ExitCode::AuthenticationFailed);
     }
@@ -2229,6 +2240,7 @@ impl XpraClient {
         xpra_window.mapped = true;
         self.id_map.insert(window.id(), wid);
         self.windows.insert(wid, xpra_window);
+        self.update_dock();
 
         if !override_redirect {
             self.send_window_map(wid, x, y, w, h);
@@ -2574,6 +2586,17 @@ impl XpraClient {
             self.id_map.remove(&window.window.id());
         } else {
             warn!("window {:#x} not found!", wid);
+        }
+        self.update_dock();
+    }
+
+    // Shows the Dock icon while there is a window to bring forward (see client/dock.rs).
+    fn update_dock(&mut self) {
+        let visible = !self.windows.is_empty() || self.auth_dialog.is_some();
+        if self.dock_visible != Some(visible) {
+            debug!("dock icon {}", if visible { "shown" } else { "hidden" });
+            dock::set_visible(visible);
+            self.dock_visible = Some(visible);
         }
     }
 
