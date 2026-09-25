@@ -285,6 +285,18 @@ Passed to
 .B pinentry
 as its terminal name, for the curses variants.
 .TP
+.B XPRA_DESKTOP_SCALING
+How much to scale remote windows up by. By default the client follows the scale
+factor of the primary display, so that on a HiDPI display (200%, say) the session
+runs at half the physical resolution and every window is drawn twice as big \(em the
+size the application was designed for. Set to
+.B off
+to draw one server pixel per screen pixel, or to a factor such as
+.B 1.5
+or
+.B 150%
+to force one.
+.TP
 .B XPRA_MMAP
 Shared memory picture transfers, used when the server runs on the same host: the
 server writes uncompressed pixels into a file the client maps, instead of encoding

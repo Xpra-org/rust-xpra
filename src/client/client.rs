@@ -20,6 +20,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{
     CursorGrabMode, CursorIcon, CustomCursor, Fullscreen, Icon, ResizeDirection, Window,
@@ -50,6 +51,7 @@ use super::mmap::{self, MmapArea};
 use super::pinentry::{find_pinentry, spawn_pinentry};
 use super::dock;
 use super::remote_logging::LogSink;
+use super::scaling;
 #[cfg(windows)]
 use super::tray;
 #[cfg(windows)]
@@ -182,8 +184,9 @@ fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
 pub struct MonitorInfo {
     pub name: String,
     pub primary: bool,
-    // x, y, width, height in *physical* pixels. x/y may be negative: a monitor placed left of or
-    // above the primary one has negative coordinates on Windows.
+    // x, y, width, height in *server* pixels: physical ones divided by the session's scale factor
+    // (client/scaling.rs). x/y may be negative: a monitor placed left of or above the primary one
+    // has negative coordinates on Windows.
     pub geometry: (i32, i32, u32, u32),
     // milli-hertz - so a 60Hz panel is 60000, not 60 - which is the unit xpra's monitor definitions
     // use ("value is pre-multiplied by 1000", `get_client_refresh_rate` in xpra
@@ -196,14 +199,15 @@ pub struct MonitorInfo {
 //
 // Two attributes of xpra's monitor definitions are deliberately never filled in. `width-mm`/
 // `height-mm`: winit exposes no physical dimensions, and inventing them from an assumed DPI would
-// feed the server's DPI heuristics a fabricated number. `scale-factor`: xpra's own client reports
-// GDK's *logical* geometry alongside an integer scale, whereas everything here - these geometries,
-// `desktop_size`, and every window rectangle this client handles - is in physical pixels, so a
-// scale factor would only invite the server to apply it twice.
+// feed the server's DPI heuristics a fabricated number. `scale-factor`: these geometries - like
+// `desktop_size` and every window rectangle this client handles - are already in the session's
+// logical pixels (client/scaling.rs), which is what the server lays windows out in; it has no use
+// for the factor, and xpra's own client, which reports GDK's logical geometry, sends it only as
+// information.
 //
 // The list can legitimately come back empty (some Wayland compositors, a headless X11 display), and
 // `primary` is always false on Wayland, where winit's `primary_monitor` returns nothing by design.
-fn local_monitors(event_loop: &ActiveEventLoop) -> Vec<MonitorInfo> {
+fn local_monitors(event_loop: &ActiveEventLoop, scale: f64) -> Vec<MonitorInfo> {
     let primary = event_loop.primary_monitor();
     let mut monitors = Vec::new();
     for monitor in event_loop.available_monitors() {
@@ -213,17 +217,31 @@ fn local_monitors(event_loop: &ActiveEventLoop) -> Vec<MonitorInfo> {
             // bounding box below.
             continue;
         }
-        let position = monitor.position();
         monitors.push(MonitorInfo {
             // xpra generates a name from the index when we send none, but winit's is better when
             // there is one (the connector name on X11/Wayland, the device name on Windows).
             name: monitor.name().unwrap_or_default(),
             primary: Some(&monitor) == primary.as_ref(),
-            geometry: (position.x, position.y, size.width, size.height),
+            geometry: monitor_geometry(&monitor, scale),
             refresh_rate_millihertz: monitor.refresh_rate_millihertz(),
         });
     }
     monitors
+}
+
+// A monitor's rectangle in server pixels.
+fn monitor_geometry(monitor: &MonitorHandle, scale: f64) -> (i32, i32, u32, u32) {
+    let (position, size) = (monitor.position(), monitor.size());
+    (scaling::to_server(position.x, scale), scaling::to_server(position.y, scale),
+     scaling::to_server_size(size.width, scale), scaling::to_server_size(size.height, scale))
+}
+
+// The scale factor the session runs at (client/scaling.rs): the primary monitor's - or, where
+// there is no such thing (Wayland), the first one's - unless `XPRA_DESKTOP_SCALING` says otherwise.
+fn display_scale(event_loop: &ActiveEventLoop) -> f64 {
+    let monitor = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next());
+    let setting = std::env::var(scaling::ENV).ok();
+    scaling::session_scale(setting.as_deref(), monitor.map(|m| m.scale_factor()))
 }
 
 // The monitor-relative form of an absolute point, as xpra's `MonitorLayout.relative_position`
@@ -339,6 +357,9 @@ pub struct XpraClient {
     // usable monitor, in which case we send no size at all rather than a bogus one.
     pub monitors: Vec<MonitorInfo>,
     pub desktop_size: Option<(u32, u32)>,
+    // physical pixels per server pixel, for the whole session (client/scaling.rs). Measured with
+    // the monitors, and 1 until then.
+    pub scale: f64,
     // keysym -> the X11 modifier it is bound to on the server ("Super_L" -> "mod4"), read out of
     // the server's hello - see `parse_modifier_keysyms`. Empty until then, and empty for a server
     // that sends neither map, which is what the fallbacks in `get_modifier_state` are for.
@@ -611,6 +632,7 @@ impl XpraClient {
             current_cursor: None,
             monitors: Vec::new(),
             desktop_size: None,
+            scale: 1.0,
             modifier_names: HashMap::new(),
             pointer_grabbed: None,
             auth_dialog: None,
@@ -939,8 +961,7 @@ impl XpraClient {
                 // winit hands back a fresh `MonitorHandle`, so match it to the list we sent in
                 // `hello` by geometry - two monitors cannot share a rectangle, and it is the only
                 // attribute both sides are guaranteed to agree on (a name can be missing).
-                let (position, size) = (monitor.position(), monitor.size());
-                let geometry = (position.x, position.y, size.width, size.height);
+                let geometry = monitor_geometry(&monitor, self.scale);
                 self.monitors.iter().position(|m| m.geometry == geometry)
             });
         match current {
@@ -2192,11 +2213,14 @@ impl XpraClient {
         let decorated = !override_redirect
             && metadata.decorations.unwrap_or(true);
 
+        // x,y,w,h are server pixels; winit wants physical ones
+        let s = self.scale;
+        let (px, py) = (scaling::to_local(x, s), scaling::to_local(y, s));
         #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title(&title)
-            .with_position(PhysicalPosition::new(x, y))
-            .with_inner_size(PhysicalSize::new(w.max(1), h.max(1)))
+            .with_position(PhysicalPosition::new(px, py))
+            .with_inner_size(PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s)))
             .with_decorations(decorated)
             .with_resizable(!override_redirect);
         #[cfg(target_os = "linux")]
@@ -2220,7 +2244,7 @@ impl XpraClient {
         }
 
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
-        let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
+        let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, s, override_redirect);
         // The x,y the server sends is where the *client area* goes, but the position attribute
         // above places the window's frame (winit's docs for `with_position` on Windows and X11,
         // and on Windows it is literally a `set_outer_position` call at creation) - so a decorated
@@ -2232,7 +2256,7 @@ impl XpraClient {
         // either, which leaves the offset at zero and this a no-op - the `Moved` event that
         // follows the reparenting is what reports the real origin there.
         if decorated {
-            if let Some(outer) = xpra_window.to_outer_position(x, y) {
+            if let Some(outer) = xpra_window.to_outer_position(px, py) {
                 xpra_window.window.set_outer_position(outer);
             }
         }
@@ -2260,13 +2284,15 @@ impl XpraClient {
         };
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
+        let s = window.scale();
 
-        if let Some(outer) = window.to_outer_position(x, y) {
+        if let Some(outer) = window.to_outer_position(scaling::to_local(x, s), scaling::to_local(y, s)) {
             window.window.set_outer_position(outer);
         } else {
             debug!("window {:#x}: absolute positioning is not supported on this platform (Wayland)", wid);
         }
-        let _ = window.window.request_inner_size(PhysicalSize::new(w.max(1), h.max(1)));
+        let size = PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s));
+        let _ = window.window.request_inner_size(size);
     }
 
     // ["initiate-moveresize", wid, x_root, y_root, direction, button, source_indication]
@@ -2479,6 +2505,13 @@ impl XpraClient {
                 return;
             }
         };
+        // the server drew it for its own pixels: scale it with the windows it points at
+        let (w, h, rgba, xhot, yhot) = if self.scale != 1.0 {
+            let (sw, sh, scaled) = scaling::scale_rgba(w, h, &rgba, self.scale);
+            (sw, sh, scaled, (xhot as f64 * self.scale) as u32, (yhot as f64 * self.scale) as u32)
+        } else {
+            (w, h, rgba, xhot, yhot)
+        };
         // winit takes u16 dimensions and a hotspot that must lie inside the image:
         let (cw, ch) = (w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16);
         let hx = xhot.min(w.saturating_sub(1)) as u16;
@@ -2622,15 +2655,11 @@ impl XpraClient {
             window.window.set_decorations(decorations && !window.override_redirect);
         }
         if let Some(constraints) = update.size_constraints {
-            window.window.set_min_inner_size(
-                constraints.minimum.map(|(w, h)| PhysicalSize::new(w, h)),
-            );
-            window.window.set_max_inner_size(
-                constraints.maximum.map(|(w, h)| PhysicalSize::new(w, h)),
-            );
-            window.window.set_resize_increments(
-                constraints.increment.map(|(w, h)| PhysicalSize::new(w, h)),
-            );
+            let s = window.scale();
+            let local = |(w, h): (u32, u32)| PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s));
+            window.window.set_min_inner_size(constraints.minimum.map(local));
+            window.window.set_max_inner_size(constraints.maximum.map(local));
+            window.window.set_resize_increments(constraints.increment.map(local));
             let fixed_size = constraints.minimum.is_some()
                 && constraints.minimum == constraints.maximum;
             window.window.set_resizable(!window.override_redirect && !fixed_size);
@@ -2854,7 +2883,11 @@ impl ApplicationHandler<Packet> for XpraClient {
             // measured here because this is the first callback that hands us an `ActiveEventLoop`,
             // which is what winit enumerates monitors through. Kept on `self` so the second hello
             // that answers an authentication challenge reports the same layout.
-            self.monitors = local_monitors(event_loop);
+            self.scale = display_scale(event_loop);
+            if self.scale != 1.0 {
+                info!("scaling windows by {} (set {}=off to disable)", self.scale, scaling::ENV);
+            }
+            self.monitors = local_monitors(event_loop, self.scale);
             self.desktop_size = total_display_size(&self.monitors);
             match self.desktop_size {
                 Some((w, h)) => info!("local display size: {w}x{h}"),

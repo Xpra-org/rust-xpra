@@ -297,8 +297,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       (verified: `client.0.notification=False` in `xpra info`). Sending both gives
       `notification=True` in either mode.
     - **Local display**: the hello carries a nested `display` caps dict holding `desktop_size`
-      (the bounding box of every monitor, in physical pixels) and `monitors` (their individual
-      geometries). Both come from `local_monitors`/`total_display_size`, measured in `resumed`
+      (the bounding box of every monitor, in server pixels — see **HiDPI** below) and `monitors`
+      (their individual geometries). Both come from `local_monitors`/`total_display_size`, measured in `resumed`
       since that is the first callback with an `ActiveEventLoop` — winit enumerates monitors
       through it — and cached on `XpraClient` so the challenge-reply hello matches. The server
       logs the total as "client total display size" and a seamless server resizes its virtual
@@ -313,11 +313,10 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
         attributes is no longer read — which is why `show-desktop` had to move *into* the dict.
       - `resize-events: false` opts out of the server's legacy `desktop_size` notifications, which
         this client could not act on: it cannot resize the local display.
-      - Monitor geometries are **physical** pixels with their raw, possibly negative coordinates
-        (a monitor left of the primary one on Windows); the server rebases them itself
-        (`get_normalized_monitor_definitions`). This is why no `scale-factor` is sent — xpra's own
-        client reports GDK *logical* geometry plus an integer scale, and mixing the two
-        conventions would have the server apply the scale twice. `width-mm`/`height-mm` are
+      - Monitor geometries are **server** (logical) pixels with their raw, possibly negative
+        coordinates (a monitor left of the primary one on Windows); the server rebases them itself
+        (`get_normalized_monitor_definitions`). No `scale-factor` is sent: the geometry is already
+        logical, as GDK's is in xpra's own client. `width-mm`/`height-mm` are
         omitted too: winit exposes no physical dimensions and a number invented from an assumed
         DPI would poison the server's DPI heuristics.
       - The keys of the `monitors` dict are indices as *strings*, all our JSON-as-YAML writer can
@@ -329,6 +328,24 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       The legacy `screen_sizes` list is not sent: `monitors` replaced it in xpra 4.4, and the
       server only falls back to parsing it when a client sends no `monitors`
       (`get_monitor_definitions`).
+    - **HiDPI** (`scaling.rs`): the session runs in *logical* pixels — physical ones divided by
+      the primary monitor's scale factor, one factor for the whole session — and every window is
+      drawn scaled up by it. Without this a 2x display shows every remote window at half size:
+      the server lays out and renders for the pixel count we report. It is what xpra's own client
+      gets from GTK, which works in logical pixels. Sending a `dpi` instead does **not** work
+      (verified against 7.0): the server reads it only from the *top level* of the hello, only
+      after it has already configured the virtual screen, and applies it only through xsettings,
+      which are off on a seamless server — so windows stay small. The conversions are at the
+      edges only: monitors and `desktop_size` (`local_monitors`), window placement and size
+      constraints going out to winit (`to_local`), `get_geometry`/`absolute_position` coming back
+      (`to_server`), and the cursor image (`scale_rgba`). `XpraWindow` keeps its framebuffer in
+      server pixels and its softbuffer surface in physical ones; `draw_screen` samples one into
+      the other through per-axis nearest-neighbour maps, with damage rectangles in *surface*
+      coordinates (`surface_rect`), and at a factor of 1 falls back to the plain copy it always
+      did. `XPRA_DESKTOP_SCALING=off` (or a number) overrides the factor, named after xpra's
+      `--desktop-scaling`. Verified on a 2x Retina Mac against a 7.0 server: the server sees a
+      1512x982 desktop, windows open at their natural size (gnome-calculator 365x496 points),
+      clicks land on the right button, and resizing/moving round-trips exactly.
     - **Monitor-relative coordinates**: every outgoing packet carrying a position sends, next to
       the absolute pair, a `{"index", "position"}` descriptor naming the monitor the point falls on
       and its offset within that monitor — `monitor_relative_position` /
@@ -513,9 +530,11 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     buffer as the source of truth). `paint()` converts decoded pixels (jpeg/webp/h264/mmap → `BGRA`,
     png → `RGBA8`) into
     softbuffer's `0x00RRGGBB` `u32` format per-pixel and writes the damaged sub-rect into `framebuffer`;
-    `draw_screen()` (on `WindowEvent::RedrawRequested`) copies the whole `framebuffer` into the surface buffer
-    and presents it; `resize()` reallocates `framebuffer` (zero-filled — relies on the server re-sending damage
-    after a `window-configure` round-trip rather than preserving old contents).
+    `draw_screen()` (on `WindowEvent::RedrawRequested`) copies the `framebuffer` into the surface buffer —
+    scaling it up on a HiDPI display, where the framebuffer is in server pixels and the surface in physical
+    ones (see **HiDPI** above) — and presents it; `resize()` takes the new *physical* inner size and
+    reallocates `framebuffer` at the server-pixel equivalent (zero-filled — relies on the server re-sending
+    damage after a `window-configure` round-trip rather than preserving old contents).
   - `draw_decoder.rs`: decodes `jpeg` (via `turbojpeg`), `png` (via `spng`) and `webp` (via `libwebp-sys`)
     payloads into raw pixel buffers — platform-independent, unchanged by the GUI backend. These are *stateless*
     (one packet in, one image out). `webp` uses `WebPDecodeBGRA`, which both allocates its output (so the pixels

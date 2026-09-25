@@ -10,6 +10,7 @@ pub mod mmap;
 pub mod paint;
 pub mod pinentry;
 pub mod remote_logging;
+pub mod scaling;
 pub mod signals;
 #[cfg(windows)]
 pub mod mediafoundation;
