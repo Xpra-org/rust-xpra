@@ -11,6 +11,12 @@
 // `get_ssh_command()` in the file above) so a missing remote `xpra` produces
 // a clean error instead of a raw shell "command not found".
 //
+// `remote_xpra` is the path to run instead of the bare name, for the servers
+// that are not on the remote login shell's PATH: a relocatable install under a
+// shared prefix, which is how xpra is deployed on a cluster whose nodes have no
+// xpra package and where no one has root. The python client calls the same
+// option `--remote-xpra`.
+//
 // Authentication must not require interactive input on stdin, since stdin
 // carries the xpra packet stream, not a terminal - use key-based auth with an
 // ssh-agent (or a passphrase-less key). Host-key prompts and password
@@ -23,7 +29,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-pub fn connect(address: &str, username: Option<&str>, display: &str) -> Result<SshStream, String> {
+pub fn connect(address: &str, username: Option<&str>, display: &str, remote_xpra: Option<&str>)
+               -> Result<SshStream, String> {
     let (host, port) = address.rsplit_once(':').ok_or_else(|| format!("missing port in {:?}", address))?;
 
     let mut cmd = Command::new("ssh");
@@ -35,7 +42,7 @@ pub fn connect(address: &str, username: Option<&str>, display: &str) -> Result<S
         cmd.arg("-l").arg(user);
     }
     cmd.arg(host);
-    cmd.arg(remote_command(display));
+    cmd.arg(remote_command(display, remote_xpra));
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
 
@@ -53,14 +60,60 @@ pub fn connect(address: &str, username: Option<&str>, display: &str) -> Result<S
     Ok(SshStream { stdin: Arc::new(Mutex::new(stdin)), stdout: Arc::new(Mutex::new(stdout)) })
 }
 
-fn remote_command(display: &str) -> String {
-    let proxy_cmd = if display.is_empty() { "xpra _proxy".to_string() } else { format!("xpra _proxy {}", shell_quote(display)) };
-    let inner = format!("if command -v \"xpra\" > /dev/null 2>&1; then {proxy_cmd}; else echo \"no xpra command found\" 1>&2; exit 1; fi");
-    format!("sh -c {}", shell_quote(&inner))
+// The script is one `sh -c` argument, so every quote inside it is escaped again on the
+// way out: build it separately from the wrapping, which is also the readable half to
+// assert on.
+fn remote_command(display: &str, remote_xpra: Option<&str>) -> String {
+    format!("sh -c {}", shell_quote(&proxy_script(display, remote_xpra)))
+}
+
+fn proxy_script(display: &str, remote_xpra: Option<&str>) -> String {
+    // `command -v` answers for an absolute path too (it prints it back when it is
+    // executable), so the guard is the same one whether we were given a path or
+    // fall back to the name on PATH.
+    let xpra = shell_quote(remote_xpra.unwrap_or("xpra"));
+    let proxy_cmd = if display.is_empty() { format!("{xpra} _proxy") } else { format!("{xpra} _proxy {}", shell_quote(display)) };
+    format!("if command -v {xpra} > /dev/null 2>&1; then {proxy_cmd}; else echo \"no xpra command found:\" {xpra} 1>&2; exit 1; fi")
 }
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_proxy_runs_the_name_on_path_by_default() {
+        let script = proxy_script("10", None);
+        assert!(script.contains("command -v 'xpra'"), "{script}");
+        assert!(script.contains("'xpra' _proxy '10'"), "{script}");
+    }
+
+    #[test]
+    fn a_remote_path_replaces_the_name_in_both_the_guard_and_the_proxy() {
+        let script = proxy_script("10", Some("/red/ssd/appl/xpra/bin/xpra"));
+        assert!(script.contains("command -v '/red/ssd/appl/xpra/bin/xpra'"), "{script}");
+        assert!(script.contains("'/red/ssd/appl/xpra/bin/xpra' _proxy '10'"), "{script}");
+        // the bare name must be gone, or PATH would decide after all
+        assert!(!script.contains("'xpra'"), "{script}");
+    }
+
+    #[test]
+    fn an_empty_display_lets_the_proxy_pick_the_session() {
+        assert!(proxy_script("", None).contains("'xpra' _proxy;"));
+    }
+
+    // the script is one `sh -c` argument, and the path one word inside it: a path is only
+    // ever spelled by shell_quote, so a quote in one cannot start a second command.
+    #[test]
+    fn a_path_cannot_break_out_of_its_quotes() {
+        let path = "/opt/x'; rm -rf ~; '";
+        let script = proxy_script("10", Some(path));
+        assert_eq!(script.matches(&shell_quote(path)).count(), 3, "{script}");
+        assert_eq!(remote_command("10", Some(path)), format!("sh -c {}", shell_quote(&script)));
+    }
 }
 
 // `stdin`/`stdout` are two independent pipes (unlike a TCP or TLS session,

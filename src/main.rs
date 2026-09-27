@@ -70,7 +70,8 @@ Targets:
   ssl://HOST:PORT/                    tcp with TLS
   ws://HOST:PORT/                     websocket over http
   wss://HOST:PORT/                    websocket over https
-  ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through the system 'ssh' (port 22 by default)
+  ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through the system 'ssh' (port 22 by default,
+                                      see --remote-xpra)
   socket:///ABSOLUTE/PATH             Unix-domain socket (Unix only)
   /ABSOLUTE/PATH                      shorthand for socket:///ABSOLUTE/PATH (Unix only)
 
@@ -84,6 +85,8 @@ Options:
   -v, -vv                             log debug, or trace, instead of just info
       --ssl-insecure                  connect to an ssl:// or wss:// server without
                                       verifying its certificate or hostname
+      --remote-xpra=PATH              the xpra to run on the remote host of an ssh://
+                                      target, when it is not on the login shell's PATH
 
 Environment:
   XPRA_PASSWORD     the session password, used to answer the server's authentication
@@ -120,6 +123,9 @@ struct Options {
     // `--ssl-insecure`: connect to an `ssl://`/`wss://` server without verifying its certificate
     // chain or hostname. Off by default - see net::tls.
     ssl_insecure: bool,
+    // `--remote-xpra=PATH`: the xpra to run on the far end of an `ssh://` target, for a server
+    // that is not on the remote login shell's PATH - see net::ssh.
+    remote_xpra: Option<String>,
 }
 
 // Options and the target may come in either order, and there is at most one target. Unlike the
@@ -132,6 +138,13 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             // dealt with before this runs, but they are still valid arguments:
             "-h" | "--help" | "--version" | "-v" | "-vv" => {}
             "--ssl-insecure" => options.ssl_insecure = true,
+            _ if arg.starts_with("--remote-xpra=") => {
+                let path = arg["--remote-xpra=".len()..].to_string();
+                if path.is_empty() {
+                    return Err("--remote-xpra needs the path of the remote xpra".to_string());
+                }
+                options.remote_xpra = Some(path);
+            }
             _ if arg.starts_with('-') => return Err(format!("unrecognized option {:?}", arg)),
             _ => match &options.target {
                 Some(first) => return Err(format!("more than one target: {:?} and {:?}", first, arg)),
@@ -168,6 +181,7 @@ fn run(log_sink: LogSink) -> ExitCode {
         }
     };
     let ssl_insecure = options.ssl_insecure;
+    let remote_xpra = options.remote_xpra.clone();
     // with a target on the command line we connect before doing anything else, so that a bad
     // address is reported (and exited on) without ever opening a window. With no argument, the
     // connection dialog collects one instead - see AppState below.
@@ -181,7 +195,7 @@ fn run(log_sink: LogSink) -> ExitCode {
                     return ExitCode::ArgumentMismatch;
                 }
             };
-            match connect(&target, ssl_insecure) {
+            match connect(&target, ssl_insecure, remote_xpra.as_deref()) {
                 Ok(connection) => Some((connection, target_str.clone())),
                 Err((exit_code, message)) => {
                     error!("{}", message);
@@ -213,7 +227,7 @@ fn run(log_sink: LogSink) -> ExitCode {
     // does, rather than killing the process under a live connection - see client/signals.rs.
     signals::install(proxy.clone());
 
-    let mut app = App::new(proxy, decode_tx, log_sink, mmap, ssl_insecure);
+    let mut app = App::new(proxy, decode_tx, log_sink, mmap, ssl_insecure, remote_xpra);
     if let Some((connection, target)) = session {
         // args[1] as typed, rather than the parsed target: it is what the user will recognise in
         // the system tray's tooltip and menu header (see client/tray.rs).
@@ -248,6 +262,9 @@ struct App {
     // `--ssl-insecure`, applied to whatever the dialog ends up connecting to (the flag is given
     // before the protocol is picked, so `connect` is what rejects it on a non-TLS target).
     ssl_insecure: bool,
+    // `--remote-xpra`, the same way: the dialog can pick `ssh`, and `connect` rejects the option
+    // on a target that is not one.
+    remote_xpra: Option<String>,
     // the connection attempt started from the dialog: what the user asked for, and the channel the
     // worker thread hands the outcome back on (see start_connect / finish_connect).
     pending: Option<ConnectDetails>,
@@ -269,7 +286,7 @@ const CONNECT_RESULT: &str = "connect-result";
 
 impl App {
     fn new(proxy: EventLoopProxy<Packet>, decode_sender: Sender<Packet>, log_sink: LogSink,
-           mmap: Option<Arc<MmapArea>>, ssl_insecure: bool) -> Self {
+           mmap: Option<Arc<MmapArea>>, ssl_insecure: bool, remote_xpra: Option<String>) -> Self {
         App {
             state: AppState::Prompt(None),
             context: None,
@@ -278,6 +295,7 @@ impl App {
             log_sink,
             mmap,
             ssl_insecure,
+            remote_xpra,
             pending: None,
             connect_rx: None,
             exit_code: None,
@@ -416,8 +434,9 @@ impl App {
         self.pending = Some(details);
         let proxy = self.proxy.clone();
         let ssl_insecure = self.ssl_insecure;
+        let remote_xpra = self.remote_xpra.clone();
         thread::Builder::new().name("connect".to_string()).spawn(move || {
-            let _ = tx.send(connect(&target, ssl_insecure));
+            let _ = tx.send(connect(&target, ssl_insecure, remote_xpra.as_deref()));
             let _ = proxy.send_event(client_packet(CONNECT_RESULT, ""));
         }).unwrap();
     }
@@ -493,13 +512,19 @@ impl ApplicationHandler<Packet> for App {
 
 // Failures here mean we never had a session at all, so they map to the "failed to connect"
 // family of exit codes rather than `ConnectionLost`.
-fn connect(target: &Target, ssl_insecure: bool) -> Result<Connection, (ExitCode, String)> {
+fn connect(target: &Target, ssl_insecure: bool, remote_xpra: Option<&str>)
+           -> Result<Connection, (ExitCode, String)> {
     // there is nothing to skip verifying on a connection that has no certificate: say so rather
     // than let the option pass unnoticed. The dialog reports this the same way it reports a bad
     // host, since the protocol is only picked once the flag has already been given.
     if ssl_insecure && !matches!(target.scheme, Scheme::Tls | Scheme::WebSocketTls) {
         return Err((ExitCode::ArgumentMismatch,
                     "--ssl-insecure only applies to ssl:// and wss:// connections".to_string()));
+    }
+    // likewise: only the ssh transport runs anything on the remote host.
+    if remote_xpra.is_some() && target.scheme != Scheme::Ssh {
+        return Err((ExitCode::ArgumentMismatch,
+                    "--remote-xpra only applies to ssh:// connections".to_string()));
     }
     let tcp_connect = || {
         TcpStream::connect(&target.address).map_err(|e| {
@@ -530,7 +555,8 @@ fn connect(target: &Target, ssl_insecure: bool) -> Result<Connection, (ExitCode,
             Ok(Connection::WebSocketTls(ws))
         }
         Scheme::Ssh => {
-            let ssh_stream = ssh::connect(&target.address, target.username.as_deref(), &target.path)
+            let ssh_stream = ssh::connect(&target.address, target.username.as_deref(), &target.path,
+                                          remote_xpra)
                 .map_err(|e| (ExitCode::SshFailure, format!("ssh connection failed: {}", e)))?;
             Ok(Connection::Ssh(ssh_stream))
         }
@@ -613,14 +639,47 @@ mod tests {
     }
 
     #[test]
+    fn the_remote_xpra_path_is_taken_from_the_command_line() {
+        let options = parse(&["--remote-xpra=/red/ssd/appl/xpra/bin/xpra", "ssh://server/100"]).unwrap();
+        assert_eq!(options.remote_xpra.as_deref(), Some("/red/ssd/appl/xpra/bin/xpra"));
+        assert_eq!(options.target.as_deref(), Some("ssh://server/100"));
+    }
+
+    #[test]
+    fn without_the_option_the_remote_name_is_resolved_on_path() {
+        assert_eq!(parse(&["ssh://server/100"]).unwrap().remote_xpra, None);
+    }
+
+    // a path is the whole point of the option, so an empty one is a mistake, not a default:
+    #[test]
+    fn an_empty_or_misspelled_remote_xpra_is_rejected() {
+        assert!(parse(&["--remote-xpra="]).is_err());
+        assert!(parse(&["--remote-xpra"]).is_err());
+        assert!(parse(&["--remote_xpra=/opt/xpra/bin/xpra"]).is_err());
+    }
+
+    #[test]
     fn ssl_insecure_is_rejected_for_socket_targets() {
         let target = parse_target("socket:///tmp/xpra-test.sock").unwrap();
-        let error = match connect(&target, true) {
+        let error = match connect(&target, true, None) {
             Ok(_) => panic!("socket target unexpectedly accepted --ssl-insecure"),
             Err(error) => error,
         };
         assert_eq!(error.0, ExitCode::ArgumentMismatch);
         assert!(error.1.contains("only applies to ssl:// and wss://"), "{}", error.1);
+    }
+
+    // only the ssh transport runs anything remotely, so a path for it is a mistake elsewhere -
+    // reported the same way, and before any connection is attempted:
+    #[test]
+    fn remote_xpra_is_rejected_for_targets_that_run_nothing_remotely() {
+        let target = parse_target("tcp://example.com:10000/").unwrap();
+        let error = match connect(&target, false, Some("/opt/xpra/bin/xpra")) {
+            Ok(_) => panic!("tcp target unexpectedly accepted --remote-xpra"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, ExitCode::ArgumentMismatch);
+        assert!(error.1.contains("only applies to ssh://"), "{}", error.1);
     }
 
     // --help and --version act before parse_args runs, but must still parse as valid arguments:
@@ -670,7 +729,7 @@ mod tests {
     #[test]
     fn socket_target_reports_platform_support_error() {
         let target = parse_target("socket:///tmp/xpra-test.sock").unwrap();
-        let (code, message) = match connect(&target, false) {
+        let (code, message) = match connect(&target, false, None) {
             Ok(_) => panic!("socket target unexpectedly connected on a non-Unix platform"),
             Err(error) => error,
         };
