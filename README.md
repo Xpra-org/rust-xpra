@@ -101,6 +101,7 @@ cargo build
 ./target/debug/xpra socket:///run/user/1000/xpra/10   # Unix only
 ./target/debug/xpra /run/user/1000/xpra/10            # equivalent shorthand
 ./target/debug/xpra --ssl-insecure ssl://HOST:PORT/   # skip certificate verification
+./target/debug/xpra --remote-xpra=/opt/xpra/bin/xpra ssh://HOST/10   # remote xpra off PATH
 ./target/debug/xpra --help          # or -h: the same list, plus the environment variables
 ./target/debug/xpra --version       # this client's own version (not the xpra protocol version)
 ```
@@ -149,7 +150,13 @@ flag is currently the only way to reach a server whose certificate the system do
 `ssh` shells out to the system `ssh` binary and uses its stdin/stdout pipes as the byte stream (no SSH library
 dependency), running `xpra _proxy [DISPLAY]` on the remote end — the same mechanism xpra's own client uses to
 bridge stdin/stdout to an existing display's socket. This requires a working `ssh` in `PATH` (OpenSSH on Linux,
-or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the remote host. Authentication must
+or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed on the remote host.
+
+`--remote-xpra=PATH` runs that `xpra` from a path instead of looking the name up on the remote login shell's
+`PATH`, which is what reaches a relocatable install under a shared prefix — how xpra is deployed on hosts that
+carry no xpra package and where no one has root. The path goes through the same `command -v` guard as the bare
+name, so a wrong one is reported as `no xpra command found: <path>` rather than as a broken connection. The
+option is only meaningful for `ssh://`, and giving it with another target is an error. Authentication must
 not require interactive input on stdin (stdin carries the xpra protocol, not a terminal), so use key-based auth
 via an ssh-agent or a passphrase-less key; host-key confirmation and password prompts still work normally since
 OpenSSH reads those from the controlling terminal, not stdin.
