@@ -19,10 +19,12 @@ use xpra::CLIENT_VERSION;
 use xpra::exit_codes::ExitCode;
 use xpra::net::connection::Connection;
 use xpra::net::packet::Packet;
+use xpra::net::ssh::SshPrompt;
 use xpra::net::uri::{host_only, parse_target, Scheme, Target};
 use xpra::net::{ssh, tls, websocket};
 
 mod client;
+use client::ask;
 use client::client::{client_packet, XpraClient};
 use client::connect_dialog::{ConnectAction, ConnectDetails, ConnectDialog};
 use client::mmap::MmapArea;
@@ -70,8 +72,8 @@ Targets:
   ssl://HOST:PORT/                    tcp with TLS
   ws://HOST:PORT/                     websocket over http
   wss://HOST:PORT/                    websocket over https
-  ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through the system 'ssh' (port 22 by default,
-                                      see --remote-xpra)
+  ssh://[USER@]HOST[:PORT]/[DISPLAY]  tunnel through ssh (port 22 by default, see
+                                      --remote-xpra)
   socket:///ABSOLUTE/PATH             Unix-domain socket (Unix only)
   /ABSOLUTE/PATH                      shorthand for socket:///ABSOLUTE/PATH (Unix only)
 
@@ -99,6 +101,19 @@ Environment:
   XPRA_MMAP_SIZE    the size of the shared memory area, with an optional K/M/G suffix
                     (128M by default, 64M minimum)
   NO_COLOR          never colour the log output
+
+Environment, ssh:// only, and only in a build with the native ssh transport
+(--features ssh-native, which needs no 'ssh' binary):
+  XPRA_SSH_PASSWORD the ssh password or key passphrase, used without prompting
+  XPRA_SSH_KEY      the private key to authenticate with, instead of the ones
+                    under ~/.ssh
+  XPRA_SSH_KNOWN_HOSTS
+                    the known_hosts file to check the server against, instead
+                    of ~/.ssh/known_hosts
+  XPRA_SSH_ACCEPT_NEW_HOST
+                    'yes' to accept an unknown host key and record it, for a
+                    client that cannot be asked. A key that changed is still
+                    refused
 
 See rust-xpra(1), or https://github.com/Xpra-org/rust-xpra, for the full documentation.
 ";
@@ -192,7 +207,7 @@ fn run(log_sink: LogSink) -> ExitCode {
                     return ExitCode::ArgumentMismatch;
                 }
             };
-            match connect(&target, ssl_insecure, remote_xpra.as_deref()) {
+            match connect(&target, ssl_insecure, remote_xpra.as_deref(), &ask::prompts(None)) {
                 Ok(connection) => Some((connection, target_str.clone())),
                 Err((exit_code, message)) => {
                     error!("{}", message);
@@ -428,12 +443,15 @@ impl App {
         }
         let (tx, rx) = channel();
         self.connect_rx = Some(rx);
+        // the dialog's password field answers an `ssh://` target's authentication, which happens
+        // during `connect` - unlike the xpra challenge, which `new_client` gets it for later.
+        let prompt = ask::prompts(details.password.clone());
         self.pending = Some(details);
         let proxy = self.proxy.clone();
         let ssl_insecure = self.ssl_insecure;
         let remote_xpra = self.remote_xpra.clone();
         thread::Builder::new().name("connect".to_string()).spawn(move || {
-            let _ = tx.send(connect(&target, ssl_insecure, remote_xpra.as_deref()));
+            let _ = tx.send(connect(&target, ssl_insecure, remote_xpra.as_deref(), &prompt));
             let _ = proxy.send_event(client_packet(CONNECT_RESULT, ""));
         }).unwrap();
     }
@@ -509,7 +527,7 @@ impl ApplicationHandler<Packet> for App {
 
 // Failures here mean we never had a session at all, so they map to the "failed to connect"
 // family of exit codes rather than `ConnectionLost`.
-fn connect(target: &Target, ssl_insecure: bool, remote_xpra: Option<&str>)
+fn connect(target: &Target, ssl_insecure: bool, remote_xpra: Option<&str>, prompt: &SshPrompt)
            -> Result<Connection, (ExitCode, String)> {
     // there is nothing to skip verifying on a connection that has no certificate: say so rather
     // than let the option pass unnoticed. The dialog reports this the same way it reports a bad
@@ -553,7 +571,7 @@ fn connect(target: &Target, ssl_insecure: bool, remote_xpra: Option<&str>)
         }
         Scheme::Ssh => {
             let ssh_stream = ssh::connect(&target.address, target.username.as_deref(), &target.path,
-                                          remote_xpra)
+                                          remote_xpra, prompt)
                 .map_err(|e| (ExitCode::SshFailure, format!("ssh connection failed: {}", e)))?;
             Ok(Connection::Ssh(ssh_stream))
         }
@@ -658,7 +676,7 @@ mod tests {
     #[test]
     fn ssl_insecure_is_rejected_for_socket_targets() {
         let target = parse_target("socket:///tmp/xpra-test.sock").unwrap();
-        let error = match connect(&target, true, None) {
+        let error = match connect(&target, true, None, &SshPrompt::none()) {
             Ok(_) => panic!("socket target unexpectedly accepted --ssl-insecure"),
             Err(error) => error,
         };
@@ -671,7 +689,7 @@ mod tests {
     #[test]
     fn remote_xpra_is_rejected_for_targets_that_run_nothing_remotely() {
         let target = parse_target("tcp://example.com:10000/").unwrap();
-        let error = match connect(&target, false, Some("/opt/xpra/bin/xpra")) {
+        let error = match connect(&target, false, Some("/opt/xpra/bin/xpra"), &SshPrompt::none()) {
             Ok(_) => panic!("tcp target unexpectedly accepted --remote-xpra"),
             Err(error) => error,
         };
@@ -701,7 +719,7 @@ mod tests {
         ));
         let listener = UnixListener::bind(&socket_path).unwrap();
         let target = parse_target(socket_path.to_str().unwrap()).unwrap();
-        let mut connection = connect(&target, false).unwrap();
+        let mut connection = connect(&target, false, None, &SshPrompt::none()).unwrap();
         let (mut server, _) = listener.accept().unwrap();
 
         connection.write_all(b"client to server").unwrap();
@@ -726,7 +744,7 @@ mod tests {
     #[test]
     fn socket_target_reports_platform_support_error() {
         let target = parse_target("socket:///tmp/xpra-test.sock").unwrap();
-        let (code, message) = match connect(&target, false, None) {
+        let (code, message) = match connect(&target, false, None, &SshPrompt::none()) {
             Ok(_) => panic!("socket target unexpectedly connected on a non-Unix platform"),
             Err(error) => error,
         };

@@ -161,6 +161,38 @@ not require interactive input on stdin (stdin carries the xpra protocol, not a t
 via an ssh-agent or a passphrase-less key; host-key confirmation and password prompts still work normally since
 OpenSSH reads those from the controlling terminal, not stdin.
 
+### Without a system ssh
+
+Where there is no usable `ssh` binary — a workstation where the OpenSSH client is not installed, or where policy
+blocks it — build with `--features ssh-native` and the client speaks SSH itself, through
+[russh](https://crates.io/crates/russh), with no subprocess:
+
+```shell
+cargo build --release --features ssh-native
+```
+
+The feature is **off by default** and the two transports are mutually exclusive: a default build has no SSH
+library in it at all, and its dependency graph is unchanged. Nothing outside `src/net/ssh/` differs between them,
+and neither does the command line.
+
+It is not a superset of the subprocess transport, because everything that came free with OpenSSH has to be
+reimplemented: `~/.ssh/config` is **not** read (host, port and user come from the target URI only), and there is
+no `ProxyJump`/`ProxyCommand`, no host certificate, no FIDO or PKCS#11 key and no GSSAPI/Kerberos. What it does
+support:
+
+* **Authentication**, tried in OpenSSH's order and skipping whatever the server does not offer: the ssh-agent
+  (`$SSH_AUTH_SOCK`, or the `\\.\pipe\openssh-ssh-agent` named pipe on Windows), then `~/.ssh/id_ed25519`,
+  `id_ecdsa` and `id_rsa` (or the one key `XPRA_SSH_KEY` names), then keyboard-interactive, then a password.
+  RSA keys are signed with SHA-512, not the SHA-1 anything recent refuses.
+* **Host keys**, checked against `~/.ssh/known_hosts` (or `XPRA_SSH_KNOWN_HOSTS`) exactly as OpenSSH does: a
+  known key is accepted silently, an unknown one is put to the user and recorded when they accept, and a key
+  that *changed* is refused outright and never prompted for.
+* **Prompting** without a terminal, since `connect` runs before there is an event loop: the connection dialog's
+  password field when the target came from there, then `XPRA_SSH_PASSWORD`, then `pinentry` (`GETPIN` for a
+  secret, `CONFIRM` for the host key), and `XPRA_SSH_ACCEPT_NEW_HOST=yes` for an unattended client that has no
+  way to be asked. Each question is asked at most once, so a wrong password fails the connection instead of
+  looping.
+
 ## System tray
 
 On MS Windows the client puts an icon in the notification area for as long as it is connected. Right-clicking it
@@ -259,7 +291,8 @@ cargo build --release --features webp-dylib
 
 Keeping the dependency graph small is a deliberate constraint here — it is why the WebSocket layer and the SHA1
 and HMAC-SHA256 implementations are hand-rolled against `std` rather than pulled from crates, and why `ssh`
-shells out to the system binary instead of linking a client.
+shells out to the system binary instead of linking a client — the in-process SSH client is there for the hosts
+that need it, as the opt-in `ssh-native` feature above, and costs nothing when it is off.
 
 **[xpra-org.github.io/rust-xpra](https://xpra-org.github.io/rust-xpra/dependency-graph.html)** maps what is
 actually there: for each direct dependency, its full transitive closure, which crates it is the *only* route to

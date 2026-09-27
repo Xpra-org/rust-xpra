@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Proof-of-concept [Xpra](https://xpra.org/) client written in Rust, for MS Windows and Linux (X11 and Wayland).
 Not usable yet: `tcp`/`ssl`/`ws`/`wss` connections (`ssl`/`wss` verify certificates against the system trust
 store, with `--ssl-insecure` to opt out; there is still no way to trust a private CA — see
-`README.md`), plus `ssh` (via a subprocess); no server/audio/clipboard support. Password
+`README.md`), plus `ssh` (via a subprocess by default, or in-process with `--features ssh-native`);
+no server/audio/clipboard support. Password
 authentication *is* supported (the `hmac+sha256` challenge digest only — see the `challenge` flow below and
 `README.md`). See `README.md` for known Linux/Wayland limitations (window positioning, override-redirect, NumLock
 — all downstream of Wayland not letting clients query/set absolute desktop position or create truly unmanaged
@@ -110,20 +111,71 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     (see the client's `process_challenge`). Unlike `sha1` this *is* a security boundary, so it is verified against
     the FIPS-180 and RFC 4231 test vectors (`cargo test`). Hand-rolled rather than pulling in a crypto crate,
     matching the rest of `net/`; `hmac_sha256_hex` returns the lowercase-hex ASCII form xpra puts on the wire.
-  - `net/ssh.rs`: `ssh://`, implemented by shelling out to the system `ssh` binary (`std::process::Command`) and
-    treating its stdin/stdout pipes as the byte stream — no SSH library dependency, mirroring the `tcp`/`ws`
-    hand-rolled-over-a-library preference here (a full client like `russh` costs ~2MB and needs `tokio`; see the
-    dependency-cost notes in git history). The remote command is `sh -c 'if command -v "xpra" ...; then xpra
-    _proxy [DISPLAY]; else ...; fi'`, matching what xpra's own client runs over ssh (see
+  - `net/ssh/`: `ssh://`, in **two mutually exclusive implementations** picked at build time. Both expose the same
+    `connect()` signature and the same `SshStream` type, so `net/connection.rs` and `main::connect` do not know
+    which is in use, and `mod.rs` holds what they share: the remote command `sh -c 'if command -v "xpra" ...;
+    then xpra _proxy [DISPLAY]; else ...; fi'`, matching what xpra's own client runs over ssh (see
     `xpra/net/ssh/exec_client.py:get_ssh_command` upstream) — `xpra _proxy` bridges stdin/stdout on the remote end
-    to the target display's existing unix-domain socket. `SshStream` wraps `ChildStdin`/`ChildStdout` each in
-    their own `Arc<Mutex<_>>` purely so `try_clone()` can hand the reader thread its own handle; unlike
-    `SharedTlsStream` these two mutexes are never actually contended, since stdin and stdout are independent pipes
-    (only the UI thread ever locks `stdin`, only the reader thread ever locks `stdout`). The spawned `Child` is
-    moved into a dedicated reaper thread that blocks on `child.wait()`, since `Child::drop` neither kills nor
-    waits on the process and would otherwise leave a zombie once ssh exits. Authentication must not require
-    interactive stdin (it carries the xpra protocol); host-key/password prompts still work since OpenSSH reads
-    those from the controlling terminal, not stdin — ssh's stderr is inherited so such prompts/errors are visible.
+    to the target display's existing unix-domain socket — plus `SshPrompt`, the two callbacks (`secret`,
+    `confirm`) through which prompting enters, since `net/` is the library half and cannot reach the dialogs and
+    pinentry in `client/` (`client/ask.rs` builds it).
+    - `ssh/exec.rs` (**the default**): shells out to the system `ssh` binary (`std::process::Command`) and treats
+      its stdin/stdout pipes as the byte stream — no SSH library in the default build, mirroring the `tcp`/`ws`
+      hand-rolled-over-a-library preference here. `SshStream` wraps `ChildStdin`/`ChildStdout` each in their own
+      `Arc<Mutex<_>>` purely so `try_clone()` can hand the reader thread its own handle; unlike `SharedTlsStream`
+      these two mutexes are never actually contended, since stdin and stdout are independent pipes (only the UI
+      thread ever locks `stdin`, only the reader thread ever locks `stdout`). The spawned `Child` is moved into a
+      dedicated reaper thread that blocks on `child.wait()`, since `Child::drop` neither kills nor waits on the
+      process and would otherwise leave a zombie once ssh exits. Authentication must not require interactive
+      stdin (it carries the xpra protocol); host-key/password prompts still work since OpenSSH reads those from
+      the controlling terminal, not stdin — ssh's stderr is inherited so such prompts/errors are visible. It
+      ignores `SshPrompt`: `ssh` does its own asking.
+    - `ssh/native.rs` + `ssh/auth.rs` + `ssh/host.rs` (`--features ssh-native`): speaks SSH itself through
+      `russh`, for the hosts where there is no usable `ssh` binary — a corporate workstation where the OpenSSH
+      client is absent or blocked by policy. It is **not** a superset of the above: no `ssh_config`, no
+      `ProxyJump`, no host certificates, no FIDO/PKCS#11 keys, no GSSAPI/Kerberos. Off by default, and the
+      default build's dependency graph is unchanged (an optional dependency nothing enables does not appear in
+      `cargo tree`, so `docs/dependency-graph.html` stays byte-identical — that is the check that the feature is
+      really off). The traps:
+      - **The bridge is blocking-over-async.** russh is async and `Connection` is not, so the session runs on a
+        dedicated thread with a `new_current_thread` runtime and `SshStream` is a pair of channels into it: an
+        unbounded queue of `(bytes, ack)` outbound, a `std::sync::mpsc` of chunks inbound. `connect()` blocks
+        until the handshake, authentication and `exec` have all succeeded, so a failure is still a failure to
+        *connect* (`ExitCode::SshFailure`, with no window ever opened).
+      - **The `yield_now` in `pump` is load-bearing, and measured.** `Channel::data_bytes().await` returns once
+        russh's session task has been *handed* the bytes, and russh's `poll_flush` is a no-op, so nothing in its
+        API means "the bytes are on the socket". Writing one packet and calling `process::exit` immediately —
+        which is what `disconnect_and_quit` amounts to — landed **0 of 15 bytes** at the far end without that
+        yield and all 15 with it. The session task shares the single-threaded runtime and is runnable the moment
+        the message is queued, so yielding before acknowledging the write lets it encrypt and write first.
+        Removing it silently breaks the goodbye packet, which no test can see.
+      - **stderr has to be logged explicitly.** The exec path inherits ssh's stderr; here the remote command's
+        stderr arrives as `ChannelMsg::ExtendedData`, and that is where `no xpra command found` shows up, so
+        `step` logs it at warn. Without it a missing remote xpra looks like a session that simply hangs.
+      - `exec` is sent with `want_reply` and `open()` waits for the `ChannelMsg::Success`/`Failure` before
+        reporting the session up, which is what turns "the remote host cannot run that command" into a
+        connect-time error. That reply always precedes the program's own output, so nothing is lost by waiting.
+      - **An empty `ChannelMsg::Data` must never reach the inbox**: `Inbox::read` returns `Ok(0)` for an empty
+        chunk, which the reader thread reads as the connection being lost.
+      - `auth.rs` starts with `authenticate_none`, which is not an authentication attempt but the question "which
+        methods do you take?" — the failure it draws lists them, and everything after skips what the server will
+        not accept. Every prompt is asked **at most once** (`SshPrompt` is one-shot by contract), so a wrong
+        password fails the connection instead of looping on the same answer. RSA is signed with SHA-512: an agent
+        signs with SHA-1 unless told otherwise, and modern servers refuse that.
+      - russh declares the `Signer` trait for agent-backed public-key authentication but **implements it for
+        nothing**, despite a doc comment saying otherwise, so `auth.rs` implements it over `AgentClient`. The
+        stream type is erased with `dynamic()` so that the Unix socket and the Windows named pipe
+        (`\\.\pipe\openssh-ssh-agent`, or `SSH_AUTH_SOCK` when it names one) are one type.
+      - `auth::home()` prefers **`USERPROFILE` over `HOME` on Windows**: a Git Bash / MSYS shell exports a `HOME`
+        holding a POSIX path (`/c/Users/name`) that the process cannot open, which silently made every host
+        unknown and every key invisible.
+      - `host.rs` mirrors OpenSSH's `known_hosts` policy, and a **changed** key is refused outright, never
+        prompted for. `learn_known_hosts_path` leads with a newline, so the first entry it ever writes lands on
+        line 2 — which is the line number the error message quotes.
+      - There are no automated tests for the transport itself: `tests/ssh.rs` is an `#[ignore]`d integration test
+        that starts a real `sshd` on a free port and connects through it, which the CI job `ssh-native` runs.
+        Everything reachable without a server (the inbox, the write acknowledgement, `known_hosts`, identity
+        order, address splitting) is unit-tested next to the code.
   - `net/io.rs`: packet framing over a `Connection` — 8-byte header (`'P'` magic, flags byte where bit 2 must be
     `FLAGS_YAML`, compression byte, chunk byte, 4-byte big-endian payload length) followed by the payload, written
     as a single `Connection::write_all` call. We write only YAML-encoded, uncompressed, unchunked packets (the

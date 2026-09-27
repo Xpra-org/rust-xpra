@@ -1,3 +1,4 @@
+pub mod ask;
 pub mod auth_dialog;
 pub mod audio;
 pub mod client;

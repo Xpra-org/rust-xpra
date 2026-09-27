@@ -152,6 +152,24 @@ or a passphrase\-less key. Host\-key confirmation and password prompts still wor
 because
 .B ssh
 reads those from the controlling terminal rather than from standard input.
+.IP
+A build made with
+.B \-\-features ssh\-native
+speaks SSH itself instead, with no
+.B ssh
+binary and no subprocess, for hosts where none is available. That build reads no
+.BR ssh_config (5):
+the host, port and user come from the target only, and there is no
+.BR ProxyJump ,
+host certificate or GSSAPI support. It authenticates with the
+.BR ssh\-agent (1),
+then the keys under
+.IR ~/.ssh ,
+then keyboard\-interactive, then a password, and checks the host key against
+.IR ~/.ssh/known_hosts .
+See the
+.B XPRA_SSH_
+variables below.
 .TP
 .BI socket:/// ABSOLUTE/PATH
 Connect directly to a filesystem pathname Unix\-domain socket. This transport is
@@ -338,6 +356,33 @@ The client host name reported to the server.
 .B NO_COLOR
 When set, log output is never coloured, whether or not standard output is a
 terminal.
+.PP
+The following apply to
+.B ssh://
+targets in a build made with
+.BR \-\-features\ ssh\-native ,
+and are ignored otherwise:
+.TP
+.B XPRA_SSH_PASSWORD
+The ssh password, or a private key's passphrase, used without prompting.
+.TP
+.B XPRA_SSH_KEY
+The private key to authenticate with, instead of the ones under
+.IR ~/.ssh .
+.TP
+.B XPRA_SSH_KNOWN_HOSTS
+The
+.I known_hosts
+file to check the server's key against, instead of
+.IR ~/.ssh/known_hosts .
+.TP
+.B XPRA_SSH_ACCEPT_NEW_HOST
+Set to
+.B yes
+to accept an unknown host key and record it, for a client that cannot be asked.
+A key that has
+.I changed
+is still refused.
 .SH EXIT STATUS
 The values match those of xpra's own client, so wrapper scripts can treat both the
 same way:

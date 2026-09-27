@@ -3,6 +3,8 @@
 // the built-in AuthDialog is used instead. Kept out of client.rs to keep the state machine there
 // readable.
 use std::env;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
 use std::thread;
 
 use log::warn;
@@ -62,10 +64,7 @@ pub fn spawn_pinentry(prog: String, prompt: String, proxy: EventLoopProxy<Packet
 
 // Minimal Assuan client for pinentry: read the greeting, set the prompt text, GETPIN. Returns
 // Ok(Some(pin)), Ok(None) if the user cancelled, or Err if pinentry could not be driven.
-fn run_pinentry(prog: &str, prompt: &str) -> Result<Option<String>, String> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
-
+pub fn run_pinentry(prog: &str, prompt: &str) -> Result<Option<String>, String> {
     let mut child = Command::new(prog)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -77,34 +76,22 @@ fn run_pinentry(prog: &str, prompt: &str) -> Result<Option<String>, String> {
 
     // drive the exchange in a closure so we always reap the child afterwards.
     let result = (|| -> Result<Option<String>, String> {
-        // read one Assuan status line, skipping S/# comment and blank lines:
         macro_rules! read_line {
-            () => {{
-                loop {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
-                        return Err("pinentry closed the connection".to_string());
-                    }
-                    let l = line.trim_end().to_string();
-                    if !(l.starts_with('S') || l.starts_with('#') || l.is_empty()) {
-                        break l;
-                    }
-                }
-            }};
+            () => {{ read_status(&mut reader)? }};
         }
         // send a command and require an OK acknowledgement:
         macro_rules! send_ok {
             ($cmd:expr) => {{
                 writeln!(stdin, "{}", $cmd).map_err(|e| e.to_string())?;
                 let l = read_line!();
-                if !(l == "OK" || l.starts_with("OK ")) {
+                if !ok(&l) {
                     return Err(l);
                 }
             }};
         }
         // greeting:
         let greeting = read_line!();
-        if !(greeting == "OK" || greeting.starts_with("OK ")) {
+        if !ok(&greeting) {
             return Err(greeting);
         }
         // best-effort option for terminal (curses) pinentry; ignore any rejection:
@@ -122,7 +109,7 @@ fn run_pinentry(prog: &str, prompt: &str) -> Result<Option<String>, String> {
             let l = read_line!();
             if let Some(data) = l.strip_prefix("D ") {
                 pin = Some(assuan_unescape(data));
-            } else if l == "OK" || l.starts_with("OK ") {
+            } else if ok(&l) {
                 break;
             } else if l.starts_with("ERR") {
                 // any error from GETPIN (typically code 0x5000063, "canceled") = user declined:
@@ -137,6 +124,68 @@ fn run_pinentry(prog: &str, prompt: &str) -> Result<Option<String>, String> {
     drop(stdin);
     let _ = child.wait();
     result
+}
+
+// Ask pinentry a yes/no question rather than for a secret (`CONFIRM`): the unknown-host-key prompt
+// of the native ssh transport (see net/ssh/host.rs). Ok(false) is a decline, Err means pinentry
+// could not be driven at all - the caller falls back to an environment variable either way.
+pub fn confirm_pinentry(prog: &str, question: &str) -> Result<bool, String> {
+    let mut child = Command::new(prog)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("cannot start {prog}: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("no pinentry stdin")?;
+    let mut reader = BufReader::new(child.stdout.take().ok_or("no pinentry stdout")?);
+
+    let result = (|| -> Result<bool, String> {
+        let greeting = read_status(&mut reader)?;
+        if !ok(&greeting) {
+            return Err(greeting);
+        }
+        if let Ok(tty) = env::var("GPG_TTY") {
+            writeln!(stdin, "OPTION ttyname={tty}").map_err(|e| e.to_string())?;
+            let _ = read_status(&mut reader)?;
+        }
+        // the question can be several lines, so it goes in the description rather than the prompt
+        for command in ["SETTITLE Xpra ssh".to_string(), "SETOK Yes".to_string(),
+                        "SETCANCEL No".to_string(),
+                        format!("SETDESC {}", assuan_escape(question))] {
+            writeln!(stdin, "{command}").map_err(|e| e.to_string())?;
+            let line = read_status(&mut reader)?;
+            if !ok(&line) {
+                return Err(line);
+            }
+        }
+        writeln!(stdin, "CONFIRM").map_err(|e| e.to_string())?;
+        // ERR is how pinentry answers "No" as well as a real failure, and neither accepts the key.
+        let answer = read_status(&mut reader)?;
+        let _ = writeln!(stdin, "BYE");
+        Ok(ok(&answer))
+    })();
+
+    drop(stdin);
+    let _ = child.wait();
+    result
+}
+
+// One Assuan status line, skipping the S/# comment and blank lines.
+fn read_status<R: BufRead>(reader: &mut R) -> Result<String, String> {
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+            return Err("pinentry closed the connection".to_string());
+        }
+        let line = line.trim_end().to_string();
+        if !(line.starts_with('S') || line.starts_with('#') || line.is_empty()) {
+            return Ok(line);
+        }
+    }
+}
+
+fn ok(line: &str) -> bool {
+    line == "OK" || line.starts_with("OK ")
 }
 
 // Assuan percent-escaping for text we send (%, CR, LF must be escaped).

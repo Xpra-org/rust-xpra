@@ -33,8 +33,18 @@ libwebp-sys = "0.14"
 # no-op and copypasta uses the OS clipboard directly. See src/client/clipboard.rs.
 copypasta = { version = "0.10", default-features = false, features = ["x11"] }
 
+# `ssh://` without a system `ssh` binary: an in-process SSH client, for hosts where the OpenSSH
+# client is not installed or is blocked by policy. Optional, and off by default - a build either
+# shells out (src/net/ssh/exec.rs) or links this (src/net/ssh/native.rs), never both. russh pulls in
+# an async runtime, which is why this is not the default: see the `ssh-native` feature below.
+russh = { version = "0.63", optional = true }
+tokio = { version = "1", optional = true, default-features = false, features = ["rt", "net", "sync", "io-util"] }
+
 [features]
 default = []
+# Build the `ssh://` transport on russh instead of shelling out to `ssh`:
+# `cargo build --release --features ssh-native`. See src/net/ssh/mod.rs.
+ssh-native = ["russh", "tokio"]
 # Link against the system libwebp shared library (found via pkg-config) instead of building and
 # statically linking the vendored copy: `cargo build --release --features webp-dylib`.
 # Distro packages generally must not vendor a copy of a library that the distro already ships and
