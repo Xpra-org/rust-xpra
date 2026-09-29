@@ -176,14 +176,10 @@ pub fn yaml_hash_strings(value: &Yaml, key: &str) -> Vec<String> {
 }
 
 pub fn yaml_hash_str(value: &Yaml, key: String) -> String {
-    if let Yaml::Hash(hash) = value {
-        let yaml_key: Yaml = Yaml::String(key);
-        let yaml_value = &hash[&yaml_key];
-        if let Yaml::String(value) = yaml_value {
-            return value.to_string();
-        }
+    match yaml_hash(value, &key) {
+        Some(Yaml::String(s)) => s.to_string(),
+        _ => "".to_string(),
     }
-    "".to_string()
 }
 
 pub fn yaml_hash_bool(value: &Yaml, key: String) -> Option<bool> {
@@ -200,12 +196,93 @@ pub fn yaml_hash_bool(value: &Yaml, key: String) -> Option<bool> {
 }
 
 pub fn yaml_hash_i32(value: &Yaml, key: String) -> i32 {
-    if let Yaml::Hash(hash) = value {
-        let yaml_key: Yaml = Yaml::String(key);
-        let yaml_value = &hash[&yaml_key];
-        if let Yaml::Integer(ivalue) = yaml_value {
-            return *ivalue as i32;
-        }
+    match yaml_hash(value, &key) {
+        Some(Yaml::Integer(i)) => *i as i32,
+        _ => 0,
     }
-    0
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yaml_rust2::YamlLoader;
+
+    fn yaml(source: &str) -> Yaml {
+        YamlLoader::load_from_str(source).unwrap().remove(0)
+    }
+
+    #[test]
+    fn a_missing_hash_key_reads_as_absent() {
+        // the accessors index the hash directly, so a key the server did not send must not take
+        // the process down - every one of these is reached with optional capability dicts
+        let caps = yaml("{present: 1}");
+        assert_eq!(yaml_hash_str(&caps, "absent".to_string()), "");
+        assert_eq!(yaml_hash_i32(&caps, "absent".to_string()), 0);
+        assert_eq!(yaml_hash_bool(&caps, "absent".to_string()), None);
+        assert_eq!(yaml_hash(&caps, "absent"), None);
+        assert!(yaml_hash_strings(&caps, "absent").is_empty());
+    }
+
+    #[test]
+    fn a_value_of_the_wrong_type_reads_as_the_default() {
+        // the wire is untyped, so every accessor falls back rather than failing
+        let text = yaml("hello");
+        assert_eq!(yaml_u32(&text), 0);
+        assert_eq!(yaml_i32(&text), 0);
+        assert_eq!(yaml_u64(&text), 0);
+        assert_eq!(yaml_i64(&text), 0);
+        assert_eq!(yaml_str(&yaml("42")), "");
+        assert!(yaml_bytes(&yaml("42")).is_empty());
+    }
+
+    #[test]
+    fn booleans_are_accepted_as_numbers_too() {
+        // some senders put 0/1 on the wire where a yaml bool belongs
+        assert!(yaml_bool(&yaml("true")));
+        assert!(!yaml_bool(&yaml("false")));
+        assert!(yaml_bool(&yaml("1")));
+        assert!(!yaml_bool(&yaml("0")));
+        assert!(!yaml_bool(&yaml("hello")));
+        assert_eq!(yaml_hash_bool(&yaml("{a: 1, b: 0}"), "a".to_string()), Some(true));
+        assert_eq!(yaml_hash_bool(&yaml("{a: 1, b: 0}"), "b".to_string()), Some(false));
+    }
+
+    #[test]
+    fn binary_values_are_base64_with_the_line_breaks_removed() {
+        // yaml wraps long !!binary scalars, so the newlines have to go before decoding
+        assert_eq!(yaml_bytes(&yaml("\"aGVsbG8=\"")), b"hello");
+        assert_eq!(yaml_bytes(&yaml("\"aGVs\\nbG8=\"")), b"hello");
+        // junk is dropped rather than propagated
+        assert!(yaml_bytes(&yaml("\"not base64!\"")).is_empty());
+    }
+
+    #[test]
+    fn a_list_field_keeps_only_its_strings() {
+        assert_eq!(yaml_hash_strings(&yaml("{encodings: [png, 7, jpeg]}"), "encodings"),
+                   vec!["png".to_string(), "jpeg".to_string()]);
+        // a key whose value is not a list at all
+        assert!(yaml_hash_strings(&yaml("{encodings: png}"), "encodings").is_empty());
+    }
+
+    #[test]
+    fn an_out_of_band_chunk_wins_over_the_yaml_placeholder() {
+        // the sender leaves an empty placeholder in the payload and sends the real bytes as a
+        // chunk, so `get_bytes` has to prefer the chunk - see net::io
+        let mut packet = Packet::new();
+        packet.main = vec![yaml("draw"), yaml("\"aGVsbG8=\"")];
+        packet.raw.insert(1, b"real pixels".to_vec());
+        assert_eq!(packet.get_bytes(1), b"real pixels");
+        // and falls back to the payload once the chunk has been taken
+        assert_eq!(packet.get_bytes(1), b"hello");
+    }
+
+    #[test]
+    fn an_absent_trailing_field_reads_as_absent() {
+        // a draw packet's options dict is optional, so indexing past the end must not panic
+        let mut packet = Packet::new();
+        packet.main = vec![yaml("draw")];
+        assert_eq!(packet.len(), 1);
+        assert_eq!(packet.get_hash_bool(9, "flush".to_string()), None);
+    }
 }

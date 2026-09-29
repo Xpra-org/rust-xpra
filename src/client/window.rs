@@ -9,14 +9,24 @@ use winit::dpi::PhysicalPosition;
 use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
+use super::scaling;
+
 
 pub struct XpraWindow {
     pub wid: u64,
     pub window: Rc<Window>,
     pub surface: Surface<OwnedDisplayHandle, Rc<Window>>,
+    // In *server* pixels (see client/scaling.rs): what the draw packets address.
     pub framebuffer: Vec<u32>,
     pub width: u32,
     pub height: u32,
+    // The surface is in physical pixels, `scale` times the framebuffer; presenting scales one
+    // into the other through the axis maps (the identity when the factor is 1).
+    scale: f64,
+    surface_w: u32,
+    surface_h: u32,
+    xmap: Vec<u32>,
+    ymap: Vec<u32>,
     pub mapped: bool,
     pub override_redirect: bool,
     // remembered window-level metadata. Updates often contain just one of "above" / "below",
@@ -24,10 +34,10 @@ pub struct XpraWindow {
     pub above: bool,
     pub below: bool,
     pub paint_debug: bool,
-    // absolute position of the pointer as of the last CursorMoved event:
+    // absolute position of the pointer as of the last CursorMoved event, in server pixels:
     // button and wheel events don't carry a position of their own.
     pub last_cursor: (i32, i32),
-    // Regions of `framebuffer` written since the last present, and the damage of the frames
+    // Regions of the *surface* to rewrite since the last present, and the damage of the frames
     // before it: softbuffer hands back a recycled buffer holding the pixels we presented `age`
     // frames ago, so a partial copy has to replay the damage of those frames to catch it up.
     dirty: Vec<Rect>,
@@ -42,11 +52,13 @@ pub struct XpraWindow {
 
 impl XpraWindow {
 
-    pub fn new(wid: u64, window: Rc<Window>, context: &Context<OwnedDisplayHandle>, width: u32, height: u32, override_redirect: bool) -> Self {
+    // `width`x`height` in server pixels.
+    pub fn new(wid: u64, window: Rc<Window>, context: &Context<OwnedDisplayHandle>, width: u32, height: u32, scale: f64, override_redirect: bool) -> Self {
         let mut surface = Surface::new(context, window.clone()).expect("failed to create softbuffer surface");
         let rw = width.max(1);
         let rh = height.max(1);
-        surface.resize(NonZeroU32::new(rw).unwrap(), NonZeroU32::new(rh).unwrap())
+        let (sw, sh) = (scaling::to_local_size(rw, scale), scaling::to_local_size(rh, scale));
+        surface.resize(NonZeroU32::new(sw).unwrap(), NonZeroU32::new(sh).unwrap())
             .expect("failed to size softbuffer surface");
         XpraWindow {
             wid,
@@ -55,6 +67,11 @@ impl XpraWindow {
             framebuffer: vec![0u32; (rw * rh) as usize],
             width: rw,
             height: rh,
+            scale,
+            surface_w: sw,
+            surface_h: sh,
+            xmap: scaling::axis_map(sw, rw, scale),
+            ymap: scaling::axis_map(sh, rh, scale),
             mapped: false,
             override_redirect,
             above: false,
@@ -68,13 +85,25 @@ impl XpraWindow {
         }
     }
 
-    // Record a region of the framebuffer as written, clipped to it. A rectangle that falls
-    // entirely outside is dropped, and a softbuffer Rect cannot be empty.
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    // Whether the surface shows the framebuffer pixel for pixel, so presenting is a plain copy.
+    fn identity(&self) -> bool {
+        self.surface_w == self.width && self.surface_h == self.height
+    }
+
+    // Record a region of the framebuffer as written - as the surface region that shows it, clipped
+    // to both. A rectangle that falls entirely outside is dropped, and a softbuffer Rect cannot
+    // be empty.
     fn mark_dirty(&mut self, x: i32, y: i32, w: u32, h: u32) {
         if !self.track_damage {
             return;
         }
-        if let Some(r) = clip_rect(self.width, self.height, x, y, w, h) {
+        let Some(r) = clip_rect(self.width, self.height, x, y, w, h) else { return };
+        let r = if self.identity() { Some(r) } else { scaling::surface_rect(&r, self.scale, self.surface_w, self.surface_h) };
+        if let Some(r) = r {
             self.dirty.push(r);
         }
     }
@@ -144,8 +173,8 @@ impl XpraWindow {
         trace!("draw_screen wid={:#x}", self.wid);
         // take this frame's damage before the surface is borrowed
         let dirty = std::mem::take(&mut self.dirty);
-        let stride = self.width;
-        let (fw, fh) = (self.width, self.height);
+        let identity = self.identity();
+        let (sw, sh) = (self.surface_w, self.surface_h);
 
         let mut buffer = match self.surface.buffer_mut() {
             Ok(buffer) => buffer,
@@ -155,8 +184,8 @@ impl XpraWindow {
                 return;
             }
         };
-        if buffer.len() != self.framebuffer.len() {
-            // surface hasn't been resized to match our framebuffer yet: skip this present, but
+        if buffer.len() != (sw * sh) as usize {
+            // surface hasn't been resized to match our geometry yet: skip this present, but
             // keep the damage so the next one still paints it.
             self.dirty = dirty;
             return;
@@ -170,7 +199,12 @@ impl XpraWindow {
 
         let t0 = Instant::now();
         let damage: Vec<Rect> = if full {
-            buffer.copy_from_slice(&self.framebuffer);
+            if identity {
+                buffer.copy_from_slice(&self.framebuffer);
+            } else if let (Some(w), Some(h)) = (NonZeroU32::new(sw), NonZeroU32::new(sh)) {
+                let all = Rect { x: 0, y: 0, width: w, height: h };
+                scaling::scale_rect(&self.framebuffer, self.width, &mut buffer, sw, &all, &self.xmap, &self.ymap);
+            }
             Vec::new()
         } else {
             let mut rects: Vec<Rect> = dirty.clone();
@@ -178,7 +212,11 @@ impl XpraWindow {
                 rects.extend_from_slice(past);
             }
             for r in &rects {
-                Self::blit_rect(&self.framebuffer, &mut buffer, stride, r);
+                if identity {
+                    Self::blit_rect(&self.framebuffer, &mut buffer, sw, r);
+                } else {
+                    scaling::scale_rect(&self.framebuffer, self.width, &mut buffer, sw, r, &self.xmap, &self.ymap);
+                }
             }
             rects
         };
@@ -212,7 +250,7 @@ impl XpraWindow {
             }
             // Remember what this frame wrote so a later partial copy can replay it. A full copy
             // rewrote everything, which is what the next frame has to assume it must replace.
-            let written = match (NonZeroU32::new(fw), NonZeroU32::new(fh)) {
+            let written = match (NonZeroU32::new(sw), NonZeroU32::new(sh)) {
                 (Some(w), Some(h)) if full => vec![Rect { x: 0, y: 0, width: w, height: h }],
                 _ => dirty,
             };
@@ -223,21 +261,27 @@ impl XpraWindow {
         }
     }
 
+    // `width`x`height` is the window's new inner size in physical pixels, as winit reports it.
     pub fn resize(&mut self, width: u32, height: u32) {
-        let rw = width.max(1);
-        let rh = height.max(1);
-        if rw == self.width && rh == self.height {
+        let sw = width.max(1);
+        let sh = height.max(1);
+        if sw == self.surface_w && sh == self.surface_h {
             return;
         }
-        debug!("resize wid={:#x} to {:?}x{:?}", self.wid, rw, rh);
-        if let (Some(w), Some(h)) = (NonZeroU32::new(rw), NonZeroU32::new(rh)) {
+        let (rw, rh) = (scaling::to_server_size(sw, self.scale), scaling::to_server_size(sh, self.scale));
+        debug!("resize wid={:#x} to {:?}x{:?} ({:?}x{:?} on screen)", self.wid, rw, rh, sw, sh);
+        if let (Some(w), Some(h)) = (NonZeroU32::new(sw), NonZeroU32::new(sh)) {
             if let Err(e) = self.surface.resize(w, h) {
                 error!("failed to resize softbuffer surface: {:?}", e);
                 return;
             }
         }
+        self.surface_w = sw;
+        self.surface_h = sh;
         self.width = rw;
         self.height = rh;
+        self.xmap = scaling::axis_map(sw, rw, self.scale);
+        self.ymap = scaling::axis_map(sh, rh, self.scale);
         self.framebuffer = vec![0u32; (rw * rh) as usize];
         // the framebuffer was replaced, so every recorded rectangle describes the old geometry:
         // drop them all and let the next present rewrite the whole surface.
@@ -246,24 +290,26 @@ impl XpraWindow {
         self.window.request_redraw();
     }
 
+    // The client area's position and size, in server pixels.
     pub fn get_geometry(&self) -> (i32, i32, u32, u32) {
         let size = self.window.inner_size();
-        let w = size.width.max(1);
-        let h = size.height.max(1);
         let pos = self.window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
-        (pos.x, pos.y, w, h)
+        let s = self.scale;
+        (scaling::to_server(pos.x, s), scaling::to_server(pos.y, s),
+         scaling::to_server_size(size.width, s), scaling::to_server_size(size.height, s))
     }
 
     // convert a position relative to the client area into the absolute coordinates
-    // xpra expects, using the same window origin as get_geometry() (which is what
+    // xpra expects (server pixels), using the same window origin as get_geometry() (which is what
     // window-map / window-configure told the server) so the two stay consistent -
     // on Wayland both fall back to (0,0) and the server sees window-relative values.
     pub fn absolute_position(&self, position: PhysicalPosition<f64>) -> (i32, i32) {
         let origin = self.window.inner_position().unwrap_or(PhysicalPosition::new(0, 0));
-        (origin.x + position.x as i32, origin.y + position.y as i32)
+        let s = self.scale;
+        (((origin.x as f64 + position.x) / s).floor() as i32, ((origin.y as f64 + position.y) / s).floor() as i32)
     }
 
-    // convert an inner (client-area) position into the outer position winit's
+    // convert an inner (client-area) position, in physical pixels, into the outer position winit's
     // set_outer_position() expects, so we can honour the server's window-move-resize
     // "place the client area at (x,y)" semantics. Not supported on Wayland (returns None).
     pub fn to_outer_position(&self, inner_x: i32, inner_y: i32) -> Option<PhysicalPosition<i32>> {

@@ -20,6 +20,7 @@ use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{
     CursorGrabMode, CursorIcon, CustomCursor, Fullscreen, Icon, ResizeDirection, Window,
@@ -49,7 +50,9 @@ use super::draw_decoder;
 use super::keymap;
 use super::mmap::{self, MmapArea};
 use super::pinentry::{find_pinentry, spawn_pinentry};
+use super::dock;
 use super::remote_logging::LogSink;
+use super::scaling;
 #[cfg(windows)]
 use super::tray;
 #[cfg(windows)]
@@ -182,8 +185,9 @@ fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
 pub struct MonitorInfo {
     pub name: String,
     pub primary: bool,
-    // x, y, width, height in *physical* pixels. x/y may be negative: a monitor placed left of or
-    // above the primary one has negative coordinates on Windows.
+    // x, y, width, height in *server* pixels: physical ones divided by the session's scale factor
+    // (client/scaling.rs). x/y may be negative: a monitor placed left of or above the primary one
+    // has negative coordinates on Windows.
     pub geometry: (i32, i32, u32, u32),
     // milli-hertz - so a 60Hz panel is 60000, not 60 - which is the unit xpra's monitor definitions
     // use ("value is pre-multiplied by 1000", `get_client_refresh_rate` in xpra
@@ -196,14 +200,15 @@ pub struct MonitorInfo {
 //
 // Two attributes of xpra's monitor definitions are deliberately never filled in. `width-mm`/
 // `height-mm`: winit exposes no physical dimensions, and inventing them from an assumed DPI would
-// feed the server's DPI heuristics a fabricated number. `scale-factor`: xpra's own client reports
-// GDK's *logical* geometry alongside an integer scale, whereas everything here - these geometries,
-// `desktop_size`, and every window rectangle this client handles - is in physical pixels, so a
-// scale factor would only invite the server to apply it twice.
+// feed the server's DPI heuristics a fabricated number. `scale-factor`: these geometries - like
+// `desktop_size` and every window rectangle this client handles - are already in the session's
+// logical pixels (client/scaling.rs), which is what the server lays windows out in; it has no use
+// for the factor, and xpra's own client, which reports GDK's logical geometry, sends it only as
+// information.
 //
 // The list can legitimately come back empty (some Wayland compositors, a headless X11 display), and
 // `primary` is always false on Wayland, where winit's `primary_monitor` returns nothing by design.
-fn local_monitors(event_loop: &ActiveEventLoop) -> Vec<MonitorInfo> {
+fn local_monitors(event_loop: &ActiveEventLoop, scale: f64) -> Vec<MonitorInfo> {
     let primary = event_loop.primary_monitor();
     let mut monitors = Vec::new();
     for monitor in event_loop.available_monitors() {
@@ -213,17 +218,31 @@ fn local_monitors(event_loop: &ActiveEventLoop) -> Vec<MonitorInfo> {
             // bounding box below.
             continue;
         }
-        let position = monitor.position();
         monitors.push(MonitorInfo {
             // xpra generates a name from the index when we send none, but winit's is better when
             // there is one (the connector name on X11/Wayland, the device name on Windows).
             name: monitor.name().unwrap_or_default(),
             primary: Some(&monitor) == primary.as_ref(),
-            geometry: (position.x, position.y, size.width, size.height),
+            geometry: monitor_geometry(&monitor, scale),
             refresh_rate_millihertz: monitor.refresh_rate_millihertz(),
         });
     }
     monitors
+}
+
+// A monitor's rectangle in server pixels.
+fn monitor_geometry(monitor: &MonitorHandle, scale: f64) -> (i32, i32, u32, u32) {
+    let (position, size) = (monitor.position(), monitor.size());
+    (scaling::to_server(position.x, scale), scaling::to_server(position.y, scale),
+     scaling::to_server_size(size.width, scale), scaling::to_server_size(size.height, scale))
+}
+
+// The scale factor the session runs at (client/scaling.rs): the primary monitor's - or, where
+// there is no such thing (Wayland), the first one's - unless `XPRA_DESKTOP_SCALING` says otherwise.
+fn display_scale(event_loop: &ActiveEventLoop) -> f64 {
+    let monitor = event_loop.primary_monitor().or_else(|| event_loop.available_monitors().next());
+    let setting = std::env::var(scaling::ENV).ok();
+    scaling::session_scale(setting.as_deref(), monitor.map(|m| m.scale_factor()))
 }
 
 // The monitor-relative form of an absolute point, as xpra's `MonitorLayout.relative_position`
@@ -344,6 +363,13 @@ pub struct XpraClient {
     // `keyboard-config` packet that follows it have to agree - and on the authentication path the
     // hello is built twice.
     pub keyboard_layout: Option<String>,
+    // physical pixels per server pixel, for the whole session (client/scaling.rs). Measured with
+    // the monitors, and 1 until then.
+    pub scale: f64,
+    // keysym -> the X11 modifier it is bound to on the server ("Super_L" -> "mod4"), read out of
+    // the server's hello - see `parse_modifier_keysyms`. Empty until then, and empty for a server
+    // that sends neither map, which is what the fallbacks in `get_modifier_state` are for.
+    pub modifier_names: HashMap<String, String>,
     // the window whose pointer is currently grabbed at the server's request. The grab is applied
     // through winit and must be explicitly released on pointer-ungrab or before that window is
     // destroyed.
@@ -351,6 +377,8 @@ pub struct XpraClient {
     // the in-app password prompt shown when a server sends a `challenge` and no pinentry is
     // available (see process_challenge); `None` when we are not prompting.
     pub auth_dialog: Option<AuthDialog>,
+    // whether the Dock shows us (macOS, client/dock.rs); `None` until first decided
+    dock_visible: Option<bool>,
     // the server salt from the challenge we are currently answering, held while an interactive
     // prompt (pinentry worker or the dialog) is collecting the password. `None` when not
     // authenticating. Only `hmac+sha256` is advertised/handled, so this salt is all we need.
@@ -530,6 +558,47 @@ fn server_encodings(caps: &Yaml) -> Vec<String> {
     if core.is_empty() { yaml_hash_strings(encodings, "") } else { core }
 }
 
+// The server's modifier map, flattened to keysym -> modifier name ("Super_L" -> "mod4"). It comes
+// in the hello under either of two keys (xpra server/source/keyboard.py `get_caps`), which carry
+// the same thing in different shapes, so both are accepted:
+//   `modifiers-keynames`  {"mod4": ["Super_L", "Super_R"]}               (its `keynames_for_mod`)
+//   `modifier_keycodes`   {"mod4": [[115, "Super_L"], [116, "Super_R"]]} (client keycodes)
+// Only the keysyms are wanted, and a pair is walked for its string half rather than indexed:
+// xpra builds those pairs as both (keycode, keysym) and (keysym, level)
+// (`compute_client_modifier_keycodes`). A server with no X11 keyboard configuration sends
+// neither key, which leaves the map empty and the conventional names in `get_modifier_state`
+// standing.
+fn parse_modifier_keysyms(hello: &Yaml) -> HashMap<String, String> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for key in ["modifiers-keynames", "modifier_keycodes"] {
+        let Some(Yaml::Hash(entries)) = yaml_hash(hello, key) else {
+            continue;
+        };
+        for (modifier, keysyms) in entries {
+            let (Yaml::String(modifier), Yaml::Array(keysyms)) = (modifier, keysyms) else {
+                continue;
+            };
+            for keysym in keysyms {
+                match keysym {
+                    Yaml::String(keysym) => {
+                        names.insert(keysym.clone(), modifier.clone());
+                    },
+                    Yaml::Array(pair) => for item in pair {
+                        if let Yaml::String(keysym) = item {
+                            names.insert(keysym.clone(), modifier.clone());
+                        }
+                    },
+                    _ => {},
+                }
+            }
+        }
+        if !names.is_empty() {
+            break;
+        }
+    }
+    names
+}
+
 impl fmt::Debug for XpraClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("XpraClient")
@@ -570,8 +639,11 @@ impl XpraClient {
             monitors: Vec::new(),
             desktop_size: None,
             keyboard_layout: keymap::local_layout(),
+            scale: 1.0,
+            modifier_names: HashMap::new(),
             pointer_grabbed: None,
             auth_dialog: None,
+            dock_visible: None,
             pending_challenge: None,
             exit_code: None,
             log_sink,
@@ -907,8 +979,7 @@ impl XpraClient {
                 // winit hands back a fresh `MonitorHandle`, so match it to the list we sent in
                 // `hello` by geometry - two monitors cannot share a rectangle, and it is the only
                 // attribute both sides are guaranteed to agree on (a name can be missing).
-                let (position, size) = (monitor.position(), monitor.size());
-                let geometry = (position.x, position.y, size.width, size.height);
+                let geometry = monitor_geometry(&monitor, self.scale);
                 self.monitors.iter().position(|m| m.geometry == geometry)
             });
         match current {
@@ -951,12 +1022,12 @@ impl XpraClient {
     // defaults each key - xpra server/subsystem/keyboard.py do_process_keyboard_event). We fill in
     // the same five keys xpra's own clients send; `keyval` stays 0 because we derive the keyname
     // from winit rather than from an X11 keysym.
-    fn send_key_event(&mut self, wid: u64, keycode: u32, keyname: &str, keystr: &str, pressed: bool) {
+    fn send_key_event(&mut self, wid: u64, keycode: u32, keyname: &str, keystr: &str, keyval: u32, pressed: bool) {
         let modifiers = self.get_modifier_state();
         let group = 0;
         let packet = json!(["keyboard-event", wid, keyname, pressed, {
             "modifiers": modifiers,
-            "keyval": 0,
+            "keyval": keyval,
             "string": keystr,
             "keycode": keycode,
             "group": group,
@@ -966,6 +1037,9 @@ impl XpraClient {
 
     fn get_modifier_state(&self) -> Vec<String> {
         let mut modifiers: Vec<String> = Vec::new();
+        // "shift" and "control" are modifier names in their own right, the same on every keymap.
+        // Alt and Super are the ones that are only bound to a *numbered* modifier by convention,
+        // so those two are looked up in the map the server sent us (`modifier_for`).
         if self.modifiers.shift_key() {
             modifiers.push("shift".to_string());
         }
@@ -973,9 +1047,27 @@ impl XpraClient {
             modifiers.push("control".to_string());
         }
         if self.modifiers.alt_key() {
-            modifiers.push("mod1".to_string());
+            modifiers.push(self.modifier_for(&["Alt_L", "Alt_R", "Meta_L", "Meta_R"], "mod1"));
+        }
+        if self.modifiers.super_key() {
+            modifiers.push(self.modifier_for(&["Super_L", "Super_R"], "mod4"));
         }
         modifiers
+    }
+
+    // The X11 modifier one of these keysyms is bound to on the server, or `fallback` when the
+    // server told us nothing. The name matters because it is what the server turns back into a
+    // key to press (`keynames_for_mod`, used by `make_keymask_match` in xpra
+    // x11/server/keyboard_config.py), so a guess presses whatever else happens to sit on that
+    // modifier. The conventional mod1=Alt / mod4=Super holds on a normal desktop keymap, but not
+    // when the server has fallen back to its own defaults - `DEFAULT_MODIFIER_MEANINGS` (xpra
+    // keyboard/mask.py) puts Super on mod3 and leaves mod4 to Hyper, which is what this client
+    // gets today since it sends the server no keycodes to work from.
+    fn modifier_for(&self, keysyms: &[&str], fallback: &str) -> String {
+        keysyms.iter()
+            .find_map(|keysym| self.modifier_names.get(*keysym))
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
     }
 
     // `window-map` stayed positional, so the monitor descriptor is an *optional trailing field*
@@ -1311,6 +1403,9 @@ impl XpraClient {
             "encoding-set" | "encodings" => self.process_encoding_set(&p),
             "startup-complete" => {
                 info!("startup complete!");
+                // every window the session already had has been sent by now: an empty one
+                // leaves nothing for a Dock icon to show
+                self.update_dock();
                 // the session is up: start pinging the server so it can track our latency -
                 // but only if it advertised the ping subsystem (see process_hello).
                 if !self.startup_complete {
@@ -1624,7 +1719,10 @@ impl XpraClient {
             }
         };
         match AuthDialog::new(event_loop, context, prompt_text) {
-            Ok(dialog) => self.auth_dialog = Some(dialog),
+            Ok(dialog) => {
+                self.auth_dialog = Some(dialog);
+                self.update_dock();
+            }
             Err(e) => {
                 error!("cannot show the password dialog: {e}");
                 self.quit(event_loop, ExitCode::AuthenticationFailed);
@@ -1668,12 +1766,17 @@ impl XpraClient {
     fn cancel_auth(&mut self, event_loop: &ActiveEventLoop) {
         error!("authentication cancelled");
         self.auth_dialog = None;
+        self.update_dock();
         self.pending_challenge = None;
         self.quit(event_loop, ExitCode::AuthenticationFailed);
     }
 
     fn process_hello(&mut self, event_loop: &ActiveEventLoop, hello: &Yaml) {
         self.process_mmap_caps(event_loop, hello);
+        // How this server's keymap names its modifiers, so that the ones we report are the names
+        // it can turn back into keys - see `get_modifier_state`.
+        self.modifier_names = parse_modifier_keysyms(hello);
+        debug!("server modifier map: {:?}", self.modifier_names);
         match &hello {
             Yaml::Hash(hash) => {
                 let version_key: Yaml = Yaml::String(VERSION_KEY_STR.to_string());
@@ -2146,11 +2249,14 @@ impl XpraClient {
         let decorated = !override_redirect
             && metadata.decorations.unwrap_or(true);
 
+        // x,y,w,h are server pixels; winit wants physical ones
+        let s = self.scale;
+        let (px, py) = (scaling::to_local(x, s), scaling::to_local(y, s));
         #[allow(unused_mut)]
         let mut attrs = Window::default_attributes()
             .with_title(&title)
-            .with_position(PhysicalPosition::new(x, y))
-            .with_inner_size(PhysicalSize::new(w.max(1), h.max(1)))
+            .with_position(PhysicalPosition::new(px, py))
+            .with_inner_size(PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s)))
             .with_decorations(decorated)
             .with_resizable(!override_redirect);
         #[cfg(target_os = "linux")]
@@ -2174,7 +2280,7 @@ impl XpraClient {
         }
 
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
-        let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, override_redirect);
+        let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, s, override_redirect);
         // The x,y the server sends is where the *client area* goes, but the position attribute
         // above places the window's frame (winit's docs for `with_position` on Windows and X11,
         // and on Windows it is literally a `set_outer_position` call at creation) - so a decorated
@@ -2186,7 +2292,7 @@ impl XpraClient {
         // either, which leaves the offset at zero and this a no-op - the `Moved` event that
         // follows the reparenting is what reports the real origin there.
         if decorated {
-            if let Some(outer) = xpra_window.to_outer_position(x, y) {
+            if let Some(outer) = xpra_window.to_outer_position(px, py) {
                 xpra_window.window.set_outer_position(outer);
             }
         }
@@ -2194,6 +2300,7 @@ impl XpraClient {
         xpra_window.mapped = true;
         self.id_map.insert(window.id(), wid);
         self.windows.insert(wid, xpra_window);
+        self.update_dock();
 
         if !override_redirect {
             self.send_window_map(wid, x, y, w, h);
@@ -2213,13 +2320,15 @@ impl XpraClient {
         };
         let w = packet.get_u32(4);
         let h = packet.get_u32(5);
+        let s = window.scale();
 
-        if let Some(outer) = window.to_outer_position(x, y) {
+        if let Some(outer) = window.to_outer_position(scaling::to_local(x, s), scaling::to_local(y, s)) {
             window.window.set_outer_position(outer);
         } else {
             debug!("window {:#x}: absolute positioning is not supported on this platform (Wayland)", wid);
         }
-        let _ = window.window.request_inner_size(PhysicalSize::new(w.max(1), h.max(1)));
+        let size = PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s));
+        let _ = window.window.request_inner_size(size);
     }
 
     // ["initiate-moveresize", wid, x_root, y_root, direction, button, source_indication]
@@ -2432,6 +2541,13 @@ impl XpraClient {
                 return;
             }
         };
+        // the server drew it for its own pixels: scale it with the windows it points at
+        let (w, h, rgba, xhot, yhot) = if self.scale != 1.0 {
+            let (sw, sh, scaled) = scaling::scale_rgba(w, h, &rgba, self.scale);
+            (sw, sh, scaled, (xhot as f64 * self.scale) as u32, (yhot as f64 * self.scale) as u32)
+        } else {
+            (w, h, rgba, xhot, yhot)
+        };
         // winit takes u16 dimensions and a hotspot that must lie inside the image:
         let (cw, ch) = (w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16);
         let hx = xhot.min(w.saturating_sub(1)) as u16;
@@ -2540,6 +2656,17 @@ impl XpraClient {
         } else {
             warn!("window {:#x} not found!", wid);
         }
+        self.update_dock();
+    }
+
+    // Shows the Dock icon while there is a window to bring forward (see client/dock.rs).
+    fn update_dock(&mut self) {
+        let visible = !self.windows.is_empty() || self.auth_dialog.is_some();
+        if self.dock_visible != Some(visible) {
+            debug!("dock icon {}", if visible { "shown" } else { "hidden" });
+            dock::set_visible(visible);
+            self.dock_visible = Some(visible);
+        }
     }
 
     fn process_window_metadata(&mut self, packet: &Packet) {
@@ -2564,15 +2691,11 @@ impl XpraClient {
             window.window.set_decorations(decorations && !window.override_redirect);
         }
         if let Some(constraints) = update.size_constraints {
-            window.window.set_min_inner_size(
-                constraints.minimum.map(|(w, h)| PhysicalSize::new(w, h)),
-            );
-            window.window.set_max_inner_size(
-                constraints.maximum.map(|(w, h)| PhysicalSize::new(w, h)),
-            );
-            window.window.set_resize_increments(
-                constraints.increment.map(|(w, h)| PhysicalSize::new(w, h)),
-            );
+            let s = window.scale();
+            let local = |(w, h): (u32, u32)| PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s));
+            window.window.set_min_inner_size(constraints.minimum.map(local));
+            window.window.set_max_inner_size(constraints.maximum.map(local));
+            window.window.set_resize_increments(constraints.increment.map(local));
             let fixed_size = constraints.minimum.is_some()
                 && constraints.minimum == constraints.maximum;
             window.window.set_resizable(!window.override_redirect && !fixed_size);
@@ -2760,7 +2883,8 @@ impl XpraClient {
                     Key::Character(s) => s.to_string(),
                     _ => "".to_string(),
                 };
-                self.send_key_event(wid, keycode, &keyname, &keystr, pressed);
+                let keyval = key_to_xpra_keyval(&key_event.logical_key);
+                self.send_key_event(wid, keycode, &keyname, &keystr, keyval, pressed);
             }
             WindowEvent::CloseRequested => {
                 self.send_window_close(wid);
@@ -2795,7 +2919,11 @@ impl ApplicationHandler<Packet> for XpraClient {
             // measured here because this is the first callback that hands us an `ActiveEventLoop`,
             // which is what winit enumerates monitors through. Kept on `self` so the second hello
             // that answers an authentication challenge reports the same layout.
-            self.monitors = local_monitors(event_loop);
+            self.scale = display_scale(event_loop);
+            if self.scale != 1.0 {
+                info!("scaling windows by {} (set {}=off to disable)", self.scale, scaling::ENV);
+            }
+            self.monitors = local_monitors(event_loop, self.scale);
             self.desktop_size = total_display_size(&self.monitors);
             match self.desktop_size {
                 Some((w, h)) => info!("local display size: {w}x{h}"),
@@ -2851,6 +2979,29 @@ fn physical_key_to_xpra_keycode(physical_key: PhysicalKey) -> u32 {
     }
 }
 
+// The X11 keysym *value* of a key, or 0 when we have none to offer. This is the server's last
+// resort when the keysym *name* we send is not one it knows (`find_matching_keycode`, xpra
+// x11/server/keyboard_config.py): keysym names are ascii, so a character key like `\u{f1}` never has
+// one - `canonical_keysym` hands a non-ascii name straight back (xpra x11/xkbhelper.py) - and with
+// the keyval left at 0 the server had nothing else to match on and dropped the keystroke.
+// The mapping is X11's own: a latin-1 character is its own keysym, and anything above that lives
+// in the unicode range at 0x01000000 + codepoint.
+fn key_to_xpra_keyval(key: &Key) -> u32 {
+    let Key::Character(text) = key else {
+        return 0;
+    };
+    let mut chars = text.chars();
+    let (Some(c), None) = (chars.next(), chars.next()) else {
+        // several characters at once is an input-method commit, not a key we can name
+        return 0;
+    };
+    match c as u32 {
+        codepoint @ 0x20..=0xff => codepoint,
+        codepoint => 0x0100_0000 + codepoint,
+    }
+}
+
+
 fn key_to_xpra_keyname(key: &Key) -> String {
     match key {
         // most printable characters (letters, digits) are their own X11 keysym name,
@@ -2897,6 +3048,21 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             // letters and digits are their own keysym name, so they fall through unchanged
             other => other,
         }.to_string(),
+        // A dead key composes with the keystroke that follows it, so X11 gives it a keysym of
+        // its own rather than the accent it displays. winit hands us that accent as a plain
+        // character (`Key::Dead(Some('\u{b4}'))`), which is neither a name the server can look up
+        // nor the key we want pressed - so every dead key fell through to the catch-all below and
+        // was dropped, which is what made accented characters impossible to type.
+        Key::Dead(Some(accent)) => match accent {
+            '`' => "dead_grave",
+            '\u{b4}' => "dead_acute",
+            '^' => "dead_circumflex",
+            '~' => "dead_tilde",
+            '\u{a8}' => "dead_diaeresis",
+            '\u{b8}' => "dead_cedilla",
+            '\u{b0}' => "dead_abovering",
+            _ => "",
+        }.to_string(),
         Key::Named(named) => match named {
             NamedKey::Enter => "Return",
             NamedKey::Tab => "Tab",
@@ -2913,11 +3079,20 @@ fn key_to_xpra_keyname(key: &Key) -> String {
             NamedKey::PageUp => "Prior",
             NamedKey::PageDown => "Next",
             NamedKey::Insert => "Insert",
-            NamedKey::Shift => "shift",
-            NamedKey::Control => "control",
-            NamedKey::Alt => "mod1",
-            NamedKey::AltGraph => "mod5",
-            NamedKey::Super => "super",
+            // The modifier keys are keysym names too, like everything else in this table. The
+            // X11 *modifier* names these used to send only ever matched through the server's
+            // "could this be a modifier?" fallback, which looks the name up in the X11 modifier
+            // map (`find_matching_keycode`, xpra x11/server/keyboard_config.py) - and that map
+            // has no "super" entry, so the Super key resolved to no keycode at all and was
+            // dropped, the same way the shifted punctuation above was.
+            // Always the left-hand keysym: winit reports the side in `KeyEvent::location`, but
+            // the fallback picked the modifier's first keycode either way, so naming Shift_L for
+            // a right-hand Shift is what the server already did.
+            NamedKey::Shift => "Shift_L",
+            NamedKey::Control => "Control_L",
+            NamedKey::Alt => "Alt_L",
+            NamedKey::AltGraph => "ISO_Level3_Shift",
+            NamedKey::Super => "Super_L",
             NamedKey::CapsLock => "Caps_Lock",
             NamedKey::NumLock => "Num_Lock",
             NamedKey::ScrollLock => "Scroll_Lock",
@@ -2936,17 +3111,49 @@ fn key_to_xpra_keyname(key: &Key) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        client_encodings, draw_ack_packet, server_encodings,
-        layout_origin, key_to_xpra_keyname,
+        client_encodings, draw_ack_packet, parse_modifier_keysyms, server_encodings,
+        layout_origin, key_to_xpra_keyname, key_to_xpra_keyval,
         MonitorInfo, WindowMetadataUpdate, WindowSizeConstraints,
     };
-    use winit::keyboard::Key;
+    use winit::keyboard::{Key, NamedKey};
     use serde_json::json;
     use yaml_rust2::YamlLoader;
 
     fn parse_metadata(yaml: &str) -> WindowMetadataUpdate {
         let documents = YamlLoader::load_from_str(yaml).unwrap();
         WindowMetadataUpdate::parse(&documents[0])
+    }
+
+    #[test]
+    fn the_modifier_map_is_read_from_either_spelling() {
+        let parse = |yaml: &str| {
+            let documents = YamlLoader::load_from_str(yaml).unwrap();
+            parse_modifier_keysyms(&documents[0])
+        };
+        // `modifiers-keynames` is the map the server itself uses to turn a modifier name back
+        // into a key to press, so it is the one to read when both are there. Note mod3 rather
+        // than mod4: that is what a server with no client keycodes to work from falls back to
+        // (`DEFAULT_MODIFIER_MEANINGS`), and the whole reason for not assuming.
+        let names = parse("
+modifiers-keynames:
+  mod3: [Super_L, Super_R]
+  mod1: [Alt_L, Alt_R]
+");
+        assert_eq!(names.get("Super_L"), Some(&"mod3".to_string()));
+        assert_eq!(names.get("Alt_R"), Some(&"mod1".to_string()));
+
+        // `modifier_keycodes` nests each keysym in a pair, and xpra builds those as both
+        // (keycode, keysym) and (keysym, level) - so the string is taken from either position.
+        let names = parse("
+modifier_keycodes:
+  mod4: [[115, Super_L], [Super_R, 1]]
+");
+        assert_eq!(names.get("Super_L"), Some(&"mod4".to_string()));
+        assert_eq!(names.get("Super_R"), Some(&"mod4".to_string()));
+
+        // a server with no X11 keyboard configuration sends neither, and the conventional names
+        // in `get_modifier_state` are left to stand
+        assert!(parse("keyboard: true").is_empty());
     }
 
     fn monitor(x: i32, y: i32, w: u32, h: u32) -> MonitorInfo {
@@ -3022,6 +3229,51 @@ mod tests {
             let key = Key::Character(character.into());
             assert_eq!(key_to_xpra_keyname(&key), character);
         }
+    }
+
+    #[test]
+    fn modifier_keys_are_named_by_their_keysym() {
+        // Same rule as the punctuation above: the server resolves a key event by keysym name, so
+        // the modifier keys need their keysyms rather than the names of the X11 modifiers they
+        // happen to be bound to - a lookup that has no "super" entry to find.
+        let named = |key| key_to_xpra_keyname(&Key::Named(key));
+        assert_eq!(named(NamedKey::Shift), "Shift_L");
+        assert_eq!(named(NamedKey::Control), "Control_L");
+        assert_eq!(named(NamedKey::Alt), "Alt_L");
+        assert_eq!(named(NamedKey::AltGraph), "ISO_Level3_Shift");
+        assert_eq!(named(NamedKey::Super), "Super_L");
+        // the rest of the table was already made of keysyms
+        assert_eq!(named(NamedKey::PageUp), "Prior");
+        assert_eq!(named(NamedKey::CapsLock), "Caps_Lock");
+    }
+
+    #[test]
+    fn dead_keys_are_named_as_dead_keysyms() {
+        // winit reports the accent a dead key displays, but pressing that accent is not what the
+        // key does: it has to arrive as the composing keysym or nothing ever combines with it.
+        let dead = |accent| key_to_xpra_keyname(&Key::Dead(Some(accent)));
+        assert_eq!(dead('\u{b4}'), "dead_acute");
+        assert_eq!(dead('`'), "dead_grave");
+        assert_eq!(dead('~'), "dead_tilde");
+        assert_eq!(dead('^'), "dead_circumflex");
+        assert_eq!(dead('\u{a8}'), "dead_diaeresis");
+        // an accent we have no keysym for stays empty rather than being sent as a character
+        assert_eq!(dead('\u{2d9}'), "");
+        assert_eq!(key_to_xpra_keyname(&Key::Dead(None)), "");
+    }
+
+    #[test]
+    fn keyvals_are_the_x11_keysym_values() {
+        let keyval = |text: &str| key_to_xpra_keyval(&Key::Character(text.into()));
+        // a latin-1 character is its own keysym, which is the only way the server can resolve a
+        // key whose *name* is not ascii and therefore not a keysym name at all
+        assert_eq!(keyval("a"), 0x61);
+        assert_eq!(keyval("\u{f1}"), 0xf1);
+        // above latin-1 the unicode keysym range is used
+        assert_eq!(keyval("\u{20ac}"), 0x0100_20ac);
+        // nothing to offer for a named key, or for an input-method commit of several characters
+        assert_eq!(key_to_xpra_keyval(&Key::Named(NamedKey::Enter)), 0);
+        assert_eq!(keyval("ok"), 0);
     }
 
     #[test]

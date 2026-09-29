@@ -3,6 +3,7 @@ pub mod audio;
 pub mod client;
 pub mod clipboard;
 pub mod connect_dialog;
+pub mod dock;
 pub mod draw_decoder;
 pub mod font;
 pub mod keymap;
@@ -10,6 +11,7 @@ pub mod mmap;
 pub mod paint;
 pub mod pinentry;
 pub mod remote_logging;
+pub mod scaling;
 pub mod signals;
 #[cfg(windows)]
 pub mod mediafoundation;

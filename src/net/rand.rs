@@ -52,3 +52,36 @@ pub fn secure_random_bytes(buf: &mut [u8]) {
         *b = (z ^ (z >> 31)) as u8;
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::{secure_hex, secure_random_bytes};
+
+    #[test]
+    fn the_hex_form_is_ascii_and_twice_as_long() {
+        // it goes on the wire as a yaml string - our writer cannot carry raw binary, which is
+        // the whole reason the client salt is hex (see the client's process_challenge)
+        let salt = secure_hex(32);
+        assert_eq!(salt.len(), 64);
+        assert!(salt.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert_eq!(secure_hex(0), "");
+    }
+
+    #[test]
+    fn two_salts_differ() {
+        // a repeated salt would make the challenge replayable
+        assert_ne!(secure_hex(32), secure_hex(32));
+    }
+
+    #[test]
+    fn the_buffer_is_filled_whatever_its_length() {
+        for length in [1usize, 7, 64] {
+            let mut buf = vec![0u8; length];
+            secure_random_bytes(&mut buf);
+            assert!(buf.iter().any(|&b| b != 0), "{length} bytes came back all zero");
+        }
+        // a zero-length request must not misbehave
+        secure_random_bytes(&mut []);
+    }
+}

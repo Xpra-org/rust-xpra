@@ -1,3 +1,25 @@
+rust-xpra (0.4.0-1) UNRELEASED; urgency=low
+  * 🔧 Platforms, build and packaging:
+    ship a CycloneDX SBOM with every release binary
+    cover the protocol layer with tests
+  * ✨ Features:
+    add `-v` to raise the log level
+    send the display size and monitor layout to the server
+    monitor-relative coordinates, window placement fixes
+    handle interrupts gracefully
+    keyboard fixes: Super, dead keys, non-ascii, modifiers
+    pointer confinement fixes
+  * 🌈 Encodings:
+    faster painting: vectorised blit, partial presents
+    handle JPEG and PNG decode errors
+  * 🖧 Network:
+    work with servers running without backwards compatibility
+    announce 6.6 as the minimum protocol version
+  * Documentation:
+    document macOS support
+
+ -- Antoine Martin <antoine@xpra.org>  Thu, 24 Sep 2026 12:00:00 +0700
+
 rust-xpra (0.3.1-1) UNRELEASED; urgency=low
   * 🔧 Platforms, build and packaging:
     build on older distributions

@@ -68,6 +68,27 @@ itself, and not the version of the
 protocol it announces to the server, which follows the xpra release whose protocol
 it implements.
 .TP
+.BI \-\-remote\-xpra= PATH
+Run
+.I PATH
+as the remote
+.B xpra
+of an
+.B ssh://
+target, instead of looking the name
+.B xpra
+up on the remote login shell's
+.BR PATH .
+This is what reaches a relocatable install under a shared prefix \(em how xpra is
+deployed on hosts that carry no xpra package and where no one has root \(em when that
+prefix is on nobody's
+.BR PATH .
+The path goes through the same
+.B command \-v
+guard as the bare name, so one that is missing or not executable is reported as such
+rather than as a broken connection. Using this option with any other kind of target is
+an error, since no other transport runs anything on the remote host.
+.TP
 .B \-\-ssl\-insecure
 Connect to an
 .B ssl://
@@ -118,7 +139,11 @@ on
 .B PATH
 locally and
 .B xpra
-installed remotely.
+installed remotely \- on the remote login shell's
+.BR PATH ,
+or named by
+.B \-\-remote\-xpra
+above.
 .IP
 Authentication must not need to read from standard input, since that carries the
 xpra protocol \- use a key held by an
@@ -284,6 +309,18 @@ on
 Passed to
 .B pinentry
 as its terminal name, for the curses variants.
+.TP
+.B XPRA_DESKTOP_SCALING
+How much to scale remote windows up by. By default the client follows the scale
+factor of the primary display, so that on a HiDPI display (200%, say) the session
+runs at half the physical resolution and every window is drawn twice as big \(em the
+size the application was designed for. Set to
+.B off
+to draw one server pixel per screen pixel, or to a factor such as
+.B 1.5
+or
+.B 150%
+to force one.
 .TP
 .B XPRA_MMAP
 Shared memory picture transfers, used when the server runs on the same host: the
