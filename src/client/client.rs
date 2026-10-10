@@ -827,6 +827,7 @@ impl XpraClient {
             "sharing": true,
             "bell": true,
             "display": display_caps,
+            "monitor-relative": true,
             // authentication: we only implement the hmac+sha256 password digest, so advertise
             // just that. The server picks the challenge digest from these lists (choose_digest,
             // xpra auth/sys_auth_base.py), so listing one forces both to hmac+sha256 - the one
