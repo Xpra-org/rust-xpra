@@ -1426,6 +1426,7 @@ impl XpraClient {
             "new-window" | "window-create" => self.process_new_common(event_loop, &p, false),
             "new-override-redirect" => self.process_new_common(event_loop, &p, true),
             "window-move-resize" => self.process_window_move_resize(&p),
+            "window-resized" => self.process_window_resized(&p),
             // a modern server sends `window-move-resize` for these too, so the legacy name is
             // all this arm adds:
             "configure-override-redirect" => self.process_window_move_resize(&p),
@@ -2328,6 +2329,25 @@ impl XpraClient {
         } else {
             debug!("window {:#x}: absolute positioning is not supported on this platform (Wayland)", wid);
         }
+        let size = PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s));
+        let _ = window.window.request_inner_size(size);
+    }
+
+    // ["window-resized", wid, w, h, resize_counter]
+    // The size-only sibling of window-move-resize: the application resized its window without
+    // moving it (xpra server/source/window.py `resize_window`). Never renamed, so no legacy alias.
+    fn process_window_resized(&mut self, packet: &Packet) {
+        let wid = packet.get_u64(1);
+        let window = match self.windows.get_mut(&wid) {
+            Some(window) => window,
+            None => {
+                error!("cannot resize: window {:#x} not found", wid);
+                return;
+            }
+        };
+        let w = packet.get_u32(2);
+        let h = packet.get_u32(3);
+        let s = window.scale();
         let size = PhysicalSize::new(scaling::to_local_size(w, s), scaling::to_local_size(h, s));
         let _ = window.window.request_inner_size(size);
     }

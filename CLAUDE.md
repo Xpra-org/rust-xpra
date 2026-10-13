@@ -236,7 +236,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       (xpra `server/source/cursor.py`), so only `cursor-data` and `cursor-default` can arrive and
       the legacy `cursor` packet — pointer coordinates and cursor-size list included — is not
       handled at all. Still unimplemented in either spelling: `window-restack`/`restack-window`,
-      `window-resized`, the file-transfer and webcam families. Adding an incoming rename means
+      the file-transfer and webcam families. Adding an incoming rename means
       matching both names on one arm.
     - **Server encodings** (`process_encoding_set`): `["encoding-set", {"encodings": {...},
       "video": {...}}]` carries the picture encodings the server can send. It is a packet rather
