@@ -116,6 +116,8 @@ struct WindowMetadataUpdate {
     attention_requested: Option<bool>,
     skip_taskbar: Option<bool>,
     skip_pager: Option<bool>,
+    // (instance, class), as in X11's `WM_CLASS`
+    class_instance: Option<(String, String)>,
     // xpra wids: the server never sends a 0 ("none"), it leaves the key out
     transient_for: Option<u64>,
     parent: Option<u64>,
@@ -138,6 +140,10 @@ impl WindowMetadataUpdate {
             attention_requested: metadata_bool(metadata, "attention-requested"),
             skip_taskbar: metadata_bool(metadata, "skip-taskbar"),
             skip_pager: metadata_bool(metadata, "skip-pager"),
+            class_instance: metadata_strings(metadata, "class-instance").and_then(|values| match values.as_slice() {
+                [instance, class, ..] if !class.is_empty() => Some((instance.clone(), class.clone())),
+                _ => None,
+            }),
             transient_for: metadata_wid(metadata, "transient-for"),
             parent: metadata_wid(metadata, "parent"),
             modal: metadata_bool(metadata, "modal"),
@@ -181,6 +187,16 @@ fn metadata_str(metadata: &Yaml, key: &str) -> Option<String> {
         Some(Yaml::String(value)) => Some(value.clone()),
         _ => None,
     }
+}
+
+fn metadata_strings(metadata: &Yaml, key: &str) -> Option<Vec<String>> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    let Some(Yaml::Array(values)) = hash.get(&Yaml::String(key.to_string())) else {
+        return None;
+    };
+    values.iter().map(|value| value.as_str().map(str::to_string)).collect()
 }
 
 fn metadata_bool(metadata: &Yaml, key: &str) -> Option<bool> {
@@ -936,7 +952,7 @@ impl XpraClient {
                     "title", "size-constraints", "fullscreen", "maximized", "iconic",
                     "decorations", "above", "below", "attention-requested",
                     "transient-for", "parent", "relative-position", "modal",
-                    "skip-taskbar", "skip-pager",
+                    "skip-taskbar", "skip-pager", "class-instance",
                     "override-redirect",
                 ],
             },
@@ -2369,6 +2385,20 @@ impl XpraClient {
             use winit::platform::x11::WindowAttributesExtX11;
             attrs = attrs.with_override_redirect(override_redirect);
         }
+        // The remote application's class, so the desktop groups its windows and finds its icon
+        // and `.desktop` entry - rather than filing every window under one "xpra" application.
+        // On X11 this is `WM_CLASS`; on Wayland the class becomes the `app_id`, which compositors
+        // match against `.desktop` file names. Only settable at creation, but it never changes.
+        #[cfg(target_os = "linux")]
+        if let Some((instance, class)) = &metadata.class_instance {
+            use winit::platform::wayland::{ActiveEventLoopExtWayland, WindowAttributesExtWayland};
+            use winit::platform::x11::WindowAttributesExtX11;
+            attrs = if event_loop.is_wayland() {
+                WindowAttributesExtWayland::with_name(attrs, class, instance)
+            } else {
+                WindowAttributesExtX11::with_name(attrs, class, instance)
+            };
+        }
         // Attach the window to its owner, each platform its own way. Windows: an *owned* window
         // stays above its owner, is hidden with it and is left out of the taskbar (not
         // `with_parent_window`, which makes a WS_CHILD confined to the parent's client area).
@@ -3585,6 +3615,7 @@ modifier_keycodes:
                 above: true,
                 below: false,
                 attention-requested: true,
+                class-instance: ["gnome-calculator", "Gnome-calculator"],
                 skip-taskbar: true,
                 skip-pager: 0,
                 transient-for: 3,
@@ -3611,6 +3642,7 @@ modifier_keycodes:
                 attention_requested: Some(true),
                 skip_taskbar: Some(true),
                 skip_pager: Some(false),
+                class_instance: Some(("gnome-calculator".to_string(), "Gnome-calculator".to_string())),
                 transient_for: Some(3),
                 parent: None,
                 modal: Some(true),

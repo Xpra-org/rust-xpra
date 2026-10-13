@@ -376,7 +376,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     - **Window metadata**: `metadata.supported` is limited to the properties this backend applies:
       title, decorations, fullscreen, maximized/iconic state, above/below level, size
       constraints, attention-requested (an informational `request_user_attention`, never for an
-      override-redirect window), skip-taskbar (Windows and X11) and skip-pager (X11) — and `override-redirect`, which is not applied but *classifies* the window.
+      override-redirect window), skip-taskbar (Windows and X11), skip-pager (X11), class-instance (X11 `WM_CLASS`, Wayland
+      `app_id`; creation only) — and `override-redirect`, which is not applied but *classifies* the window.
       The same `apply_window_metadata` path handles initial `new-window`/`window-create` metadata
       and incremental `window-metadata` packets; fixed minimum/maximum sizes disable resizing.
       The list is a filter the server applies to **every** metadata property it would send
