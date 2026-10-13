@@ -704,7 +704,7 @@ mod tests {
         ));
         let listener = UnixListener::bind(&socket_path).unwrap();
         let target = parse_target(socket_path.to_str().unwrap()).unwrap();
-        let mut connection = connect(&target, false).unwrap();
+        let mut connection = connect(&target, false, None).unwrap();
         let (mut server, _) = listener.accept().unwrap();
 
         connection.write_all(b"client to server").unwrap();
