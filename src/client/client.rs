@@ -120,6 +120,8 @@ struct WindowMetadataUpdate {
     // (instance, class), as in X11's `WM_CLASS`
     class_instance: Option<(String, String)>,
     window_type: Option<Vec<String>>,
+    // `Some(None)` is "unset", i.e. opaque
+    opacity: Option<Option<u32>>,
     // xpra wids: the server never sends a 0 ("none"), it leaves the key out
     transient_for: Option<u64>,
     parent: Option<u64>,
@@ -148,6 +150,7 @@ impl WindowMetadataUpdate {
                 _ => None,
             }),
             window_type: metadata_strings(metadata, "window-type"),
+            opacity: metadata_opacity(metadata),
             transient_for: metadata_wid(metadata, "transient-for"),
             parent: metadata_wid(metadata, "parent"),
             modal: metadata_bool(metadata, "modal"),
@@ -202,6 +205,24 @@ fn metadata_strings(metadata: &Yaml, key: &str) -> Option<Vec<String>> {
         return None;
     };
     values.iter().map(|value| value.as_str().map(str::to_string)).collect()
+}
+
+// `_NET_WM_WINDOW_OPACITY` is a 32-bit CARDINAL, but an X11 server reads it as a C `long` and
+// sign-extends it: 0x80000000 (50%) arrives as 0xffffffff80000000, which is too big for a YAML
+// integer and so comes back as a `Real` holding the digits. Only the low 32 bits mean anything,
+// whichever form it takes - and that also turns the "unset" -1 into 0xffffffff, fully opaque,
+// which is what unset means.
+fn metadata_opacity(metadata: &Yaml) -> Option<Option<u32>> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    let value = match hash.get(&Yaml::String("opacity".to_string()))? {
+        Yaml::Integer(value) => *value as u64,
+        Yaml::Real(digits) => digits.parse::<u64>().ok()?,
+        _ => return None,
+    };
+    let opacity = value as u32;
+    Some((opacity != u32::MAX).then_some(opacity))
 }
 
 fn metadata_bool(metadata: &Yaml, key: &str) -> Option<bool> {
@@ -958,7 +979,7 @@ impl XpraClient {
                     "decorations", "above", "below", "attention-requested",
                     "transient-for", "parent", "relative-position", "modal",
                     "skip-taskbar", "skip-pager", "class-instance",
-                    "window-type", "sticky",
+                    "window-type", "sticky", "opacity",
                     "override-redirect",
                 ],
             },
@@ -2443,6 +2464,9 @@ impl XpraClient {
             // X11 only, and only before mapping (as in xpra's own client): it decides how the
             // window manager decorates and places the window, and what a compositor animates
             hints.window_types = metadata.window_type.clone().unwrap_or_default();
+            // X11 only: winit rewrites a Windows window's extended style from its own flags on
+            // every state change, which would drop the WS_EX_LAYERED that opacity needs there
+            hints.opacity = metadata.opacity.flatten();
             hints.states.extend(metadata.net_wm_states().into_iter().filter(|(_, on)| *on).map(|(state, _)| state));
             (event_loop.is_x11() && !hints.is_empty()).then_some(hints)
         };
@@ -2904,6 +2928,12 @@ impl XpraClient {
             }
         };
         let update = WindowMetadataUpdate::parse(metadata);
+        #[cfg(target_os = "linux")]
+        if let (Some(xid), Some(opacity)) = (x11_window(&window.window), update.opacity) {
+            if let Some(hints) = self.x11_hints.get_or_init(X11Hints::new) {
+                hints.set_opacity(xid, opacity);
+            }
+        }
         #[cfg(target_os = "linux")]
         if let Some(xid) = x11_window(&window.window) {
             let states = update.net_wm_states();
@@ -3461,6 +3491,19 @@ mod tests {
     }
 
     #[test]
+    fn opacity_keeps_the_low_32_bits() {
+        let opacity = |yaml: &str| parse_metadata(yaml).opacity;
+        assert_eq!(opacity("{opacity: 2147483648}"), Some(Some(0x8000_0000)));
+        // the sign-extended form an X11 server sends, which YAML hands back as a Real
+        assert_eq!(opacity("{opacity: 18446744071562067968}"), Some(Some(0x8000_0000)));
+        assert_eq!(opacity("{opacity: 0}"), Some(Some(0)));
+        // unset, and fully opaque, both mean "remove the property"
+        assert_eq!(opacity("{opacity: -1}"), Some(None));
+        assert_eq!(opacity("{opacity: 4294967295}"), Some(None));
+        assert_eq!(opacity("{title: x}"), None);
+    }
+
+    #[test]
     fn the_modifier_map_is_read_from_either_spelling() {
         let parse = |yaml: &str| {
             let documents = YamlLoader::load_from_str(yaml).unwrap();
@@ -3629,6 +3672,7 @@ modifier_keycodes:
                 skip-taskbar: true,
                 skip-pager: 0,
                 sticky: true,
+                opacity: -1,
                 transient-for: 3,
                 parent: 0,
                 modal: true,
@@ -3656,6 +3700,7 @@ modifier_keycodes:
                 sticky: Some(true),
                 class_instance: Some(("gnome-calculator".to_string(), "Gnome-calculator".to_string())),
                 window_type: Some(vec!["DIALOG".to_string(), "NORMAL".to_string()]),
+                opacity: Some(None),
                 transient_for: Some(3),
                 parent: None,
                 modal: Some(true),

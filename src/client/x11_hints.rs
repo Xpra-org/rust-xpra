@@ -39,11 +39,14 @@ pub struct InitialHints {
     // xpra's `window-type`: `_NET_WM_WINDOW_TYPE_*` names without the prefix ("DIALOG"), or a
     // full atom name for anything outside EWMH ("_KDE_NET_WM_WINDOW_TYPE_OVERRIDE")
     pub window_types: Vec<String>,
+    // `_NET_WM_WINDOW_OPACITY`, 0 (transparent) to 0xffffffff (opaque)
+    pub opacity: Option<u32>,
 }
 
 impl InitialHints {
     pub fn is_empty(&self) -> bool {
         self.transient_for.is_none() && self.states.is_empty() && self.window_types.is_empty()
+            && self.opacity.is_none()
     }
 }
 
@@ -112,6 +115,23 @@ impl X11Hints {
                 );
             }
         }
+        if let Some(opacity) = hints.opacity {
+            self.set_opacity(window, Some(opacity));
+        }
+        self.flush();
+    }
+
+    // Read by the compositor rather than the window manager, and whenever it changes, so this
+    // needs no client message once the window is mapped. `None` removes it: fully opaque.
+    pub fn set_opacity(&self, window: Window, opacity: Option<u32>) {
+        debug!("_NET_WM_WINDOW_OPACITY({:#x})={:x?}", window, opacity);
+        let Some(atom) = self.atom("_NET_WM_WINDOW_OPACITY") else {
+            return;
+        };
+        let _ = match opacity {
+            Some(opacity) => self.conn.change_property32(PropMode::REPLACE, window, atom, AtomEnum::CARDINAL, &[opacity]),
+            None => self.conn.delete_property(window, atom),
+        };
         self.flush();
     }
 
