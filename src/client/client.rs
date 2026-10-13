@@ -116,6 +116,7 @@ struct WindowMetadataUpdate {
     attention_requested: Option<bool>,
     skip_taskbar: Option<bool>,
     skip_pager: Option<bool>,
+    sticky: Option<bool>,
     // (instance, class), as in X11's `WM_CLASS`
     class_instance: Option<(String, String)>,
     window_type: Option<Vec<String>>,
@@ -141,6 +142,7 @@ impl WindowMetadataUpdate {
             attention_requested: metadata_bool(metadata, "attention-requested"),
             skip_taskbar: metadata_bool(metadata, "skip-taskbar"),
             skip_pager: metadata_bool(metadata, "skip-pager"),
+            sticky: metadata_bool(metadata, "sticky"),
             class_instance: metadata_strings(metadata, "class-instance").and_then(|values| match values.as_slice() {
                 [instance, class, ..] if !class.is_empty() => Some((instance.clone(), class.clone())),
                 _ => None,
@@ -169,6 +171,7 @@ impl WindowMetadataUpdate {
         [
             ("SKIP_TASKBAR", self.skip_taskbar),
             ("SKIP_PAGER", self.skip_pager),
+            ("STICKY", self.sticky),
         ].into_iter().filter_map(|(state, on)| Some((state, on?))).collect()
     }
 }
@@ -955,7 +958,7 @@ impl XpraClient {
                     "decorations", "above", "below", "attention-requested",
                     "transient-for", "parent", "relative-position", "modal",
                     "skip-taskbar", "skip-pager", "class-instance",
-                    "window-type",
+                    "window-type", "sticky",
                     "override-redirect",
                 ],
             },
@@ -3625,6 +3628,7 @@ modifier_keycodes:
                 window-type: ["DIALOG", "NORMAL"],
                 skip-taskbar: true,
                 skip-pager: 0,
+                sticky: true,
                 transient-for: 3,
                 parent: 0,
                 modal: true,
@@ -3649,6 +3653,7 @@ modifier_keycodes:
                 attention_requested: Some(true),
                 skip_taskbar: Some(true),
                 skip_pager: Some(false),
+                sticky: Some(true),
                 class_instance: Some(("gnome-calculator".to_string(), "Gnome-calculator".to_string())),
                 window_type: Some(vec!["DIALOG".to_string(), "NORMAL".to_string()]),
                 transient_for: Some(3),
