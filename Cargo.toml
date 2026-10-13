@@ -50,6 +50,11 @@ webp-dylib = ["libwebp-sys/system-dylib"]
 objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSRunningApplication"] }
 objc2-foundation = { version = "0.2.2", default-features = false, features = ["std"] }
 
+# Linux/X11: the window-manager hints winit has no API for (client/x11_hints.rs). The same x11rb
+# winit, softbuffer and copypasta already link, so nothing new is compiled in.
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",

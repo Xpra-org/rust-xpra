@@ -33,6 +33,15 @@ pub struct XpraWindow {
     // so retain both values to derive the effective winit WindowLevel after each partial update.
     pub above: bool,
     pub below: bool,
+    // the window this one belongs to ("transient-for", or failing that "parent"), as an xpra wid,
+    // and the one its "relative-position" is measured from ("parent"): see client.rs
+    // `process_new_common`.
+    pub owner: Option<u64>,
+    pub parent: Option<u64>,
+    pub modal: bool,
+    // disabled because a modal window it owns is open (`update_modal_owners`)
+    #[cfg(windows)]
+    pub disabled: bool,
     pub paint_debug: bool,
     // absolute position of the pointer as of the last CursorMoved event, in server pixels:
     // button and wheel events don't carry a position of their own.
@@ -76,6 +85,11 @@ impl XpraWindow {
             override_redirect,
             above: false,
             below: false,
+            owner: None,
+            parent: None,
+            modal: false,
+            #[cfg(windows)]
+            disabled: false,
             paint_debug: cfg!(debug_assertions),
             last_cursor: (0, 0),
             dirty: Vec::new(),

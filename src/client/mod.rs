@@ -20,3 +20,5 @@ pub mod windows_audio;
 #[cfg(windows)]
 pub mod tray;
 pub mod window;
+#[cfg(target_os = "linux")]
+pub mod x11_hints;

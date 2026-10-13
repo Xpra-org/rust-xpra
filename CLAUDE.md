@@ -389,6 +389,33 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       unchanged in both modes, as xpra's own client does
       (`client/subsystem/window/manager.py`). Trays are overloaded onto `window-create` the same
       way (`tray: true`), but we never advertise system-tray forwarding, so none are ever sent.
+    - **Window relations** (`transient-for`, `parent`, `relative-position`, `modal`): the window
+      a dialog or popup belongs to is its `transient-for`, or failing that its `parent`, and only
+      counts if we already have that wid (`XpraWindow.owner`). The values are wids; on an X11
+      server they are also X11 window ids, so a `transient-for` naming an unforwarded window
+      (the root) is simply not found. Each platform attaches the owner differently, and
+      winit's cross-platform `with_parent_window` is the wrong call on two of them:
+      - **Windows**: `with_owner_window` (an *owned* window: above its owner, minimized with
+        it, not in the taskbar). `with_parent_window` would make a `WS_CHILD` clipped to the
+        parent. Modal has no hint there, so `update_modal_owners` *disables* every window that
+        owns an open modal one, which is what GDK does. It must re-enable the owner before the
+        modal window is dropped, or Windows activates another application. Caveat: Windows
+        destroys owned windows along with their owner, so an owner closed first takes the
+        dialog's local window with it.
+      - **macOS**: `with_parent_window`, which is `addChildWindow:ordered:`. Nothing for modal:
+        AppKit's modality is a blocking run loop.
+      - **X11**: `with_parent_window` *embeds* the window, so `client/x11_hints.rs` sets
+        `WM_TRANSIENT_FOR` and `_NET_WM_STATE_MODAL` itself, over a second x11rb connection
+        opened on first use (x11rb is already linked by winit/softbuffer). The window is created
+        hidden and only shown once the hints are set, since the WM reads them at map time; a
+        later modal change goes through the EWMH client message instead. Mutter/Muffin ignore
+        that message for `MODAL` (verified with `wmctrl` as well), so in practice modal is
+        decided at map time, as it is for GTK's own `set_modal`.
+      - **Wayland**: nothing; winit exposes no `xdg_toplevel.set_parent`.
+      The owner is fixed at creation everywhere except X11, where it is just a property.
+      `relative-position` (sent with `parent` by a Wayland server for its xdg_popups, whose
+      geometry is then relative) places the window at the parent's client-area origin plus the
+      offset, at creation and on later updates, like xpra's own client does.
     - **Clipboard** (plain text only, `clipboard.rs` + the `process_clipboard_*` handlers): the
       server claims the clipboard with `clipboard-token` in backwards-compatible mode and with
       `clipboard-data` otherwise — the same event, but the second is not a rename: the targets,

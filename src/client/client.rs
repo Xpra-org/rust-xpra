@@ -6,6 +6,10 @@ use std::fmt;
 use std::io;
 use std::rc::Rc;
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::collections::HashSet;
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::Arc;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::thread;
@@ -58,6 +62,8 @@ use super::tray;
 #[cfg(windows)]
 use super::windows_audio::{AudioWorker, EnqueueError};
 use super::window::XpraWindow;
+#[cfg(target_os = "linux")]
+use super::x11_hints::X11Hints;
 
 
 // The plain-text clipboard targets we handle, best first: what we claim the clipboard with, what
@@ -108,6 +114,12 @@ struct WindowMetadataUpdate {
     above: Option<bool>,
     below: Option<bool>,
     attention_requested: Option<bool>,
+    // xpra wids: the server never sends a 0 ("none"), it leaves the key out
+    transient_for: Option<u64>,
+    parent: Option<u64>,
+    modal: Option<bool>,
+    // offset from `parent`'s client area, in server pixels
+    relative_position: Option<(i32, i32)>,
     size_constraints: Option<WindowSizeConstraints>,
 }
 
@@ -122,6 +134,10 @@ impl WindowMetadataUpdate {
             above: metadata_bool(metadata, "above"),
             below: metadata_bool(metadata, "below"),
             attention_requested: metadata_bool(metadata, "attention-requested"),
+            transient_for: metadata_wid(metadata, "transient-for"),
+            parent: metadata_wid(metadata, "parent"),
+            modal: metadata_bool(metadata, "modal"),
+            relative_position: metadata_position(metadata, "relative-position"),
             size_constraints: metadata_hash(metadata, "size-constraints").map(|constraints| {
                 WindowSizeConstraints {
                     minimum: metadata_pair(constraints, "minimum-size"),
@@ -160,6 +176,45 @@ fn metadata_bool(metadata: &Yaml, key: &str) -> Option<bool> {
         Some(Yaml::Integer(value)) => Some(*value != 0),
         _ => None,
     }
+}
+
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn raw_window_handle(window: &Window) -> Option<RawWindowHandle> {
+    Some(window.window_handle().ok()?.as_raw())
+}
+
+// the X11 window id, or None when winit is running on Wayland
+#[cfg(target_os = "linux")]
+fn x11_window(window: &Window) -> Option<u32> {
+    match raw_window_handle(window)? {
+        RawWindowHandle::Xlib(handle) => u32::try_from(handle.window).ok(),
+        RawWindowHandle::Xcb(handle) => Some(handle.window.get()),
+        _ => None,
+    }
+}
+
+fn metadata_wid(metadata: &Yaml, key: &str) -> Option<u64> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    match hash.get(&Yaml::String(key.to_string())) {
+        Some(Yaml::Integer(value)) if *value > 0 => Some(*value as u64),
+        _ => None,
+    }
+}
+
+// a signed pair, unlike `metadata_pair`'s sizes: a popup can open above or left of its parent
+fn metadata_position(metadata: &Yaml, key: &str) -> Option<(i32, i32)> {
+    let Yaml::Hash(hash) = metadata else {
+        return None;
+    };
+    let Some(Yaml::Array(values)) = hash.get(&Yaml::String(key.to_string())) else {
+        return None;
+    };
+    let [Yaml::Integer(x), Yaml::Integer(y), ..] = values.as_slice() else {
+        return None;
+    };
+    Some((i32::try_from(*x).ok()?, i32::try_from(*y).ok()?))
 }
 
 fn metadata_pair(metadata: &Yaml, key: &str) -> Option<(u32, u32)> {
@@ -381,6 +436,9 @@ pub struct XpraClient {
     pub auth_dialog: Option<AuthDialog>,
     // whether the Dock shows us (macOS, client/dock.rs); `None` until first decided
     dock_visible: Option<bool>,
+    // the X11 connection for the hints winit cannot set (client/x11_hints.rs), opened on first use
+    #[cfg(target_os = "linux")]
+    x11_hints: std::cell::OnceCell<Option<X11Hints>>,
     // the server salt from the challenge we are currently answering, held while an interactive
     // prompt (pinentry worker or the dialog) is collecting the password. `None` when not
     // authenticating. Only `hmac+sha256` is advertised/handled, so this salt is all we need.
@@ -646,6 +704,8 @@ impl XpraClient {
             pointer_grabbed: None,
             auth_dialog: None,
             dock_visible: None,
+            #[cfg(target_os = "linux")]
+            x11_hints: std::cell::OnceCell::new(),
             pending_challenge: None,
             exit_code: None,
             log_sink,
@@ -854,6 +914,7 @@ impl XpraClient {
                 "supported": [
                     "title", "size-constraints", "fullscreen", "maximized", "iconic",
                     "decorations", "above", "below", "attention-requested",
+                    "transient-for", "parent", "relative-position", "modal",
                     "override-redirect",
                 ],
             },
@@ -2249,6 +2310,23 @@ impl XpraClient {
         debug!("new window {:#x}, override-redirect={:?}", wid, override_redirect);
         let metadata = WindowMetadataUpdate::parse(&packet.main[6]);
         let title = metadata.title.clone().unwrap_or_default();
+        // The window this one belongs to: a dialog's "transient-for", or the "parent" a popup is
+        // positioned against (a Wayland server sends both for its xdg_popups). Only a window we
+        // already have counts - on an X11 server `transient-for` can also name a window that is
+        // not forwarded at all, such as the root.
+        let owner = metadata.transient_for.or(metadata.parent)
+            .filter(|owner| self.windows.contains_key(owner));
+        let modal = metadata.modal.unwrap_or(false) && !override_redirect;
+        // A popup's geometry is relative to its parent's client area, which only we know the
+        // position of (xpra client/subsystem/window/manager.py `_process_new_common`). On Wayland
+        // the parent's position reads back as (0,0), which leaves the offset as it was.
+        let (x, y) = match (metadata.parent.and_then(|p| self.windows.get(&p)), metadata.relative_position) {
+            (Some(parent), Some((rx, ry))) => {
+                let (px, py, _, _) = parent.get_geometry();
+                (px.saturating_add(rx), py.saturating_add(ry))
+            }
+            _ => (x, y),
+        };
         // override-redirect windows are never decorated; otherwise honour the metadata flag
         // (absent means decorated, as in xpra's own client - see `client/gui/window_base.py`)
         let decorated = !override_redirect
@@ -2269,6 +2347,34 @@ impl XpraClient {
             use winit::platform::x11::WindowAttributesExtX11;
             attrs = attrs.with_override_redirect(override_redirect);
         }
+        // Attach the window to its owner, each platform its own way. Windows: an *owned* window
+        // stays above its owner, is hidden with it and is left out of the taskbar (not
+        // `with_parent_window`, which makes a WS_CHILD confined to the parent's client area).
+        // macOS: `with_parent_window` is `addChildWindow:ordered:`, so the window stays above
+        // its parent and moves with it. X11: see below. Wayland: winit exposes no
+        // `xdg_toplevel.set_parent`, so there is nothing to attach.
+        let owner_window = owner.and_then(|owner| self.windows.get(&owner)).map(|owner| owner.window.clone());
+        #[cfg(windows)]
+        if let Some(RawWindowHandle::Win32(handle)) = owner_window.as_ref().and_then(|w| raw_window_handle(w)) {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs = attrs.with_owner_window(handle.hwnd.get());
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(handle) = owner_window.as_ref().and_then(|w| raw_window_handle(w)) {
+            // SAFETY: the handle is that of a window we own, which is alive for this whole call
+            attrs = unsafe { attrs.with_parent_window(Some(handle)) };
+        }
+        // X11 has no attribute for either hint, so they are set on the window by hand - before it
+        // is mapped, since that is when the window manager decides how to place and decorate it.
+        #[cfg(target_os = "linux")]
+        let x11_hints = {
+            use winit::platform::x11::ActiveEventLoopExtX11;
+            event_loop.is_x11() && (owner_window.is_some() || modal)
+        };
+        #[cfg(target_os = "linux")]
+        if x11_hints {
+            attrs = attrs.with_visible(false);
+        }
 
         let window = match event_loop.create_window(attrs) {
             Ok(window) => Rc::new(window),
@@ -2278,6 +2384,21 @@ impl XpraClient {
             }
         };
         info!("new window {:#x} : {:?}", wid, title);
+        if owner.is_some() || modal {
+            debug!("window {:#x}: owner={:x?}, modal={}", wid, owner, modal);
+        }
+        #[cfg(target_os = "linux")]
+        if x11_hints {
+            if let (Some(hints), Some(xid)) = (self.x11_hints(), x11_window(&window)) {
+                if let Some(owner_xid) = owner_window.as_ref().and_then(|w| x11_window(w)) {
+                    hints.set_transient_for(xid, owner_xid);
+                }
+                if modal {
+                    hints.set_modal(xid, true, false);
+                }
+            }
+            window.set_visible(true);
+        }
 
         // start the window off with the current session cursor (see process_cursor):
         if let Some(cursor) = self.current_cursor.clone() {
@@ -2286,6 +2407,9 @@ impl XpraClient {
 
         let context = self.softbuffer_ctx.as_ref().expect("softbuffer context not initialized");
         let mut xpra_window = XpraWindow::new(wid, window.clone(), context, w, h, s, override_redirect);
+        xpra_window.owner = owner;
+        xpra_window.parent = metadata.parent;
+        xpra_window.modal = modal;
         // The x,y the server sends is where the *client area* goes, but the position attribute
         // above places the window's frame (winit's docs for `with_position` on Windows and X11,
         // and on Windows it is literally a `set_outer_position` call at creation) - so a decorated
@@ -2305,6 +2429,7 @@ impl XpraClient {
         xpra_window.mapped = true;
         self.id_map.insert(window.id(), wid);
         self.windows.insert(wid, xpra_window);
+        self.update_modal_owners();
         self.update_dock();
 
         if !override_redirect {
@@ -2677,6 +2802,10 @@ impl XpraClient {
         }
         if let Some(window) = self.windows.remove(&wid) {
             self.id_map.remove(&window.window.id());
+            // while the window still exists: Windows activates some other application if a
+            // modal window is destroyed before its owner is enabled again
+            self.update_modal_owners();
+            drop(window);
         } else {
             warn!("window {:#x} not found!", wid);
         }
@@ -2704,7 +2833,96 @@ impl XpraClient {
                 return;
             }
         };
-        Self::apply_window_metadata(window, WindowMetadataUpdate::parse(metadata));
+        let update = WindowMetadataUpdate::parse(metadata);
+        let (transient_for, parent, modal, relative_position) =
+            (update.transient_for, update.parent, update.modal, update.relative_position);
+        Self::apply_window_metadata(window, update);
+        self.apply_window_relations(wid, transient_for, parent, modal, relative_position);
+    }
+
+    // The part of a `window-metadata` update that involves another window. Only some of it can
+    // change after creation: winit attaches an owned (Windows) or child (macOS) window at
+    // creation time and has no call to change it later, so a new owner is applied on X11 only,
+    // where it is just a property.
+    fn apply_window_relations(&mut self, wid: u64, transient_for: Option<u64>, parent: Option<u64>,
+                              modal: Option<bool>, relative_position: Option<(i32, i32)>) {
+        if let Some(parent) = parent {
+            if let Some(window) = self.windows.get_mut(&wid) {
+                window.parent = Some(parent);
+            }
+        }
+        // the server moved a popup relative to its parent (a Wayland xdg_popup reposition):
+        // resolve it against where the parent is on our side, as at creation
+        if let Some((rx, ry)) = relative_position {
+            let parent = self.windows.get(&wid).and_then(|w| w.parent).and_then(|p| self.windows.get(&p));
+            if let Some((px, py, _, _)) = parent.map(|parent| parent.get_geometry()) {
+                if let Some(window) = self.windows.get(&wid) {
+                    let s = window.scale();
+                    let (x, y) = (px.saturating_add(rx), py.saturating_add(ry));
+                    if let Some(outer) = window.to_outer_position(scaling::to_local(x, s), scaling::to_local(y, s)) {
+                        window.window.set_outer_position(outer);
+                    }
+                }
+            }
+        }
+        if let Some(owner) = transient_for.or(parent).filter(|owner| self.windows.contains_key(owner)) {
+            #[cfg(target_os = "linux")]
+            if let (Some(hints), Some(xid), Some(owner_xid)) = (
+                self.x11_hints(),
+                self.windows.get(&wid).and_then(|w| x11_window(&w.window)),
+                self.windows.get(&owner).and_then(|w| x11_window(&w.window)),
+            ) {
+                hints.set_transient_for(xid, owner_xid);
+                if let Some(window) = self.windows.get_mut(&wid) {
+                    window.owner = Some(owner);
+                }
+            }
+            if self.windows.get(&wid).and_then(|w| w.owner) != Some(owner) {
+                debug!("window {:#x}: cannot change its owner to {:#x} after creation on this platform", wid, owner);
+            }
+        }
+        if let Some(modal) = modal {
+            let Some(window) = self.windows.get_mut(&wid) else { return };
+            let modal = modal && !window.override_redirect;
+            if window.modal == modal {
+                return;
+            }
+            window.modal = modal;
+            #[cfg(target_os = "linux")]
+            if let (Some(hints), Some(xid)) = (self.x11_hints(), self.windows.get(&wid).and_then(|w| x11_window(&w.window))) {
+                hints.set_modal(xid, modal, true);
+            }
+            self.update_modal_owners();
+        }
+    }
+
+    // Windows has no modal *hint*: a modal window is one whose owner is disabled for as long as
+    // it is open, which is also how GDK implements a modal window there. So every window owning
+    // an open modal window is disabled, and enabled again once there is none. The other
+    // platforms carry modality as a hint on the window itself (`_NET_WM_STATE_MODAL` on X11).
+    #[cfg(windows)]
+    fn update_modal_owners(&mut self) {
+        use winit::platform::windows::WindowExtWindows;
+        let blocked: HashSet<u64> = self.windows.values()
+            .filter(|window| window.modal)
+            .filter_map(|window| window.owner)
+            .collect();
+        for (wid, window) in self.windows.iter_mut() {
+            let disabled = blocked.contains(wid);
+            if window.disabled != disabled {
+                debug!("window {:#x} {}", wid, if disabled { "disabled by a modal window" } else { "enabled" });
+                window.window.set_enable(!disabled);
+                window.disabled = disabled;
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn update_modal_owners(&mut self) {}
+
+    #[cfg(target_os = "linux")]
+    fn x11_hints(&self) -> Option<&X11Hints> {
+        self.x11_hints.get_or_init(X11Hints::new).as_ref()
     }
 
     fn apply_window_metadata(window: &mut XpraWindow, update: WindowMetadataUpdate) {
@@ -3321,6 +3539,10 @@ modifier_keycodes:
                 above: true,
                 below: false,
                 attention-requested: true,
+                transient-for: 3,
+                parent: 0,
+                modal: true,
+                relative-position: [-4, 20],
                 size-constraints: {
                     minimum-size: [320, 200],
                     maximum-size: [1920, 1080],
@@ -3339,6 +3561,10 @@ modifier_keycodes:
                 above: Some(true),
                 below: Some(false),
                 attention_requested: Some(true),
+                transient_for: Some(3),
+                parent: None,
+                modal: Some(true),
+                relative_position: Some((-4, 20)),
                 size_constraints: Some(WindowSizeConstraints {
                     minimum: Some((320, 200)),
                     maximum: Some((1920, 1080)),
