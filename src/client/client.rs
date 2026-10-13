@@ -124,6 +124,7 @@ struct WindowMetadataUpdate {
     // `Some(None)` is "unset", i.e. opaque
     opacity: Option<Option<u32>>,
     workspace: Option<u32>,
+    icon_title: Option<String>,
     // xpra wids: the server never sends a 0 ("none"), it leaves the key out
     transient_for: Option<u64>,
     parent: Option<u64>,
@@ -156,6 +157,7 @@ impl WindowMetadataUpdate {
             opacity: metadata_cardinal(metadata, "opacity")
                 .map(|opacity| (opacity != u32::MAX).then_some(opacity)),
             workspace: metadata_cardinal(metadata, "workspace"),
+            icon_title: metadata_str(metadata, "icon-title"),
             transient_for: metadata_wid(metadata, "transient-for"),
             parent: metadata_wid(metadata, "parent"),
             modal: metadata_bool(metadata, "modal"),
@@ -985,7 +987,7 @@ impl XpraClient {
                     "transient-for", "parent", "relative-position", "modal",
                     "skip-taskbar", "skip-pager", "class-instance",
                     "window-type", "sticky", "opacity", "shaded",
-                    "workspace",
+                    "workspace", "icon-title",
                     "override-redirect",
                 ],
             },
@@ -2504,6 +2506,14 @@ impl XpraClient {
             }
             window.set_visible(true);
         }
+        // a plain property, so mapped or not makes no difference: no reason to create the window
+        // hidden for it
+        #[cfg(target_os = "linux")]
+        if let (Some(icon_title), Some(xid)) = (&metadata.icon_title, x11_window(&window)) {
+            if let Some(hints) = self.x11_hints() {
+                hints.set_icon_name(xid, icon_title);
+            }
+        }
 
         // start the window off with the current session cursor (see process_cursor):
         if let Some(cursor) = self.current_cursor.clone() {
@@ -2943,6 +2953,12 @@ impl XpraClient {
         if let (Some(xid), Some(opacity)) = (x11_window(&window.window), update.opacity) {
             if let Some(hints) = self.x11_hints.get_or_init(X11Hints::new) {
                 hints.set_opacity(xid, opacity);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if let (Some(xid), Some(icon_title)) = (x11_window(&window.window), &update.icon_title) {
+            if let Some(hints) = self.x11_hints.get_or_init(X11Hints::new) {
+                hints.set_icon_name(xid, icon_title);
             }
         }
         #[cfg(target_os = "linux")]
@@ -3694,6 +3710,7 @@ modifier_keycodes:
                 shaded: false,
                 opacity: -1,
                 workspace: 18446744073709551615,
+                icon-title: "Terminal (minimized)",
                 transient-for: 3,
                 parent: 0,
                 modal: true,
@@ -3724,6 +3741,7 @@ modifier_keycodes:
                 window_type: Some(vec!["DIALOG".to_string(), "NORMAL".to_string()]),
                 opacity: Some(None),
                 workspace: Some(0xffff_ffff),
+                icon_title: Some("Terminal (minimized)".to_string()),
                 transient_for: Some(3),
                 parent: None,
                 modal: Some(true),

@@ -152,6 +152,18 @@ impl X11Hints {
         }
     }
 
+    // The title a minimized window is shown with, where anything still shows one (`_NET_WM_ICON_NAME`,
+    // which EWMH window managers prefer over the ICCCM `WM_ICON_NAME`). A plain property, so it
+    // needs no client message and is set the same way before and after mapping.
+    pub fn set_icon_name(&self, window: Window, name: &str) {
+        debug!("_NET_WM_ICON_NAME({:#x})={:?}", window, name);
+        let (Some(atom), Some(utf8_string)) = (self.atom("_NET_WM_ICON_NAME"), self.atom("UTF8_STRING")) else {
+            return;
+        };
+        let _ = self.conn.change_property8(PropMode::REPLACE, window, atom, utf8_string, name.as_bytes());
+        self.flush();
+    }
+
     // A mapped window is moved by asking the window manager (EWMH "_NET_WM_DESKTOP").
     pub fn set_workspace(&self, window: Window, workspace: u32) {
         debug!("_NET_WM_DESKTOP({:#x})={:#x}", window, workspace);
