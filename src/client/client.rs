@@ -813,6 +813,12 @@ impl XpraClient {
             // we have no way to resize the local display, so the server's notifications that *its*
             // root window changed size (the legacy `desktop_size` packet) are of no use to us.
             "resize-events": false,
+            // every position we send carries a `{index, position}` monitor descriptor (see
+            // `monitor_descriptor`). The server reads this flag from the display caps - not the
+            // top level - and without it a `sharing=combine` server cannot map our positions onto
+            // the area it gives us, so it gives us none and we see the whole display instead
+            // (`get_client_monitor_layouts`, xpra x11/subsystem/display.py).
+            "monitor-relative": true,
         });
         // the total size of the local display area, which the server logs as "client total display
         // size" and - on a seamless server that can resize its virtual screen - adopts as the size
@@ -889,7 +895,6 @@ impl XpraClient {
             "sharing": true,
             "bell": true,
             "display": display_caps,
-            "monitor-relative": true,
             // authentication: we only implement the hmac+sha256 password digest, so advertise
             // just that. The server picks the challenge digest from these lists (choose_digest,
             // xpra auth/sys_auth_base.py), so listing one forces both to hmac+sha256 - the one
