@@ -24,7 +24,7 @@ use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{
     CursorGrabMode, CursorIcon, CustomCursor, Fullscreen, Icon, ResizeDirection, Window,
-    WindowId, WindowLevel,
+    UserAttentionType, WindowId, WindowLevel,
 };
 
 use xpra::exit_codes::ExitCode;
@@ -107,6 +107,7 @@ struct WindowMetadataUpdate {
     iconic: Option<bool>,
     above: Option<bool>,
     below: Option<bool>,
+    attention_requested: Option<bool>,
     size_constraints: Option<WindowSizeConstraints>,
 }
 
@@ -120,6 +121,7 @@ impl WindowMetadataUpdate {
             iconic: metadata_bool(metadata, "iconic"),
             above: metadata_bool(metadata, "above"),
             below: metadata_bool(metadata, "below"),
+            attention_requested: metadata_bool(metadata, "attention-requested"),
             size_constraints: metadata_hash(metadata, "size-constraints").map(|constraints| {
                 WindowSizeConstraints {
                     minimum: metadata_pair(constraints, "minimum-size"),
@@ -851,7 +853,8 @@ impl XpraClient {
             "metadata": {
                 "supported": [
                     "title", "size-constraints", "fullscreen", "maximized", "iconic",
-                    "decorations", "above", "below", "override-redirect",
+                    "decorations", "above", "below", "attention-requested",
+                    "override-redirect",
                 ],
             },
             // desktop notifications: shown as balloons on the system tray icon on Windows,
@@ -2755,6 +2758,15 @@ impl XpraClient {
             };
             window.window.set_window_level(level);
         }
+        // the application's urgency hint (_NET_WM_STATE_DEMANDS_ATTENTION): flash the taskbar
+        // entry / bounce the Dock icon. Informational rather than Critical, so it stops on its
+        // own once the window is focused. Menus and tooltips don't get to ask, as in xpra's own
+        // client (gtk3/window/base.py `set_attention_requested`).
+        if let Some(attention) = update.attention_requested {
+            let request = (attention && !window.override_redirect)
+                .then_some(UserAttentionType::Informational);
+            window.window.request_user_attention(request);
+        }
     }
 
     fn process_draw_decoded(&mut self, packet: &mut Packet) {
@@ -3308,6 +3320,7 @@ modifier_keycodes:
                 iconic: 0,
                 above: true,
                 below: false,
+                attention-requested: true,
                 size-constraints: {
                     minimum-size: [320, 200],
                     maximum-size: [1920, 1080],
@@ -3325,6 +3338,7 @@ modifier_keycodes:
                 iconic: Some(false),
                 above: Some(true),
                 below: Some(false),
+                attention_requested: Some(true),
                 size_constraints: Some(WindowSizeConstraints {
                     minimum: Some((320, 200)),
                     maximum: Some((1920, 1080)),
