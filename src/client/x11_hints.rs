@@ -36,11 +36,14 @@ pub struct InitialHints {
     pub transient_for: Option<Window>,
     // `_NET_WM_STATE_*` names, without the prefix: "MODAL", "SKIP_TASKBAR", ...
     pub states: Vec<&'static str>,
+    // xpra's `window-type`: `_NET_WM_WINDOW_TYPE_*` names without the prefix ("DIALOG"), or a
+    // full atom name for anything outside EWMH ("_KDE_NET_WM_WINDOW_TYPE_OVERRIDE")
+    pub window_types: Vec<String>,
 }
 
 impl InitialHints {
     pub fn is_empty(&self) -> bool {
-        self.transient_for.is_none() && self.states.is_empty()
+        self.transient_for.is_none() && self.states.is_empty() && self.window_types.is_empty()
     }
 }
 
@@ -92,6 +95,20 @@ impl X11Hints {
             if let Some(net_wm_state) = self.atom("_NET_WM_STATE") {
                 let _ = self.conn.change_property32(
                     PropMode::APPEND, window, net_wm_state, AtomEnum::ATOM, &states,
+                );
+            }
+        }
+        // winit has already set `_NET_WM_WINDOW_TYPE_NORMAL`: replace it, most specific first
+        if !hints.window_types.is_empty() {
+            let types: Vec<u32> = hints.window_types.iter()
+                .filter_map(|window_type| match window_type.starts_with('_') {
+                    true => self.atom(window_type),
+                    false => self.atom(&format!("_NET_WM_WINDOW_TYPE_{}", window_type)),
+                })
+                .collect();
+            if let Some(net_wm_window_type) = self.atom("_NET_WM_WINDOW_TYPE") {
+                let _ = self.conn.change_property32(
+                    PropMode::REPLACE, window, net_wm_window_type, AtomEnum::ATOM, &types,
                 );
             }
         }

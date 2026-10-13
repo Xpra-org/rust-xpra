@@ -118,6 +118,7 @@ struct WindowMetadataUpdate {
     skip_pager: Option<bool>,
     // (instance, class), as in X11's `WM_CLASS`
     class_instance: Option<(String, String)>,
+    window_type: Option<Vec<String>>,
     // xpra wids: the server never sends a 0 ("none"), it leaves the key out
     transient_for: Option<u64>,
     parent: Option<u64>,
@@ -144,6 +145,7 @@ impl WindowMetadataUpdate {
                 [instance, class, ..] if !class.is_empty() => Some((instance.clone(), class.clone())),
                 _ => None,
             }),
+            window_type: metadata_strings(metadata, "window-type"),
             transient_for: metadata_wid(metadata, "transient-for"),
             parent: metadata_wid(metadata, "parent"),
             modal: metadata_bool(metadata, "modal"),
@@ -953,6 +955,7 @@ impl XpraClient {
                     "decorations", "above", "below", "attention-requested",
                     "transient-for", "parent", "relative-position", "modal",
                     "skip-taskbar", "skip-pager", "class-instance",
+                    "window-type",
                     "override-redirect",
                 ],
             },
@@ -2434,6 +2437,9 @@ impl XpraClient {
             if modal {
                 hints.states.push("MODAL");
             }
+            // X11 only, and only before mapping (as in xpra's own client): it decides how the
+            // window manager decorates and places the window, and what a compositor animates
+            hints.window_types = metadata.window_type.clone().unwrap_or_default();
             hints.states.extend(metadata.net_wm_states().into_iter().filter(|(_, on)| *on).map(|(state, _)| state));
             (event_loop.is_x11() && !hints.is_empty()).then_some(hints)
         };
@@ -3616,6 +3622,7 @@ modifier_keycodes:
                 below: false,
                 attention-requested: true,
                 class-instance: ["gnome-calculator", "Gnome-calculator"],
+                window-type: ["DIALOG", "NORMAL"],
                 skip-taskbar: true,
                 skip-pager: 0,
                 transient-for: 3,
@@ -3643,6 +3650,7 @@ modifier_keycodes:
                 skip_taskbar: Some(true),
                 skip_pager: Some(false),
                 class_instance: Some(("gnome-calculator".to_string(), "Gnome-calculator".to_string())),
+                window_type: Some(vec!["DIALOG".to_string(), "NORMAL".to_string()]),
                 transient_for: Some(3),
                 parent: None,
                 modal: Some(true),
