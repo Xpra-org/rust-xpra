@@ -381,7 +381,11 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       `_NET_WM_WINDOW_OPACITY`; an X11 server sign-extends the 32-bit value, so a translucent one
       arrives as a `Real` like 18446744071562067968 and only its low 32 bits are kept — see
       `metadata_opacity`. Not on Windows: winit rewrites `GWL_EXSTYLE` from its own flags on every
-      state change, which would drop the `WS_EX_LAYERED` it needs) — and `override-redirect`, which is not applied but *classifies* the window.
+      state change, which would drop the `WS_EX_LAYERED` it needs), workspace (X11
+      `_NET_WM_DESKTOP`, sign-extended the same way; 65535 is "unset" and ignored, 0xffffffff is
+      "all", and anything past the local `_NET_NUMBER_OF_DESKTOPS` is rejected. **One-way**: a
+      window the user moves is not reported back, and the hello sends no desktop count or names,
+      so a stock server has a single desktop and only ever sends 0) — and `override-redirect`, which is not applied but *classifies* the window.
       The same `apply_window_metadata` path handles initial `new-window`/`window-create` metadata
       and incremental `window-metadata` packets; fixed minimum/maximum sizes disable resizing.
       The list is a filter the server applies to **every** metadata property it would send

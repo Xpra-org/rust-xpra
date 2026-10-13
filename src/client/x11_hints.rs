@@ -29,6 +29,9 @@ const NET_WM_STATE_REMOVE: u32 = 0;
 const NET_WM_STATE_ADD: u32 = 1;
 // source indication: a normal application
 const SOURCE_APPLICATION: u32 = 1;
+// xpra's `workspace` values (xpra constants.py)
+const WORKSPACE_UNSET: u32 = 65535;
+const WORKSPACE_ALL: u32 = 0xffff_ffff;
 
 // What to set on a window before it is mapped.
 #[derive(Debug, Default)]
@@ -41,12 +44,14 @@ pub struct InitialHints {
     pub window_types: Vec<String>,
     // `_NET_WM_WINDOW_OPACITY`, 0 (transparent) to 0xffffffff (opaque)
     pub opacity: Option<u32>,
+    // `_NET_WM_DESKTOP`, already checked by `valid_workspace`
+    pub workspace: Option<u32>,
 }
 
 impl InitialHints {
     pub fn is_empty(&self) -> bool {
         self.transient_for.is_none() && self.states.is_empty() && self.window_types.is_empty()
-            && self.opacity.is_none()
+            && self.opacity.is_none() && self.workspace.is_none()
     }
 }
 
@@ -118,7 +123,41 @@ impl X11Hints {
         if let Some(opacity) = hints.opacity {
             self.set_opacity(window, Some(opacity));
         }
+        if let (Some(workspace), Some(atom)) = (hints.workspace, self.atom("_NET_WM_DESKTOP")) {
+            let _ = self.conn.change_property32(PropMode::REPLACE, window, atom, AtomEnum::CARDINAL, &[workspace]);
+        }
         self.flush();
+    }
+
+    // The server's workspace, if it means something here: not "unset", and one of the desktops
+    // we actually have - the server mirrors our list, but it may have changed since (xpra
+    // client/gtk3/window/workspace.py `set_workspace`).
+    pub fn valid_workspace(&self, workspace: u32) -> Option<u32> {
+        if workspace == WORKSPACE_UNSET {
+            return None;
+        }
+        if workspace == WORKSPACE_ALL {
+            return Some(workspace);
+        }
+        let count = self.atom("_NET_NUMBER_OF_DESKTOPS")
+            .and_then(|atom| self.conn.get_property(false, self.root, atom, AtomEnum::CARDINAL, 0, 1).ok())
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| reply.value32()?.next());
+        match count {
+            Some(count) if workspace < count => Some(workspace),
+            _ => {
+                warn!("ignoring invalid workspace {} (the desktop has {:?})", workspace, count);
+                None
+            }
+        }
+    }
+
+    // A mapped window is moved by asking the window manager (EWMH "_NET_WM_DESKTOP").
+    pub fn set_workspace(&self, window: Window, workspace: u32) {
+        debug!("_NET_WM_DESKTOP({:#x})={:#x}", window, workspace);
+        if let Some(atom) = self.atom("_NET_WM_DESKTOP") {
+            self.send_root_message(window, atom, [workspace, SOURCE_APPLICATION, 0, 0, 0]);
+        }
     }
 
     // Read by the compositor rather than the window manager, and whenever it changes, so this

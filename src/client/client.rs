@@ -123,6 +123,7 @@ struct WindowMetadataUpdate {
     window_type: Option<Vec<String>>,
     // `Some(None)` is "unset", i.e. opaque
     opacity: Option<Option<u32>>,
+    workspace: Option<u32>,
     // xpra wids: the server never sends a 0 ("none"), it leaves the key out
     transient_for: Option<u64>,
     parent: Option<u64>,
@@ -152,7 +153,9 @@ impl WindowMetadataUpdate {
                 _ => None,
             }),
             window_type: metadata_strings(metadata, "window-type"),
-            opacity: metadata_opacity(metadata),
+            opacity: metadata_cardinal(metadata, "opacity")
+                .map(|opacity| (opacity != u32::MAX).then_some(opacity)),
+            workspace: metadata_cardinal(metadata, "workspace"),
             transient_for: metadata_wid(metadata, "transient-for"),
             parent: metadata_wid(metadata, "parent"),
             modal: metadata_bool(metadata, "modal"),
@@ -210,22 +213,21 @@ fn metadata_strings(metadata: &Yaml, key: &str) -> Option<Vec<String>> {
     values.iter().map(|value| value.as_str().map(str::to_string)).collect()
 }
 
-// `_NET_WM_WINDOW_OPACITY` is a 32-bit CARDINAL, but an X11 server reads it as a C `long` and
-// sign-extends it: 0x80000000 (50%) arrives as 0xffffffff80000000, which is too big for a YAML
-// integer and so comes back as a `Real` holding the digits. Only the low 32 bits mean anything,
-// whichever form it takes - and that also turns the "unset" -1 into 0xffffffff, fully opaque,
-// which is what unset means.
-fn metadata_opacity(metadata: &Yaml) -> Option<Option<u32>> {
+// An X11 32-bit CARDINAL (`_NET_WM_WINDOW_OPACITY`, `_NET_WM_DESKTOP`), which an X11 server reads
+// as a C `long` and sign-extends: 0x80000000 arrives as 0xffffffff80000000, too big for a YAML
+// integer, so it comes back as a `Real` holding the digits. Only the low 32 bits mean anything,
+// whichever form it takes (xpra's own client masks `workspace` the same way) - which also turns
+// an "unset" -1 opacity into 0xffffffff, fully opaque, which is what unset means.
+fn metadata_cardinal(metadata: &Yaml, key: &str) -> Option<u32> {
     let Yaml::Hash(hash) = metadata else {
         return None;
     };
-    let value = match hash.get(&Yaml::String("opacity".to_string()))? {
+    let value = match hash.get(&Yaml::String(key.to_string()))? {
         Yaml::Integer(value) => *value as u64,
         Yaml::Real(digits) => digits.parse::<u64>().ok()?,
         _ => return None,
     };
-    let opacity = value as u32;
-    Some((opacity != u32::MAX).then_some(opacity))
+    Some(value as u32)
 }
 
 fn metadata_bool(metadata: &Yaml, key: &str) -> Option<bool> {
@@ -983,6 +985,7 @@ impl XpraClient {
                     "transient-for", "parent", "relative-position", "modal",
                     "skip-taskbar", "skip-pager", "class-instance",
                     "window-type", "sticky", "opacity", "shaded",
+                    "workspace",
                     "override-redirect",
                 ],
             },
@@ -2470,6 +2473,11 @@ impl XpraClient {
             // X11 only: winit rewrites a Windows window's extended style from its own flags on
             // every state change, which would drop the WS_EX_LAYERED that opacity needs there
             hints.opacity = metadata.opacity.flatten();
+            // one-way: a window the user moves to another workspace is not reported back
+            if !override_redirect && event_loop.is_x11() {
+                hints.workspace = metadata.workspace
+                    .and_then(|workspace| self.x11_hints().and_then(|h| h.valid_workspace(workspace)));
+            }
             hints.states.extend(metadata.net_wm_states().into_iter().filter(|(_, on)| *on).map(|(state, _)| state));
             (event_loop.is_x11() && !hints.is_empty()).then_some(hints)
         };
@@ -2935,6 +2943,14 @@ impl XpraClient {
         if let (Some(xid), Some(opacity)) = (x11_window(&window.window), update.opacity) {
             if let Some(hints) = self.x11_hints.get_or_init(X11Hints::new) {
                 hints.set_opacity(xid, opacity);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if let (Some(xid), Some(workspace), false) = (x11_window(&window.window), update.workspace, window.override_redirect) {
+            if let Some(hints) = self.x11_hints.get_or_init(X11Hints::new) {
+                if let Some(workspace) = hints.valid_workspace(workspace) {
+                    hints.set_workspace(xid, workspace);
+                }
             }
         }
         #[cfg(target_os = "linux")]
@@ -3494,7 +3510,7 @@ mod tests {
     }
 
     #[test]
-    fn opacity_keeps_the_low_32_bits() {
+    fn cardinals_keep_the_low_32_bits() {
         let opacity = |yaml: &str| parse_metadata(yaml).opacity;
         assert_eq!(opacity("{opacity: 2147483648}"), Some(Some(0x8000_0000)));
         // the sign-extended form an X11 server sends, which YAML hands back as a Real
@@ -3677,6 +3693,7 @@ modifier_keycodes:
                 sticky: true,
                 shaded: false,
                 opacity: -1,
+                workspace: 18446744073709551615,
                 transient-for: 3,
                 parent: 0,
                 modal: true,
@@ -3706,6 +3723,7 @@ modifier_keycodes:
                 class_instance: Some(("gnome-calculator".to_string(), "Gnome-calculator".to_string())),
                 window_type: Some(vec!["DIALOG".to_string(), "NORMAL".to_string()]),
                 opacity: Some(None),
+                workspace: Some(0xffff_ffff),
                 transient_for: Some(3),
                 parent: None,
                 modal: Some(true),
