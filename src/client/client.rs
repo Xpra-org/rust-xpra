@@ -63,7 +63,7 @@ use super::tray;
 use super::windows_audio::{AudioWorker, EnqueueError};
 use super::window::XpraWindow;
 #[cfg(target_os = "linux")]
-use super::x11_hints::X11Hints;
+use super::x11_hints::{InitialHints, X11Hints};
 
 
 // The plain-text clipboard targets we handle, best first: what we claim the clipboard with, what
@@ -114,6 +114,8 @@ struct WindowMetadataUpdate {
     above: Option<bool>,
     below: Option<bool>,
     attention_requested: Option<bool>,
+    skip_taskbar: Option<bool>,
+    skip_pager: Option<bool>,
     // xpra wids: the server never sends a 0 ("none"), it leaves the key out
     transient_for: Option<u64>,
     parent: Option<u64>,
@@ -134,6 +136,8 @@ impl WindowMetadataUpdate {
             above: metadata_bool(metadata, "above"),
             below: metadata_bool(metadata, "below"),
             attention_requested: metadata_bool(metadata, "attention-requested"),
+            skip_taskbar: metadata_bool(metadata, "skip-taskbar"),
+            skip_pager: metadata_bool(metadata, "skip-pager"),
             transient_for: metadata_wid(metadata, "transient-for"),
             parent: metadata_wid(metadata, "parent"),
             modal: metadata_bool(metadata, "modal"),
@@ -146,6 +150,18 @@ impl WindowMetadataUpdate {
                 }
             }),
         }
+    }
+}
+
+impl WindowMetadataUpdate {
+    // The flags that are nothing more than an X11 `_NET_WM_STATE_*` atom, by name (without the
+    // prefix): set before mapping at creation, through a client message afterwards.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    fn net_wm_states(&self) -> Vec<(&'static str, bool)> {
+        [
+            ("SKIP_TASKBAR", self.skip_taskbar),
+            ("SKIP_PAGER", self.skip_pager),
+        ].into_iter().filter_map(|(state, on)| Some((state, on?))).collect()
     }
 }
 
@@ -920,6 +936,7 @@ impl XpraClient {
                     "title", "size-constraints", "fullscreen", "maximized", "iconic",
                     "decorations", "above", "below", "attention-requested",
                     "transient-for", "parent", "relative-position", "modal",
+                    "skip-taskbar", "skip-pager",
                     "override-redirect",
                 ],
             },
@@ -2369,15 +2386,29 @@ impl XpraClient {
             // SAFETY: the handle is that of a window we own, which is alive for this whole call
             attrs = unsafe { attrs.with_parent_window(Some(handle)) };
         }
-        // X11 has no attribute for either hint, so they are set on the window by hand - before it
-        // is mapped, since that is when the window manager decides how to place and decorate it.
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs = attrs.with_skip_taskbar(metadata.skip_taskbar.unwrap_or(false));
+        }
+        // X11 has no attribute for most hints, so they are set on the window by hand - before it
+        // is mapped, since that is when the window manager decides how to place and decorate it
+        // (client/x11_hints.rs).
         #[cfg(target_os = "linux")]
-        let x11_hints = {
+        let x11_initial = {
             use winit::platform::x11::ActiveEventLoopExtX11;
-            event_loop.is_x11() && (owner_window.is_some() || modal)
+            let mut hints = InitialHints {
+                transient_for: owner_window.as_ref().and_then(|w| x11_window(w)),
+                ..Default::default()
+            };
+            if modal {
+                hints.states.push("MODAL");
+            }
+            hints.states.extend(metadata.net_wm_states().into_iter().filter(|(_, on)| *on).map(|(state, _)| state));
+            (event_loop.is_x11() && !hints.is_empty()).then_some(hints)
         };
         #[cfg(target_os = "linux")]
-        if x11_hints {
+        if x11_initial.is_some() {
             attrs = attrs.with_visible(false);
         }
 
@@ -2393,14 +2424,9 @@ impl XpraClient {
             debug!("window {:#x}: owner={:x?}, modal={}", wid, owner, modal);
         }
         #[cfg(target_os = "linux")]
-        if x11_hints {
+        if let Some(initial) = x11_initial {
             if let (Some(hints), Some(xid)) = (self.x11_hints(), x11_window(&window)) {
-                if let Some(owner_xid) = owner_window.as_ref().and_then(|w| x11_window(w)) {
-                    hints.set_transient_for(xid, owner_xid);
-                }
-                if modal {
-                    hints.set_modal(xid, true, false);
-                }
+                hints.apply_initial(xid, &initial);
             }
             window.set_visible(true);
         }
@@ -2839,6 +2865,16 @@ impl XpraClient {
             }
         };
         let update = WindowMetadataUpdate::parse(metadata);
+        #[cfg(target_os = "linux")]
+        if let Some(xid) = x11_window(&window.window) {
+            let states = update.net_wm_states();
+            // the field rather than `x11_hints()`, which would borrow all of `self`
+            if let (false, Some(hints)) = (states.is_empty(), self.x11_hints.get_or_init(X11Hints::new)) {
+                for (state, on) in states {
+                    hints.set_state(xid, state, on);
+                }
+            }
+        }
         let (transient_for, parent, modal, relative_position) =
             (update.transient_for, update.parent, update.modal, update.relative_position);
         Self::apply_window_metadata(window, update);
@@ -2895,7 +2931,7 @@ impl XpraClient {
             window.modal = modal;
             #[cfg(target_os = "linux")]
             if let (Some(hints), Some(xid)) = (self.x11_hints(), self.windows.get(&wid).and_then(|w| x11_window(&w.window))) {
-                hints.set_modal(xid, modal, true);
+                hints.set_state(xid, "MODAL", modal);
             }
             self.update_modal_owners();
         }
@@ -2985,6 +3021,11 @@ impl XpraClient {
         // entry / bounce the Dock icon. Informational rather than Critical, so it stops on its
         // own once the window is focused. Menus and tooltips don't get to ask, as in xpra's own
         // client (gtk3/window/base.py `set_attention_requested`).
+        #[cfg(windows)]
+        if let Some(skip_taskbar) = update.skip_taskbar {
+            use winit::platform::windows::WindowExtWindows;
+            window.window.set_skip_taskbar(skip_taskbar);
+        }
         if let Some(attention) = update.attention_requested {
             let request = (attention && !window.override_redirect)
                 .then_some(UserAttentionType::Informational);
@@ -3544,6 +3585,8 @@ modifier_keycodes:
                 above: true,
                 below: false,
                 attention-requested: true,
+                skip-taskbar: true,
+                skip-pager: 0,
                 transient-for: 3,
                 parent: 0,
                 modal: true,
@@ -3566,6 +3609,8 @@ modifier_keycodes:
                 above: Some(true),
                 below: Some(false),
                 attention_requested: Some(true),
+                skip_taskbar: Some(true),
+                skip_pager: Some(false),
                 transient_for: Some(3),
                 parent: None,
                 modal: Some(true),

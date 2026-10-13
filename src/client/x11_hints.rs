@@ -1,13 +1,22 @@
 // X11 only: the window-manager hints winit has no API for.
 //
 // `WM_TRANSIENT_FOR` ties a dialog to the window it belongs to (the WM keeps it above that window,
-// centres it there, leaves it out of the taskbar), and `_NET_WM_STATE_MODAL` marks it as blocking
-// that window. winit's own `with_parent_window` is not the same thing on X11: it *embeds* the new
-// window inside the parent's client area, which is what an X11 "child" window is.
+// centres it there, leaves it out of the taskbar), and `_NET_WM_STATE` carries the EWMH state
+// flags (`_NET_WM_STATE_MODAL`, `_NET_WM_STATE_SKIP_TASKBAR`, ...). winit's own
+// `with_parent_window` is not the same thing as a transient-for on X11: it *embeds* the new window
+// inside the parent's client area, which is what an X11 "child" window is.
 //
 // These are plain properties on the window, so any connection to the same display can set them -
 // this is a second one, opened on first use, rather than winit's, which it does not expose. It is
 // x11rb's pure-Rust connection, so nothing new is linked either.
+//
+// Most hints matter most *before* the window is mapped, since that is when the window manager
+// decides how to place and decorate it - some (window type, modal on Mutter) are only read then.
+// So a window with any to set is created hidden, gets its `InitialHints`, and is shown afterwards
+// (client.rs `process_new_common`); later changes go through the EWMH client messages instead.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use log::{debug, warn};
 use x11rb::connection::Connection;
@@ -21,11 +30,24 @@ const NET_WM_STATE_ADD: u32 = 1;
 // source indication: a normal application
 const SOURCE_APPLICATION: u32 = 1;
 
+// What to set on a window before it is mapped.
+#[derive(Debug, Default)]
+pub struct InitialHints {
+    pub transient_for: Option<Window>,
+    // `_NET_WM_STATE_*` names, without the prefix: "MODAL", "SKIP_TASKBAR", ...
+    pub states: Vec<&'static str>,
+}
+
+impl InitialHints {
+    pub fn is_empty(&self) -> bool {
+        self.transient_for.is_none() && self.states.is_empty()
+    }
+}
+
 pub struct X11Hints {
     conn: RustConnection,
     root: Window,
-    net_wm_state: u32,
-    net_wm_state_modal: u32,
+    atoms: RefCell<HashMap<String, u32>>,
 }
 
 impl X11Hints {
@@ -38,12 +60,42 @@ impl X11Hints {
             }
         };
         let root = conn.setup().roots.get(screen)?.root;
-        let intern = |name: &[u8]| -> Option<u32> {
-            Some(conn.intern_atom(false, name).ok()?.reply().ok()?.atom)
+        Some(X11Hints { conn, root, atoms: RefCell::new(HashMap::new()) })
+    }
+
+    fn atom(&self, name: &str) -> Option<u32> {
+        if let Some(atom) = self.atoms.borrow().get(name) {
+            return Some(*atom);
+        }
+        let atom = match self.conn.intern_atom(false, name.as_bytes()).map(|cookie| cookie.reply()) {
+            Ok(Ok(reply)) => reply.atom,
+            _ => {
+                warn!("failed to intern X11 atom {}", name);
+                return None;
+            }
         };
-        let net_wm_state = intern(b"_NET_WM_STATE")?;
-        let net_wm_state_modal = intern(b"_NET_WM_STATE_MODAL")?;
-        Some(X11Hints { conn, root, net_wm_state, net_wm_state_modal })
+        self.atoms.borrow_mut().insert(name.to_string(), atom);
+        Some(atom)
+    }
+
+    pub fn apply_initial(&self, window: Window, hints: &InitialHints) {
+        debug!("initial X11 hints for {:#x}: {:?}", window, hints);
+        if let Some(owner) = hints.transient_for {
+            let _ = self.conn.change_property32(
+                PropMode::REPLACE, window, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, &[owner],
+            );
+        }
+        if !hints.states.is_empty() {
+            let states: Vec<u32> = hints.states.iter()
+                .filter_map(|state| self.atom(&format!("_NET_WM_STATE_{}", state)))
+                .collect();
+            if let Some(net_wm_state) = self.atom("_NET_WM_STATE") {
+                let _ = self.conn.change_property32(
+                    PropMode::APPEND, window, net_wm_state, AtomEnum::ATOM, &states,
+                );
+            }
+        }
+        self.flush();
     }
 
     pub fn set_transient_for(&self, window: Window, owner: Window) {
@@ -54,24 +106,22 @@ impl X11Hints {
         self.flush();
     }
 
-    // Before the window is mapped, `_NET_WM_STATE` is a property the WM reads when it maps it;
-    // afterwards it belongs to the WM and has to be changed through a client message to the root
-    // window (EWMH "_NET_WM_STATE").
-    pub fn set_modal(&self, window: Window, modal: bool, mapped: bool) {
-        debug!("_NET_WM_STATE_MODAL({:#x})={} (mapped={})", window, modal, mapped);
-        if mapped {
-            let action = if modal { NET_WM_STATE_ADD } else { NET_WM_STATE_REMOVE };
-            let event = ClientMessageEvent::new(
-                32, window, self.net_wm_state,
-                [action, self.net_wm_state_modal, 0, SOURCE_APPLICATION, 0],
-            );
-            let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
-            let _ = self.conn.send_event(false, self.root, mask, event);
-        } else if modal {
-            let _ = self.conn.change_property32(
-                PropMode::APPEND, window, self.net_wm_state, AtomEnum::ATOM, &[self.net_wm_state_modal],
-            );
-        }
+    // A state change on a mapped window: once mapped, `_NET_WM_STATE` belongs to the window
+    // manager and is changed by asking it, with a client message to the root window (EWMH
+    // "_NET_WM_STATE"). `state` is the name without its `_NET_WM_STATE_` prefix.
+    pub fn set_state(&self, window: Window, state: &str, on: bool) {
+        debug!("_NET_WM_STATE_{}({:#x})={}", state, window, on);
+        let (Some(net_wm_state), Some(atom)) = (self.atom("_NET_WM_STATE"), self.atom(&format!("_NET_WM_STATE_{}", state))) else {
+            return;
+        };
+        let action = if on { NET_WM_STATE_ADD } else { NET_WM_STATE_REMOVE };
+        self.send_root_message(window, net_wm_state, [action, atom, 0, SOURCE_APPLICATION, 0]);
+    }
+
+    fn send_root_message(&self, window: Window, message_type: u32, data: [u32; 5]) {
+        let event = ClientMessageEvent::new(32, window, message_type, data);
+        let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+        let _ = self.conn.send_event(false, self.root, mask, event);
         self.flush();
     }
 

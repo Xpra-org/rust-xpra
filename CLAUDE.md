@@ -376,7 +376,7 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     - **Window metadata**: `metadata.supported` is limited to the properties this backend applies:
       title, decorations, fullscreen, maximized/iconic state, above/below level, size
       constraints, attention-requested (an informational `request_user_attention`, never for an
-      override-redirect window) — and `override-redirect`, which is not applied but *classifies* the window.
+      override-redirect window), skip-taskbar (Windows and X11) and skip-pager (X11) — and `override-redirect`, which is not applied but *classifies* the window.
       The same `apply_window_metadata` path handles initial `new-window`/`window-create` metadata
       and incremental `window-metadata` packets; fixed minimum/maximum sizes disable resizing.
       The list is a filter the server applies to **every** metadata property it would send
@@ -406,9 +406,11 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
         AppKit's modality is a blocking run loop.
       - **X11**: `with_parent_window` *embeds* the window, so `client/x11_hints.rs` sets
         `WM_TRANSIENT_FOR` and `_NET_WM_STATE_MODAL` itself, over a second x11rb connection
-        opened on first use (x11rb is already linked by winit/softbuffer). The window is created
-        hidden and only shown once the hints are set, since the WM reads them at map time; a
-        later modal change goes through the EWMH client message instead. Mutter/Muffin ignore
+        opened on first use (x11rb is already linked by winit/softbuffer). It does the same for
+        every other X11-only hint: a window with *any* `InitialHints` to set is created hidden
+        and only shown once they are, since the WM reads them at map time; a later change goes
+        through the EWMH client message instead. A flag that is nothing more than a
+        `_NET_WM_STATE_*` atom only needs an entry in `WindowMetadataUpdate::net_wm_states`. Mutter/Muffin ignore
         that message for `MODAL` (verified with `wmctrl` as well), so in practice modal is
         decided at map time, as it is for GTK's own `set_modal`.
       - **Wayland**: nothing; winit exposes no `xdg_toplevel.set_parent`.
