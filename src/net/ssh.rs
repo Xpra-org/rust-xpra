@@ -17,6 +17,11 @@
 // xpra package and where no one has root. The python client calls the same
 // option `--remote-xpra`.
 //
+// `command` is the ssh to run, with its own options, from `--ssh`: a ProxyCommand
+// for a host that is only reachable through a relay, another ssh binary, `plink`.
+// The python client calls the same option `--ssh`. The connection's own arguments
+// (`-x -T`, port, user, host, the proxy script) are appended to it either way.
+//
 // Authentication must not require interactive input on stdin, since stdin
 // carries the xpra packet stream, not a terminal - use key-based auth with an
 // ssh-agent (or a passphrase-less key). Host-key prompts and password
@@ -29,11 +34,31 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-pub fn connect(address: &str, username: Option<&str>, display: &str, remote_xpra: Option<&str>)
+// How to run the ssh side of an `ssh://` connection: both options only mean
+// something there, so they travel together.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Settings {
+    // `--ssh`, already split into words: the program and its own options. `None` runs `ssh`.
+    pub command: Option<Vec<String>>,
+    // `--remote-xpra`: the xpra to run on the remote host instead of the one on its PATH.
+    pub remote_xpra: Option<String>,
+}
+
+impl Settings {
+    pub fn is_set(&self) -> bool {
+        self.command.is_some() || self.remote_xpra.is_some()
+    }
+}
+
+pub fn connect(address: &str, username: Option<&str>, display: &str, settings: &Settings)
                -> Result<SshStream, String> {
     let (host, port) = address.rsplit_once(':').ok_or_else(|| format!("missing port in {:?}", address))?;
 
-    let mut cmd = Command::new("ssh");
+    let default = ["ssh".to_string()];
+    let words = settings.command.as_deref().unwrap_or(&default);
+    let (program, options) = words.split_first().ok_or_else(|| "the ssh command is empty".to_string())?;
+    let mut cmd = Command::new(program);
+    cmd.args(options);
     cmd.arg("-x").arg("-T");
     if port != "22" {
         cmd.arg("-p").arg(port);
@@ -42,11 +67,11 @@ pub fn connect(address: &str, username: Option<&str>, display: &str, remote_xpra
         cmd.arg("-l").arg(user);
     }
     cmd.arg(host);
-    cmd.arg(remote_command(display, remote_xpra));
+    cmd.arg(remote_command(display, settings.remote_xpra.as_deref()));
     cmd.stdin(Stdio::piped());
     cmd.stdout(Stdio::piped());
 
-    let mut child: Child = cmd.spawn().map_err(|e| format!("failed to launch ssh: {e}"))?;
+    let mut child: Child = cmd.spawn().map_err(|e| format!("failed to launch {program}: {e}"))?;
     let stdin = child.stdin.take().expect("ssh stdin was piped");
     let stdout = child.stdout.take().expect("ssh stdout was piped");
 
@@ -78,6 +103,47 @@ fn proxy_script(display: &str, remote_xpra: Option<&str>) -> String {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+// Splits `--ssh`'s value into words. Whitespace separates them, and `'...'` or `"..."`
+// group text, also in the middle of a word (`-oX='a b'` is `-oX=a b`). Unlike the python
+// client's `shlex`, a backslash is just a character: on MS Windows `C:\Program Files\...`
+// has to arrive intact, and nothing here needs escaping.
+pub fn split_command(s: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => word.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                in_word = true;
+            }
+            None if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            None => {
+                word.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if let Some(q) = quote {
+        return Err(format!("unterminated {q} quote in {s:?}"));
+    }
+    if in_word {
+        words.push(word);
+    }
+    if words.is_empty() {
+        return Err("no command given".to_string());
+    }
+    Ok(words)
 }
 
 #[cfg(test)]
@@ -113,6 +179,55 @@ mod tests {
         let script = proxy_script("10", Some(path));
         assert_eq!(script.matches(&shell_quote(path)).count(), 3, "{script}");
         assert_eq!(remote_command("10", Some(path)), format!("sh -c {}", shell_quote(&script)));
+    }
+
+    fn split(s: &str) -> Vec<String> {
+        split_command(s).unwrap()
+    }
+
+    #[test]
+    fn a_command_splits_on_whitespace() {
+        assert_eq!(split("ssh -v"), ["ssh", "-v"]);
+        assert_eq!(split("  ssh \t -v  "), ["ssh", "-v"]);
+    }
+
+    // what SEE passes over its web tunnel: the ProxyCommand is one argument, spaces and all
+    #[test]
+    fn quotes_keep_a_proxy_command_in_one_word() {
+        assert_eq!(split("ssh '-oProxyCommand=see.exe connect %h %p --url wss://t/tunnel'"),
+                   ["ssh", "-oProxyCommand=see.exe connect %h %p --url wss://t/tunnel"]);
+        assert_eq!(split("ssh \"-oProxyCommand=a b\""), ["ssh", "-oProxyCommand=a b"]);
+    }
+
+    #[test]
+    fn a_quote_can_start_inside_a_word() {
+        assert_eq!(split(r#"ssh -oProxyCommand="C:\x y\see.exe" connect"#),
+                   ["ssh", r"-oProxyCommand=C:\x y\see.exe", "connect"]);
+        // and the other kind of quote is just a character inside one
+        assert_eq!(split("ssh '-oX=\"a b\"'"), ["ssh", "-oX=\"a b\""]);
+        assert_eq!(split("''"), [""]);
+    }
+
+    #[test]
+    fn backslashes_are_not_escapes() {
+        assert_eq!(split(r#""C:\Program Files\OpenSSH\ssh.exe" -oBatchMode=yes"#),
+                   [r"C:\Program Files\OpenSSH\ssh.exe", "-oBatchMode=yes"]);
+        assert_eq!(split(r"C:\ssh\ssh.exe"), [r"C:\ssh\ssh.exe"]);
+    }
+
+    #[test]
+    fn an_unterminated_quote_or_nothing_at_all_is_an_error() {
+        assert!(split_command("ssh 'unterminated").is_err());
+        assert!(split_command("ssh \"-oX=a").is_err());
+        assert!(split_command("").is_err());
+        assert!(split_command("   ").is_err());
+    }
+
+    #[test]
+    fn settings_are_set_by_either_option() {
+        assert!(!Settings::default().is_set());
+        assert!(Settings { command: Some(vec!["ssh".into()]), remote_xpra: None }.is_set());
+        assert!(Settings { command: None, remote_xpra: Some("/x".into()) }.is_set());
     }
 }
 
