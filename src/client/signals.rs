@@ -19,7 +19,7 @@ pub const INTERRUPT: &str = "interrupt";
 
 #[cfg(unix)]
 mod imp {
-    use std::ffi::c_int;
+    use std::ffi::{c_int, c_void};
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::thread;
 
@@ -41,8 +41,8 @@ mod imp {
     // `usize` so that `SIG_DFL` / `SIG_ERR` can be named at all (they are not valid pointers).
     unsafe extern "C" {
         fn pipe(fds: *mut c_int) -> c_int;
-        fn read(fd: c_int, buf: *mut u8, count: usize) -> isize;
-        fn write(fd: c_int, buf: *const u8, count: usize) -> isize;
+        fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
+        fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
         fn signal(signum: c_int, handler: usize) -> usize;
     }
 
@@ -67,7 +67,7 @@ mod imp {
             // a failed or short write only means the pipe is full, i.e. an interrupt is already
             // on its way to the UI thread, so there is nothing to report (and no way to report it
             // from here anyway).
-            unsafe { write(fd, &byte, 1) };
+            unsafe { write(fd, std::ptr::from_ref(&byte).cast(), 1) };
         }
     }
 
@@ -98,7 +98,7 @@ mod imp {
             let mut attempts = 0;
             let caught = loop {
                 let mut byte = 0u8;
-                if unsafe { read(read_fd, &mut byte, 1) } == 1 {
+                if unsafe { read(read_fd, std::ptr::from_mut(&mut byte).cast(), 1) } == 1 {
                     break byte as c_int;
                 }
                 // a signal delivered to this very thread interrupts the read (EINTR), which is
