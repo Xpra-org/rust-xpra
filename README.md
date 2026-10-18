@@ -185,7 +185,8 @@ carry no xpra package and where no one has root. The path goes through the same 
 name, so a wrong one is reported as `no xpra command found: <path>` rather than as a broken connection. The
 option is only meaningful for `ssh://`, and giving it with another target is an error.
 
-`--ssh=COMMAND` runs `COMMAND` instead of `ssh`: another ssh binary, or `ssh` with options of its own — a
+`--ssh=COMMAND` runs `COMMAND` instead of `ssh`: another ssh binary (PuTTY's `plink` too, which is recognised by
+its file name and given `-P` for the port instead of `-p`), or `ssh` with options of its own — a
 `ProxyCommand` for a host that is only reachable through a relay, which is how a workstation that gets out only
 over HTTPS reaches a cluster through a WebSocket tunnel. The client still appends its own arguments (`-x -T`, the
 port, the user, the host and the remote command) *after* its words, and since OpenSSH keeps the first value it is

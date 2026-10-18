@@ -18,7 +18,8 @@
 // option `--remote-xpra`.
 //
 // `command` is the ssh to run, with its own options, from `--ssh`: a ProxyCommand
-// for a host that is only reachable through a relay, another ssh binary, `plink`.
+// for a host that is only reachable through a relay, another ssh binary, `plink`
+// (PuTTY's, which spells the port option `-P` - see `is_plink`).
 // The python client calls the same option `--ssh`. The connection's own arguments
 // (`-x -T`, port, user, host, the proxy script) are appended to it either way -
 // appended, so that OpenSSH, which keeps the first value it sees for an option,
@@ -63,7 +64,7 @@ pub fn connect(address: &str, username: Option<&str>, display: &str, settings: &
     cmd.args(options);
     cmd.arg("-x").arg("-T");
     if port != "22" {
-        cmd.arg("-p").arg(port);
+        cmd.arg(if is_plink(program) { "-P" } else { "-p" }).arg(port);
     }
     if let Some(user) = username {
         cmd.arg("-l").arg(user);
@@ -105,6 +106,14 @@ fn proxy_script(display: &str, remote_xpra: Option<&str>) -> String {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+// PuTTY's `plink` takes OpenSSH's `-x -T -l` as they are, but `-p` is not its port
+// option. Matched on the file name, with either separator and in any case, so
+// `C:\Program Files\PuTTY\PLINK.EXE` counts - as the python client does.
+fn is_plink(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program).to_ascii_lowercase();
+    name == "plink" || name == "plink.exe"
 }
 
 // Splits `--ssh`'s value into words. Whitespace separates them, and `'...'` or `"..."`
@@ -223,6 +232,17 @@ mod tests {
         assert!(split_command("ssh \"-oX=a").is_err());
         assert!(split_command("").is_err());
         assert!(split_command("   ").is_err());
+    }
+
+    #[test]
+    fn plink_is_recognised_by_its_file_name() {
+        assert!(is_plink("plink"));
+        assert!(is_plink("plink.exe"));
+        assert!(is_plink(r"C:\Program Files\PuTTY\PLINK.EXE"));
+        assert!(is_plink("/usr/bin/plink"));
+        assert!(!is_plink("ssh"));
+        assert!(!is_plink("/opt/plink/bin/ssh"));
+        assert!(!is_plink("plinker"));
     }
 
     #[test]

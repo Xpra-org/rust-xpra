@@ -96,7 +96,10 @@ instead of
 .B ssh
 for an
 .B ssh://
-target: another ssh binary, or ssh with options of its own, such as a
+target: another ssh binary (PuTTY's
+.BR plink ,
+recognised by its file name, is given \fB\-P\fR for the port instead of \fB\-p\fR),
+or ssh with options of its own, such as a
 .B ProxyCommand
 for a host that is only reachable through a relay. The client still appends its own
 arguments (\fB\-x \-T\fR, the port, the user, the host and the remote command) after
