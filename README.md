@@ -128,6 +128,7 @@ cargo build
 ./target/debug/xpra /run/user/1000/xpra/10            # equivalent shorthand
 ./target/debug/xpra --ssl-insecure ssl://HOST:PORT/   # skip certificate verification
 ./target/debug/xpra --remote-xpra=/opt/xpra/bin/xpra ssh://HOST/10   # remote xpra off PATH
+./target/debug/xpra "--ssh=ssh '-oProxyCommand=relay %h %p'" ssh://HOST/10   # ssh with its own options
 ./target/debug/xpra --help          # or -h: the same list, plus the environment variables
 ./target/debug/xpra --version       # this client's own version (not the xpra protocol version)
 ```
@@ -183,6 +184,13 @@ macOS, or the bundled OpenSSH client on Windows 10 1809+) and `xpra` installed o
 carry no xpra package and where no one has root. The path goes through the same `command -v` guard as the bare
 name, so a wrong one is reported as `no xpra command found: <path>` rather than as a broken connection. The
 option is only meaningful for `ssh://`, and giving it with another target is an error.
+
+`--ssh=COMMAND` runs `COMMAND` instead of `ssh`: another ssh binary, or `ssh` with options of its own — a
+`ProxyCommand` for a host that is only reachable through a relay, which is how a workstation that gets out only
+over HTTPS reaches a cluster through a WebSocket tunnel. The client still appends its own arguments (`-x -T`, the
+port, the user, the host and the remote command). `COMMAND` is split into words at whitespace, and single or
+double quotes group words; unlike the python client's `--ssh`, a backslash is an ordinary character, so a Windows
+path needs no escaping. It is also only meaningful for `ssh://`.
 
 Authentication must
 not require interactive input on stdin (stdin carries the xpra protocol, not a terminal), so use key-based auth

@@ -89,6 +89,24 @@ guard as the bare name, so one that is missing or not executable is reported as 
 rather than as a broken connection. Using this option with any other kind of target is
 an error, since no other transport runs anything on the remote host.
 .TP
+.BI \-\-ssh= COMMAND
+Run
+.I COMMAND
+instead of
+.B ssh
+for an
+.B ssh://
+target: another ssh binary, or ssh with options of its own, such as a
+.B ProxyCommand
+for a host that is only reachable through a relay. The client still appends its own
+arguments (\fB\-x \-T\fR, the port, the user, the host and the remote command).
+.I COMMAND
+is split into words at whitespace, and single or double quotes group words; unlike
+the python client's
+.BR \-\-ssh ,
+a backslash is an ordinary character, so a Windows path needs no escaping. Using this
+option with any other kind of target is an error.
+.TP
 .B \-\-ssl\-insecure
 Connect to an
 .B ssl://
