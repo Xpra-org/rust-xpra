@@ -32,7 +32,7 @@ cargo build
 ./target/debug/xpra --version     # `CLIENT_VERSION` only (= the crate version)
 ```
 
-`src/lib.rs` holds both versions and they must not be conflated: `VERSION` ("6.4") is the *xpra
+`src/lib.rs` holds both versions and they must not be conflated: `VERSION` ("8") is the *xpra
 protocol* version announced to the server in the hello, `CLIENT_VERSION` is this crate's own
 (`env!("CARGO_PKG_VERSION")`) and is the only one `--version` prints.
 
@@ -192,15 +192,14 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     X11-style `keycode`/`keyname` xpra expects from winit's `PhysicalKey`/`Key` — see inline comments; extend the
     `NamedKey`/punctuation tables there if a real server session shows a key not being recognized.
     - **Nothing sent is conditional on the server's backwards-compatible mode.** The hello opens
-      with `protocol-version: [6, 6]` (`MIN_PROTOCOL_VERSION`, `src/lib.rs`) — the oldest peer
+      with `protocol-version: [7, 0]` (`MIN_PROTOCOL_VERSION`, `src/lib.rs`) — the oldest peer
       this client is willing to talk to, which a server checks against its own version
       (`protocol_compat_check`, xpra `util/version.py`, reached from `_process_hello`) and refuses
       with "incompatible version" rather than failing later on a packet type it has never heard
       of. It is the mirror image of the same key in the server's hello, which announces *its*
       minimum (`MIN_PROTOCOL_VERSION`, xpra `net/common.py`: `(5, 1)` in backwards-compatible mode,
-      `(6, 6)` without it); we do not check that one, since the protocol version we announce
-      (`VERSION`, "6.4") is older than the packets we actually speak and would fail it. A server
-      too old to know the key at all simply ignores it.
+      `(6, 6)` without it); we do not check that one — the version we announce (`VERSION`, "8")
+      satisfies either. A server too old to know the key at all simply ignores it.
     - **Packet names use the post-6.5 forms.** xpra 6.5 renamed most client→server packets and put
       the old names behind `add_legacy_alias(...)` calls that only run when the server has
       `BACKWARDS_COMPATIBLE` (`XPRA_BACKWARDS_COMPATIBLE`, default on); the
@@ -213,8 +212,9 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       in backwards-compatible mode, `window-draw-ack` without it), but its wid-first replacement
       `window-ack` — `wid, w, h, seq` — is named unconditionally and its handler registered in both
       modes (xpra `server/subsystem/window.py` `_process_ack`), so that is the only one sent. It
-      arrived in 6.6, not 6.5: a 6.5 server has no `window-ack` at all, which is why the real
-      minimum server version is 6.6, which is what `MIN_PROTOCOL_VERSION` announces. To check for
+      arrived in 6.6, not 6.5: a 6.5 server has no `window-ack` at all, so the packets alone need
+      6.6. `MIN_PROTOCOL_VERSION` announces 7.0 regardless, the oldest release supported and
+      tested (7.0 and 8.0 servers both verified). To check for
       regressions, run a server with `XPRA_BACKWARDS_COMPATIBLE=0`: it then refuses every legacy
       name outright.
       Two hello capabilities are part of the same move: the packet encoder (`encoders: ["yaml"]`) and
@@ -606,8 +606,8 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     The traps, all of them easy to regress:
     - **The prefixes cross over.** We send `mmap.read` (the area *we* read from); the server looks it up as
       its write area (`write_caps = tdcaps.dictget("read")`, xpra `server/source/mmap.py`) and replies under
-      `mmap.write`, which is what we must read back. The prefixed form arrived in xpra **6.3**, below the 6.4
-      protocol we announce, so the pre-6.3 unprefixed spelling is not sent (it *is* still accepted inbound,
+      `mmap.write`, which is what we must read back. The prefixed form arrived in xpra **6.3**, below the 7.0
+      minimum we announce, so the pre-6.3 unprefixed spelling is not sent (it *is* still accepted inbound,
       since a backwards-compatible server duplicates its caps that way).
     - **The token exchange is the locality check.** There is no hostname comparison anywhere: each side writes
       a random token into the area and has the other read it back. A remote server simply fails to open the

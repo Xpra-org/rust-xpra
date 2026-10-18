@@ -1039,7 +1039,7 @@ impl XpraClient {
         // Offer the shared memory area for the server to write pixels into (see mmap.rs). The
         // prefix is from *our* point of view: our "read" area is the server's write area, which is
         // how it looks the capability up (`tdcaps.dictget("read")`, xpra server/source/mmap.py).
-        // Prefixed only: the read/write split landed in xpra 6.3, below the 6.4 protocol we
+        // Prefixed only: the read/write split landed in xpra 6.3, below the 7.0 minimum we
         // announce, so the unprefixed legacy form would be dead weight.
         if let Some(area) = &self.mmap {
             packet[1]["mmap"] = json!({ "read": area.caps() });

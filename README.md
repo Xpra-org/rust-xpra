@@ -13,9 +13,10 @@ socket connections on Unix platforms. `ssl`/`wss` verify the server's certificat
 store, unless `--ssl-insecure` says otherwise. Password authentication is supported (HMAC digest challenges —
 see [Authentication](#authentication) below).
 
-It requires an **xpra 6.6 or later** server: every packet it sends uses the packet types introduced in
-xpra 6.5, the `window-ack` draw acknowledgement and the `clipboard-data` layout only settled in 6.6.
-The hello says so — `protocol-version: [6, 6]` is the oldest peer this client will talk to, and a server that
+It requires an **xpra 7.0 or later** server, and is tested against 7.0 and 8.0. The packets it sends would
+only need 6.6 (they use the packet types introduced in xpra 6.5, and the `window-ack` draw acknowledgement and
+the `clipboard-data` layout settled in 6.6), but 7.0 is the oldest supported release.
+The hello says so — `protocol-version: [7, 0]` is the oldest peer this client will talk to, and a server that
 cannot satisfy it says "incompatible version" instead of failing later on an unknown packet type.
 The server may be run in either mode: nothing sent depends on `XPRA_BACKWARDS_COMPATIBLE`, and the
 packets the client *receives* are accepted under both their pre-6.5 and their current names.
