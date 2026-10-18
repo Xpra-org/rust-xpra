@@ -20,7 +20,9 @@
 // `command` is the ssh to run, with its own options, from `--ssh`: a ProxyCommand
 // for a host that is only reachable through a relay, another ssh binary, `plink`.
 // The python client calls the same option `--ssh`. The connection's own arguments
-// (`-x -T`, port, user, host, the proxy script) are appended to it either way.
+// (`-x -T`, port, user, host, the proxy script) are appended to it either way -
+// appended, so that OpenSSH, which keeps the first value it sees for an option,
+// lets a `-p`/`-l`/`-oPort=`/`-oUser=` in `--ssh` override the target's.
 //
 // Authentication must not require interactive input on stdin, since stdin
 // carries the xpra packet stream, not a terminal - use key-based auth with an

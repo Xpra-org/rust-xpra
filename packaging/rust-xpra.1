@@ -99,7 +99,11 @@ for an
 target: another ssh binary, or ssh with options of its own, such as a
 .B ProxyCommand
 for a host that is only reachable through a relay. The client still appends its own
-arguments (\fB\-x \-T\fR, the port, the user, the host and the remote command).
+arguments (\fB\-x \-T\fR, the port, the user, the host and the remote command) after
+its words, and since OpenSSH keeps the first value it is given for an option, a
+\fB\-p\fR, \fB\-l\fR, \fB\-oPort=\fR or \fB\-oUser=\fR in
+.I COMMAND
+overrides the port and user of the target.
 .I COMMAND
 is split into words at whitespace, and single or double quotes group words; unlike
 the python client's

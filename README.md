@@ -188,7 +188,8 @@ option is only meaningful for `ssh://`, and giving it with another target is an 
 `--ssh=COMMAND` runs `COMMAND` instead of `ssh`: another ssh binary, or `ssh` with options of its own — a
 `ProxyCommand` for a host that is only reachable through a relay, which is how a workstation that gets out only
 over HTTPS reaches a cluster through a WebSocket tunnel. The client still appends its own arguments (`-x -T`, the
-port, the user, the host and the remote command). `COMMAND` is split into words at whitespace, and single or
+port, the user, the host and the remote command) *after* its words, and since OpenSSH keeps the first value it is
+given for an option, a `-p`, `-l`, `-oPort=` or `-oUser=` in `COMMAND` overrides the target's port and user. `COMMAND` is split into words at whitespace, and single or
 double quotes group words; unlike the python client's `--ssh`, a backslash is an ordinary character, so a Windows
 path needs no escaping. It is also only meaningful for `ssh://`.
 
