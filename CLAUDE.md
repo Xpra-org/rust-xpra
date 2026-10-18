@@ -110,13 +110,26 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
     (see the client's `process_challenge`). Unlike `sha1` this *is* a security boundary, so it is verified against
     the FIPS-180 and RFC 4231 test vectors (`cargo test`). Hand-rolled rather than pulling in a crypto crate,
     matching the rest of `net/`; `hmac_sha256_hex` returns the lowercase-hex ASCII form xpra puts on the wire.
-  - `net/ssh.rs`: `ssh://`, implemented by shelling out to the system `ssh` binary (`std::process::Command`) and
+  - `net/ssh.rs`: `ssh://`, implemented by shelling out to the system `ssh` binary (or `--ssh`'s, below;
+    `std::process::Command`) and
     treating its stdin/stdout pipes as the byte stream — no SSH library dependency, mirroring the `tcp`/`ws`
     hand-rolled-over-a-library preference here (a full client like `russh` costs ~2MB and needs `tokio`; see the
     dependency-cost notes in git history). The remote command is `sh -c 'if command -v "xpra" ...; then xpra
     _proxy [DISPLAY]; else ...; fi'`, matching what xpra's own client runs over ssh (see
     `xpra/net/ssh/exec_client.py:get_ssh_command` upstream) — `xpra _proxy` bridges stdin/stdout on the remote end
-    to the target display's existing unix-domain socket. `SshStream` wraps `ChildStdin`/`ChildStdout` each in
+    to the target display's existing unix-domain socket. Two command-line options shape this, carried together
+    as `ssh::Settings` (both only mean something for `ssh://`, and `main::connect` rejects either on any other
+    target, the dialog's included):
+    - `--remote-xpra=PATH` replaces the bare `xpra` name in that script (shell-quoted, still behind the
+      `command -v` guard) for a remote install that is not on the login shell's `PATH`.
+    - `--ssh=COMMAND` replaces the `ssh` program itself, options included (a `ProxyCommand`, typically).
+      `split_command` splits it into words — whitespace separates, `'`/`"` group, and a backslash is an
+      *ordinary* character, unlike the python client's `shlex`, so Windows paths arrive intact. Our own
+      arguments (`-x -T`, `-p`, `-l`, host, remote command) go **after** its words; since OpenSSH keeps the
+      first value it sees for an option, a `-p`/`-l`/`-oPort=`/`-oUser=` in `--ssh` overrides the target's —
+      documented, keep the order. `is_plink` (file name `plink`/`plink.exe`, any case or separator) swaps `-p`
+      for PuTTY's `-P`; plink takes the other flags as they are.
+    `SshStream` wraps `ChildStdin`/`ChildStdout` each in
     their own `Arc<Mutex<_>>` purely so `try_clone()` can hand the reader thread its own handle; unlike
     `SharedTlsStream` these two mutexes are never actually contended, since stdin and stdout are independent pipes
     (only the UI thread ever locks `stdin`, only the reader thread ever locks `stdout`). The spawned `Child` is
