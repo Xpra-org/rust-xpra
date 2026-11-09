@@ -88,7 +88,7 @@ This is a proof of concept and requires an xpra 6.6 or later server.
 # the tarball may have just been downloaded by `_disable_source_fetch` above, so verify
 # it before unpacking anything - this has to be updated for every new version:
 sha256=`sha256sum %{SOURCE0} | awk '{print $1}'`
-if [ "${sha256}" != "2bc0052f2b159e365201a08f42107749c85caa3a32f0d0e166766341db6d9793" ]; then
+if [ "${sha256}" != "3d3066c1db086afe81146ffa70db1cfd11de3d994f3cf87b8b3ef54d1c8e5f6a" ]; then
 	echo "invalid checksum for %{SOURCE0}"
 	exit 1
 fi
