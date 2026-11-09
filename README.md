@@ -268,14 +268,15 @@ server that cannot open the file — because it is on another host — simply de
 usual picture encodings. Neither side compares hostnames; each writes a random token into the area for the other
 to read back, which is what establishes that the two really are looking at the same memory.
 
-The backing file is created in the temporary directory, is 128MB and sparse, and is unlinked as soon as the
-server has it open, so it never outlives the handshake. Note that while mmap is in use the server stops using
-every other picture encoding, which is the intended effect.
+The backing file is created in `$XDG_RUNTIME_DIR/xpra` (falling back to the temporary directory when
+`XDG_RUNTIME_DIR` is unset), is 128MB and sparse, and is unlinked as soon as the server has it open, so it never
+outlives the handshake. The `xpra` directory is created with private permissions if needed. Note that while
+mmap is in use the server stops using every other picture encoding, which is the intended effect.
 
 | Variable         | Effect                                                                          |
 |------------------|---------------------------------------------------------------------------------|
 | `XPRA_MMAP`      | `no` to switch it off; an absolute path to pin the backing file (an existing file is used as-is and never removed, which is how a [virtio-shmem](https://github.com/Xpra-org/xpra/blob/master/docs/Subsystems/MMAP.md) device is shared between a host and a guest) |
-| `XPRA_MMAP_DIR`  | the directory to create the file in (the temporary directory by default)         |
+| `XPRA_MMAP_DIR`  | the directory to create the file in (`$XDG_RUNTIME_DIR/xpra` by default; must be allowed by the server) |
 | `XPRA_MMAP_SIZE` | the size of the area, with an optional `K`/`M`/`G` suffix (128M default, 64M minimum — the server rejects anything smaller) |
 
 Not implemented: the client → server direction (the server only uses it for webcam frames, which this client
