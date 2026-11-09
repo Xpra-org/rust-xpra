@@ -33,7 +33,7 @@
 %global turbojpeg_static %(pkg-config --atleast-version=3.0 libturbojpeg 2>/dev/null && echo 0 || echo 1)
 
 Name:				rust-xpra
-Version:			0.4.0
+Version:			0.5.0
 Release:			1%{?dist}
 Summary:			Xpra client written in Rust
 # the client itself is GPL-3.0-or-later; `src/client/font.rs` is the Spleen 8x16
@@ -42,8 +42,8 @@ License:			GPL-3.0-or-later AND BSD-2-Clause
 URL:				https://github.com/Xpra-org/rust-xpra
 Packager:			Antoine Martin <antoine@xpra.org>
 Vendor:				https://xpra.org/
-# the "Source code (tar.gz)" of https://github.com/Xpra-org/rust-xpra/releases/tag/v0.3.1;
-# the `#/` fragment renames the github archive to something less ambiguous than `v0.3.1.tar.gz`
+# the "Source code (tar.gz)" of https://github.com/Xpra-org/rust-xpra/releases/tag/v0.5.0;
+# the `#/` fragment renames the github archive to something less ambiguous than `v0.5.0.tar.gz`
 Source0:			%{url}/archive/refs/tags/v%{version}.tar.gz#/%{name}-%{version}.tar.gz
 
 # `edition = "2024"` needs rust 1.85. `Cargo.lock` is not in the source tree, so cargo
@@ -134,6 +134,9 @@ install -D -p -m 644 packaging/%{name}.1 %{buildroot}%{_mandir}/man1/%{name}.1
 
 
 %changelog
+* Mon Nov 09 2026 Antoine Martin <antoine@xpra.org> 0.5.0-1
+- Bump version to 0.5.0.
+
 * Mon Nov 09 2026 Antoine Martin <antoine@xpra.org> 0.4.0-1
 - 🔧 Platforms, build and packaging:
    ship a CycloneDX SBOM with every release binary

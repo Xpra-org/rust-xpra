@@ -1,5 +1,7 @@
 # Changelog
 
+## [0.5.0] Unreleased
+
 ## [0.4.0] 2026-11-09
 * 🔧 Platforms, build and packaging:
   * [ship a CycloneDX SBOM with every release binary](https://github.com/Xpra-org/rust-xpra/commit/c0011223f868df7e7ae676c0fe5033b453afef94)

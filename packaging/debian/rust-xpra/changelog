@@ -1,3 +1,8 @@
+rust-xpra (0.5.0-1) UNRELEASED; urgency=low
+  * Bump version to 0.5.0.
+
+ -- Antoine Martin <antoine@xpra.org>  Mon, 09 Nov 2026 23:02:46 +0700
+
 rust-xpra (0.4.0-1) UNRELEASED; urgency=low
   * 🔧 Platforms, build and packaging:
     ship a CycloneDX SBOM with every release binary
