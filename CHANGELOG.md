@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] 2026-09-24
+## [0.4.0] 2026-11-09
 * 🔧 Platforms, build and packaging:
   * [ship a CycloneDX SBOM with every release binary](https://github.com/Xpra-org/rust-xpra/commit/c0011223f868df7e7ae676c0fe5033b453afef94)
   * [cover the protocol layer with tests](https://github.com/Xpra-org/rust-xpra/commit/e20e35f97c0ba4f451d58ec6f94f7cdd9672cf05)
@@ -14,10 +14,25 @@
     `SIGINT`/`SIGTERM`/`SIGHUP` and the Windows console events tell the server why we are leaving
   * [fix the Super key, the dead keys and the non-ascii ones](https://github.com/Xpra-org/rust-xpra/commit/642b6bd7300e98a45752fb6b404900b14e467021)
   * [take the modifier names from the server's keymap](https://github.com/Xpra-org/rust-xpra/commit/ddc611fab162d67f00608ef5208755cac7ca39de)
+  * [detect the keyboard layout on Windows and allow `XPRA_KEYBOARD_LAYOUT` overrides](https://github.com/Xpra-org/rust-xpra/commit/89a3db9a690568dfb6ca7e2c19f3a7689b3e8278)
   * [name the shifted punctuation keysyms](https://github.com/Xpra-org/rust-xpra/commit/c5e62c2b844e257c1862ef681a56cc0ddae1fae4)
   * [don't confine the pointer to override-redirect windows](https://github.com/Xpra-org/rust-xpra/commit/8a1094fd7fc5a4b3dc40513031559fb4f8467439)
   * [don't lock the cursor when it cannot be confined](https://github.com/Xpra-org/rust-xpra/commit/a1373d8d6fab7512f45156018da9884052d15499)
   * [don't report the geometry of a minimized window](https://github.com/Xpra-org/rust-xpra/commit/f07357ff66ac1c2a5c80b2df0b62d66a3c20f650)
+  * [scale windows on HiDPI displays, with `XPRA_DESKTOP_SCALING` to override the display's scale factor](https://github.com/Xpra-org/rust-xpra/commit/57ce25ce984fb7b427cc00be6b9a8f72ecbe4cad)
+  * [show the macOS Dock icon only while there is a window](https://github.com/Xpra-org/rust-xpra/commit/6606ac8ff63b55796a59d2e343679165b853266e)
+  * [handle server-requested window resizes through `window-resized`](https://github.com/Xpra-org/rust-xpra/commit/531ee4c073a411f78e6504ca62751fcd838982ce)
+  * [honour window attention requests](https://github.com/Xpra-org/rust-xpra/commit/cfde9f316e97b5a47f5156e843e8420f0494f334)
+  * [support transient and parent windows, modal dialogs and relative popup positioning](https://github.com/Xpra-org/rust-xpra/commit/691c05196905ffb3c34afbb705cfc2308d4b1940) —
+    window ownership on MS Windows, macOS and X11; modal state on MS Windows and X11
+  * [honour skip-taskbar on MS Windows and X11, and skip-pager on X11](https://github.com/Xpra-org/rust-xpra/commit/aecfd2fc0e40681456c630b687521212c2084845)
+  * [use the application's class and instance for window grouping on X11 and Wayland](https://github.com/Xpra-org/rust-xpra/commit/83ea1f44675c4a19ec4983c9a4493f1351668f5f)
+  * [honour window types on X11](https://github.com/Xpra-org/rust-xpra/commit/7e5a026637dd492f12894ef6c9b2b938cbca3f86)
+  * [honour sticky window state on X11](https://github.com/Xpra-org/rust-xpra/commit/5d54ec95aab3a7b9549a3c83aff1c01b6a9cc6bf)
+  * [apply window opacity on X11](https://github.com/Xpra-org/rust-xpra/commit/6951ae25e699d9f74ad7d07fc2158829a620ec5a)
+  * [honour shaded window state on X11](https://github.com/Xpra-org/rust-xpra/commit/ea7aed4c3e54e2db3f4de7b505454be6ff112be8)
+  * [place windows on the server-requested workspace on X11](https://github.com/Xpra-org/rust-xpra/commit/19d984c462de802b19a7e0bea28729f437d2e192)
+  * [set server-provided icon titles on X11](https://github.com/Xpra-org/rust-xpra/commit/694fc4eb641932cb24531ff73e09ea58fa9e9a95)
 * 🌈 Encodings:
   * [vectorise the draw blit](https://github.com/Xpra-org/rust-xpra/commit/9101e3eb7154226b09ec1e93f0f4244fb12c5bc9)
   * [present only the regions that changed](https://github.com/Xpra-org/rust-xpra/commit/480dfe32155cfbee5cd1441980409e351550ed91)
@@ -26,7 +41,7 @@
   * [work with servers running without backwards compatibility](https://github.com/Xpra-org/rust-xpra/commit/3abb648c6eaf9e033923048288faaa682c4d3fd2) —
     every packet is accepted under both its legacy and its current name, and nothing sent depends
     on the server's `BACKWARDS_COMPATIBLE` mode any more
-  * [announce 6.6 as the minimum protocol version](https://github.com/Xpra-org/rust-xpra/commit/259618eee92405dac24b098282f9fd736ab4c860)
+  * [raise the minimum supported server version to 7.0](https://github.com/Xpra-org/rust-xpra/commit/ed823171ad83d3f1f8e27c166eb991f8b7eda05e)
   * [fix draw acknowledgement packet compatibility](https://github.com/Xpra-org/rust-xpra/commit/e14eba12be62975f900aad04b4f310ad13b7699c)
   * [advertise window forwarding in the `window` namespace](https://github.com/Xpra-org/rust-xpra/commit/ac18abbf78379a8d11266668e8ea07ffff5e1267)
   * [handle the modern cursor packets](https://github.com/Xpra-org/rust-xpra/commit/88ac5c708485bb444da642288d7d21db43ef6143)
@@ -35,6 +50,11 @@
   * [reply to pings under the current packet name](https://github.com/Xpra-org/rust-xpra/commit/785f240562399ff1b6d47d5a8ecca155f6ff3b7e)
   * [advertise notifications under the current name too](https://github.com/Xpra-org/rust-xpra/commit/ddd5711408cff6516c306ff9c48802ee6a1d62d4)
   * [don't panic on a hash key the server did not send](https://github.com/Xpra-org/rust-xpra/commit/707c1a7539b06633a5112785f7513b86cfe97dc4)
+  * [take the remote xpra executable path as `--remote-xpra=PATH`](https://github.com/Xpra-org/rust-xpra/commit/45f68c41e71b7640c4b3a605881ca0706d50d408)
+  * [take the SSH command and its options as `--ssh=COMMAND`](https://github.com/Xpra-org/rust-xpra/commit/62fd9d07a604e6d6573ff82bbe468eceba05e6e9)
+  * [support PuTTY's Plink with non-default SSH ports](https://github.com/Xpra-org/rust-xpra/commit/503456f6cd55128f67838db3603098c5bbba867d)
+  * [send the keyboard layout in a `keyboard-config` packet](https://github.com/Xpra-org/rust-xpra/commit/51f11fbccb077bb57a43b62605d88dd51e51cd8f)
+  * [report the client version in the hello packet](https://github.com/Xpra-org/rust-xpra/commit/001a24f10b898655aeaa6451893632b7b60932ba)
 * Documentation:
   * [document macOS support](https://github.com/Xpra-org/rust-xpra/commit/85fbcd98295ff5a00f5d0aecee92c04d8ac6d045)
 
