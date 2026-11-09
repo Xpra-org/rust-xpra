@@ -32,9 +32,9 @@ cargo build
 ./target/debug/xpra --version     # `CLIENT_VERSION` only (= the crate version)
 ```
 
-`src/lib.rs` holds both versions and they must not be conflated: `VERSION` ("8") is the *xpra
-protocol* version announced to the server in the hello, `CLIENT_VERSION` is this crate's own
-(`env!("CARGO_PKG_VERSION")`) and is the only one `--version` prints.
+`src/lib.rs` defines `CLIENT_VERSION` (`env!("CARGO_PKG_VERSION")`), sent as `version` in the hello
+and printed by `--version`. The server accepts any `version` and only validates `protocol-version`
+when present; `MIN_PROTOCOL_VERSION` is the oldest server this client supports.
 
 `.cargo/config.toml` sets `TURBOJPEG_SOURCE=pkg-config` + `TURBOJPEG_STATIC=1` so that `turbojpeg` links against
 the system libjpeg-turbo (needs its dev headers, and version >= 3.0) instead of compiling `turbojpeg-sys`' vendored
@@ -196,10 +196,9 @@ The crate has both a library part (`xpra`, `src/lib.rs`) and a binary (`src/main
       this client is willing to talk to, which a server checks against its own version
       (`protocol_compat_check`, xpra `util/version.py`, reached from `_process_hello`) and refuses
       with "incompatible version" rather than failing later on a packet type it has never heard
-      of. It is the mirror image of the same key in the server's hello, which announces *its*
-      minimum (`MIN_PROTOCOL_VERSION`, xpra `net/common.py`: `(5, 1)` in backwards-compatible mode,
-      `(6, 6)` without it); we do not check that one — the version we announce (`VERSION`, "8")
-      satisfies either. A server too old to know the key at all simply ignores it.
+      of. The hello's `version` is informational and reports `CLIENT_VERSION`. We do not currently
+      check the server's own `protocol-version`. A server too old to know the key at all simply
+      ignores it.
     - **Packet names use the post-6.5 forms.** xpra 6.5 renamed most client→server packets and put
       the old names behind `add_legacy_alias(...)` calls that only run when the server has
       `BACKWARDS_COMPATIBLE` (`XPRA_BACKWARDS_COMPATIBLE`, default on); the

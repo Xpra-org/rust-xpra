@@ -33,7 +33,7 @@ use winit::window::{
 
 use xpra::exit_codes::ExitCode;
 use xpra::net::serde::VERSION_KEY_STR;
-use xpra::{MIN_PROTOCOL_VERSION, VERSION};
+use xpra::{CLIENT_VERSION, MIN_PROTOCOL_VERSION};
 use xpra::net::connection::Connection;
 use xpra::net::io::{write_packet, read_packet};
 use xpra::net::serde::parse_packet;
@@ -923,7 +923,7 @@ impl XpraClient {
             display_caps["monitors"] = monitors;
         }
         let mut packet = json!(["hello", {
-            "version": VERSION,
+            "version": CLIENT_VERSION,
             // the oldest server we can talk to: everything below sends the post-6.5 capability
             // spellings only, so a server older than this has no chance of understanding us and
             // is better off saying so (`protocol_compat_check`, xpra util/version.py) than

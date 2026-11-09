@@ -172,8 +172,7 @@ fn run(log_sink: LogSink) -> ExitCode {
         print!("\n{HELP}");
         return ExitCode::Ok;
     }
-    // this client's own version, and only that: the protocol version announced to the server
-    // (`xpra::VERSION`) is a different thing entirely and has no business here.
+    // this client's own version, also sent in the hello packet.
     if args.iter().skip(1).any(|arg| arg == "--version") {
         println!("{program} {CLIENT_VERSION}");
         return ExitCode::Ok;
