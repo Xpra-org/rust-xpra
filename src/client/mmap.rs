@@ -114,7 +114,7 @@ impl MmapArea {
     fn do_create() -> Result<MmapArea, String> {
         use std::fs::OpenOptions;
         use std::os::fd::AsRawFd;
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         use std::path::Path;
         use log::info;
         use xpra::net::rand::secure_hex;
@@ -138,10 +138,22 @@ impl MmapArea {
             let exists = Path::new(&option).exists();
             (option.clone(), exists)
         } else {
-            // xpra puts its own areas in the platform temporary directory, honouring XPRA_MMAP_DIR.
+            // Newer servers only accept files in their allowed mmap directories, normally
+            // $XDG_RUNTIME_DIR/xpra. Keep XPRA_MMAP_DIR as an explicit override and the temporary
+            // directory as a fallback on platforms without an XDG runtime directory.
             let dir = env::var("XPRA_MMAP_DIR")
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| env::temp_dir());
+                .unwrap_or_else(|_| {
+                    env::var_os("XDG_RUNTIME_DIR")
+                        .filter(|dir| !dir.is_empty())
+                        .map(|dir| std::path::PathBuf::from(dir).join("xpra"))
+                        .unwrap_or_else(env::temp_dir)
+                });
+            match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => (),
+                Err(e) => return Err(format!("cannot create mmap directory {:?}: {}", dir, e)),
+            }
             let joined = dir.join(format!("xpra-{}.mmap", secure_hex(16)));
             match joined.to_str() {
                 Some(path) => (path.to_string(), false),
