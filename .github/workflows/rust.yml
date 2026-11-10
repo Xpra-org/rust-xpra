@@ -2,9 +2,9 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "v*.x" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "v*.x" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -43,3 +43,5 @@ jobs:
           libwayland-dev
     - name: Build
       run: cargo build --verbose
+    - name: Check Debian source version
+      run: cargo test --test packaging_version --verbose
