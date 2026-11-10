@@ -11,7 +11,7 @@ fi
 
 #find the latest version we can build
 #(`download_source.sh` put it there, from the `Source:` URL in rust-xpra.spec):
-RUST_XPRA_TAR=`ls ../pkgs/rust-xpra-0.3.*.tar.gz 2> /dev/null | sort -V | tail -n 1`
+RUST_XPRA_TAR=`ls ../pkgs/rust-xpra-0.4.*.tar.gz 2> /dev/null | sort -V | tail -n 1`
 if [ -z "${RUST_XPRA_TAR}" ]; then
 	echo "no rust-xpra source found"
 	exit 0
