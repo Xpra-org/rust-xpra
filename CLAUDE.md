@@ -836,6 +836,11 @@ Pages site, since only `docs/` is published.
   `[build-dependencies]` — Cargo resolves target-specific build-deps against the host too. A failed resource
   compile only warns; `tray.rs` then falls back to `IDI_APPLICATION`. The manifest asks for the same DPI
   awareness winit sets programmatically (`become_dpi_aware`), so embedding it changes no behaviour.
+- **`turbojpeg`'s `require-simd` default feature is only on for x86, x86_64 and aarch64** (`Cargo.toml`, a
+  target-specific dependency entry that cargo unions with the plain one). It passes `-DREQUIRE_SIMD=ON` to the
+  vendored libjpeg-turbo build, which makes cmake fail outright on an architecture with no SIMD code (riscv64,
+  s390x, armel - the Debian trixie riscv64 build hit exactly that) instead of falling back to plain C. Keeping it
+  where SIMD exists means a release build with `nasm` missing still fails loudly rather than shipping a slow decoder.
 - **Do not enable `libwebp-sys`'s `sse41` / `avx2` features.** They look like free speed and are neither free nor
   speed. `libwebp-sys`' `build.rs` puts `-msse4.1`/`-mavx2` on the *whole* `cc::Build` — every vendored `.c` file,
   unlike libwebp's own CMake, which applies them per-file precisely so that the generic and SSE2 paths stay

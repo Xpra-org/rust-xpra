@@ -10,7 +10,11 @@ yaml-rust2 = "0.11.0"
 log = { version = "0.4.27", features = ["std", "max_level_trace", "release_max_level_trace"] }
 winit = "0.30"
 softbuffer = "0.4"
-turbojpeg = { version = "1.3.2" }
+# `require-simd` (a default feature) is left off here and turned back on below only for the
+# architectures libjpeg-turbo has SIMD code for: on any other one (riscv64, s390x, armel...) it
+# makes the vendored build fail outright in cmake ("SIMD extensions not available for this CPU")
+# instead of falling back to the plain C code paths.
+turbojpeg = { version = "1.3.2", default-features = false, features = ["cmake", "pkg-config"] }
 spng = { version = "0.2.0-alpha.3" }
 base64 = "0.22.1"
 machine-uid = "0.6.0"
@@ -32,6 +36,9 @@ libwebp-sys = "0.14"
 # clipboard still works through XWayland (present in practice); on Windows the `x11` feature is a
 # no-op and copypasta uses the OS clipboard directly. See src/client/clipboard.rs.
 copypasta = { version = "0.10", default-features = false, features = ["x11"] }
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
+turbojpeg = { version = "1.3.2", default-features = false, features = ["require-simd"] }
 
 [features]
 default = []
