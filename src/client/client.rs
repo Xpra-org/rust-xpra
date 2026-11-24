@@ -2525,6 +2525,16 @@ impl XpraClient {
         xpra_window.owner = owner;
         xpra_window.parent = metadata.parent;
         xpra_window.modal = modal;
+        // The surface was sized from what we asked for, but the OS can hand back a different
+        // client area: Windows widens a decorated window to its minimum tracking size (room for
+        // the caption buttons), and clamps one larger than its maximum. Don't count on a `Resized`
+        // event to report that - measure it now, and map the window at the size it really has.
+        // A zero size (not known yet, e.g. before a Wayland configure) is left alone.
+        let actual = window.inner_size();
+        if actual.width > 0 && actual.height > 0 {
+            xpra_window.resize(actual.width, actual.height);
+        }
+        let (w, h) = (xpra_window.width, xpra_window.height);
         // The x,y the server sends is where the *client area* goes, but the position attribute
         // above places the window's frame (winit's docs for `with_position` on Windows and X11,
         // and on Windows it is literally a `set_outer_position` call at creation) - so a decorated
